@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "description": "Underwriter authority tiers — defines SA caps, loading caps, and specialty scopes per tier. Used by lib/uw-router.js to auto-assign referred cases.",
+  "tiers": {
+    "junior": {
+      "label": "Junior Underwriter",
+      "rank": 1,
+      "authority_limit_sa": 2500000,
+      "authority_limit_loading_pct": 50,
+      "allowed_specialties": ["general"],
+      "max_concurrent_cases": 20,
+      "description": "Handles clean counter-offer cases up to SA 25L. General specialty only."
+    },
+    "senior": {
+      "label": "Senior Underwriter",
+      "rank": 2,
+      "authority_limit_sa": 10000000,
+      "authority_limit_loading_pct": 100,
+      "allowed_specialties": ["general", "metabolic", "cardiac", "renal"],
+      "max_concurrent_cases": 15,
+      "description": "Handles moderate-complexity cases up to SA 1Cr. Multi-specialty."
+    },
+    "chief": {
+      "label": "Chief Underwriter",
+      "rank": 3,
+      "authority_limit_sa": 50000000,
+      "authority_limit_loading_pct": 200,
+      "allowed_specialties": ["general", "metabolic", "cardiac", "renal", "oncology", "hepatic", "neurological"],
+      "max_concurrent_cases": 10,
+      "description": "Handles high-complexity cases up to SA 5Cr. Full specialty scope."
+    },
+    "medical_officer": {
+      "label": "Chief Medical Officer",
+      "rank": 4,
+      "authority_limit_sa": 999999999,
+      "authority_limit_loading_pct": 999,
+      "allowed_specialties": ["general", "metabolic", "cardiac", "renal", "oncology", "hepatic", "neurological", "reinsurance"],
+      "max_concurrent_cases": 8,
+      "description": "Medical officer — no SA limit. Handles reinsurance referrals and complex medical cases."
+    }
+  },
+  "complexity_scoring": {
+    "violations_weight": 15,
+    "loading_weight": 0.5,
+    "specialty_count_weight": 10,
+    "sa_tier_weight": 5,
+    "max_score": 100
+  },
+  "recommended_tier_thresholds": {
+    "junior_max_complexity": 30,
+    "senior_max_complexity": 60,
+    "chief_max_complexity": 85
+  },
+  "load_balancing": {
+    "prefer_lowest_tier_that_qualifies": true,
+    "prefer_least_loaded": true,
+    "respect_out_of_office": true
+  }
+}

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Counter-Offer — SBI General Insurance</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#F0F2F7;min-height:100vh;color:#1A1F36}
+.header{background:linear-gradient(135deg,#0F1B42 0%,#1B2B65 60%,#233580 100%);padding:20px 0;text-align:center;color:#fff}
+.header h1{font-size:18px;font-weight:700;letter-spacing:0.3px}
+.header h1 span{color:#4B9CD3}
+.header p{font-size:12px;color:rgba(255,255,255,0.5);margin-top:4px}
+.container{max-width:680px;margin:0 auto;padding:24px 16px}
+.card{background:#fff;border-radius:12px;border:1px solid #E5E7EB;margin-bottom:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+.card-header{padding:14px 20px;border-bottom:1px solid #F3F4F6;font-size:14px;font-weight:700;display:flex;justify-content:space-between;align-items:center}
+.card-body{padding:20px}
+.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600}
+.badge-warning{background:#FFFBEB;color:#D97706}
+.badge-success{background:#ECFDF5;color:#059669}
+.badge-danger{background:#FEF2F2;color:#DC2626}
+.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #F3F4F6;font-size:14px}
+.row:last-child{border-bottom:none}
+.row .label{color:#6B7280}
+.row .value{font-weight:600;font-family:'JetBrains Mono',monospace}
+.total-row{display:flex;justify-content:space-between;padding:12px 0;font-size:16px;font-weight:700;border-top:2px solid #E5E7EB;margin-top:4px}
+.btn{display:inline-block;padding:14px 32px;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;border:none;font-family:inherit;transition:all 0.2s}
+.btn-accept{background:#059669;color:#fff;width:100%;margin-bottom:10px}.btn-accept:hover{background:#047857}
+.btn-reject{background:transparent;color:#DC2626;border:2px solid #DC2626;width:100%}.btn-reject:hover{background:#FEF2F2}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.deadline{padding:12px 16px;background:#FFFBEB;border-radius:8px;text-align:center;font-size:13px;color:#92400E;margin-bottom:16px}
+.status-card{text-align:center;padding:40px 20px}
+.status-icon{font-size:48px;margin-bottom:12px}
+.loading{text-align:center;padding:60px;color:#6B7280}
+.spinner{width:32px;height:32px;border:3px solid #E5E7EB;border-top-color:#1B2B65;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.footer{text-align:center;padding:24px;font-size:11px;color:#9CA3AF}
+[data-lucide]{display:inline-flex;vertical-align:-2px}
+[data-lucide] svg{width:14px;height:14px;stroke-width:2}
+.i-success{color:#059669}.i-danger{color:#DC2626}.i-warning{color:#D97706}
+</style>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+<div class="header">
+  <h1>SBI <span>General Insurance</span></h1>
+  <p>Health Underwriting — Counter-Offer</p>
+</div>
+
+<div class="container" id="main">
+  <div class="loading"><div class="spinner"></div><div>Loading counter-offer details...</div></div>
+</div>
+
+<div class="footer">&copy; 2026 SBI General Insurance Co. Ltd. | Powered by ACC Health UW Platform</div>
+
+<script>
+const API = window.location.hostname === 'localhost' ? 'http://localhost:10000' : '';
+const params = new URLSearchParams(window.location.search);
+const token = params.get('token');
+
+async function loadOffer() {
+  const el = document.getElementById('main');
+
+  try {
+    let data;
+    let activeToken;
+
+    // Always try latest first (demo mode — always shows the most recent offer)
+    try {
+      const latestRes = await fetch(`${API}/api/counter-offer-latest`);
+      const latestData = await latestRes.json();
+      if (latestData.token) {
+        data = latestData;
+        activeToken = latestData.token;
+        window.history.replaceState({}, '', `?token=${activeToken}`);
+      }
+    } catch(e) {}
+
+    // If no latest found and we have a token in URL, try that
+    if (!data && token) {
+      const res = await fetch(`${API}/api/counter-offer/${token}`);
+      data = await res.json();
+      activeToken = token;
+    }
+
+    if (!data || data.error) {
+      el.innerHTML = `<div class="card"><div class="status-card"><div class="status-icon"><i data-lucide="clipboard-list"></i></div><div style="font-size:16px;font-weight:600;color:#6B7280">No Counter-Offers</div><div style="font-size:13px;color:#6B7280;margin-top:8px">${data?.error || 'No counter-offers found'}. Send a counter-offer from the Premium & Issuance tab first.</div></div></div>`;
+      return;
+    }
+
+    // Store active token globally for respond()
+    window._activeToken = activeToken;
+
+    if (data.status === 'accepted') {
+      el.innerHTML = `<div class="card"><div class="status-card"><div class="status-icon"><i data-lucide="check-circle-2" class="i-success"></i></div><div style="font-size:18px;font-weight:700;color:#059669">Counter-Offer Accepted</div><div style="font-size:14px;color:#6B7280;margin-top:8px">You have accepted the modified terms. Your policy will be issued shortly.</div><div style="margin-top:16px;font-size:13px;color:#6B7280">Proposal: ${data.proposal_id} | Product: ${data.product_name}</div></div></div>`;
+      return;
+    }
+    if (data.status === 'rejected') {
+      el.innerHTML = `<div class="card"><div class="status-card"><div class="status-icon"><i data-lucide="x-circle" class="i-danger"></i></div><div style="font-size:18px;font-weight:700;color:#DC2626">Counter-Offer Declined</div><div style="font-size:14px;color:#6B7280;margin-top:8px">You have declined the modified terms. No policy will be issued.</div></div></div>`;
+      return;
+    }
+    if (data.status === 'expired') {
+      el.innerHTML = `<div class="card"><div class="status-card"><div class="status-icon"><i data-lucide="alarm-clock"></i></div><div style="font-size:18px;font-weight:700;color:#D97706">Counter-Offer Expired</div><div style="font-size:14px;color:#6B7280;margin-top:8px">The deadline has passed. Please contact your insurance advisor.</div></div></div>`;
+      return;
+    }
+
+    // Pending — show full offer
+    const p = data.premium || {};
+    const deadline = new Date(data.deadline);
+    const daysLeft = Math.max(0, Math.ceil((deadline - new Date()) / 86400000));
+
+    el.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span><i data-lucide="clipboard-list"></i> Proposal Details</span>
+        <span class="badge badge-warning">Action Required</span>
+      </div>
+      <div class="card-body">
+        <div class="row"><span class="label">Proposer</span><span class="value">${data.proposer_name}</span></div>
+        <div class="row"><span class="label">Proposal ID</span><span class="value">${data.proposal_id}</span></div>
+        <div class="row"><span class="label">Product</span><span class="value">${data.product_name}</span></div>
+        <div class="row"><span class="label">Sum Assured</span><span class="value">₹${(data.sum_assured||0).toLocaleString('en-IN')}</span></div>
+      </div>
+    </div>
+
+    <div class="deadline"><i data-lucide="alarm-clock"></i> Deadline: ${deadline.toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})} — <strong>${daysLeft} day${daysLeft!==1?'s':''} remaining</strong></div>
+
+    <div class="card">
+      <div class="card-header">
+        <span><i data-lucide="indian-rupee"></i> Premium Breakdown</span>
+        <span style="font-size:12px;color:#6B7280">Loading: +${data.loading_pct||0}%</span>
+      </div>
+      <div class="card-body">
+        <div class="row"><span class="label">Base Premium</span><span class="value">₹${(p.base_premium||0).toLocaleString('en-IN')}</span></div>
+        ${data.loading_pct > 0 ? `<div class="row" style="color:#D97706"><span class="label">Loading (+${data.loading_pct}%)</span><span class="value">+₹${(p.loading_amount||0).toLocaleString('en-IN')}</span></div>` : ''}
+        <div class="row"><span class="label">Subtotal</span><span class="value">₹${(p.loaded_premium||0).toLocaleString('en-IN')}</span></div>
+        <div class="row"><span class="label">GST (${p.gst_rate||18}%)</span><span class="value">₹${(p.gst_amount||0).toLocaleString('en-IN')}</span></div>
+        <div class="total-row"><span>Total Annual Premium</span><span style="color:#059669">₹${(p.total_annual_premium||0).toLocaleString('en-IN')}</span></div>
+      </div>
+    </div>
+
+    ${data.loading_factors?.length ? `<div class="card">
+      <div class="card-header"><span><i data-lucide="bar-chart-3"></i> Loading Factors</span></div>
+      <div class="card-body">${data.loading_factors.map(f => `<div class="row"><span class="label">${f.factor}</span><span class="value" style="color:#D97706">${f.loading}</span></div>`).join('')}</div>
+    </div>` : ''}
+
+    ${data.exclusions?.length ? `<div class="card" style="border-left:3px solid #DC2626">
+      <div class="card-header"><span><i data-lucide="alert-triangle"></i> Exclusions</span></div>
+      <div class="card-body" style="font-size:13px;color:#6B7280">${data.exclusions.map(e => `<div style="padding:4px 0">• ${e}</div>`).join('')}</div>
+    </div>` : ''}
+
+    <div class="card" style="border:2px solid #059669">
+      <div class="card-body" style="text-align:center">
+        <div style="font-size:14px;color:#6B7280;margin-bottom:16px">By accepting, you agree to the premium of <strong style="color:#059669">₹${(p.total_annual_premium||0).toLocaleString('en-IN')}/year</strong> with the terms listed above.</div>
+        <button class="btn btn-accept" id="acceptBtn" onclick="respond('accept')"><i data-lucide="check-circle-2" class="i-success"></i> I Accept These Terms</button>
+        <button class="btn btn-reject" id="rejectBtn" onclick="respond('reject')"><i data-lucide="x-circle" class="i-danger"></i> I Decline</button>
+      </div>
+    </div>`;
+
+  } catch(e) {
+    el.innerHTML = `<div class="card"><div class="status-card"><div class="status-icon"><i data-lucide="alert-triangle"></i></div><div style="font-size:16px;font-weight:600;color:#DC2626">Error Loading Offer</div><div style="font-size:13px;color:#6B7280;margin-top:8px">${e.message}</div></div></div>`;
+  }
+}
+
+async function respond(decision) {
+  const label = decision === 'accept' ? 'ACCEPT' : 'DECLINE';
+  if (!confirm(`Are you sure you want to ${label} this counter-offer? This action cannot be undone.`)) return;
+
+  const activeToken = window._activeToken || token;
+  document.getElementById('acceptBtn').disabled = true;
+  document.getElementById('rejectBtn').disabled = true;
+
+  try {
+    const res = await fetch(`${API}/api/counter-offer/${activeToken}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision })
+    });
+    const data = await res.json();
+    if (data.success) {
+      loadOffer(); // Reload to show status
+    } else {
+      alert(data.error || 'Failed to submit response');
+      document.getElementById('acceptBtn').disabled = false;
+      document.getElementById('rejectBtn').disabled = false;
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+    document.getElementById('acceptBtn').disabled = false;
+    document.getElementById('rejectBtn').disabled = false;
+  }
+}
+
+let _iconBusy = false;
+function renderIcons(){ if (_iconBusy) return; _iconBusy = true; try { window.lucide && lucide.createIcons(); } catch(e){} setTimeout(() => _iconBusy = false, 0); }
+try {
+  new MutationObserver(muts => {
+    for (const m of muts) if (!_iconBusy) for (const n of m.addedNodes)
+      if (n.nodeType === 1 && (n.matches?.('[data-lucide]') || n.querySelector?.('[data-lucide]'))) { renderIcons(); return; }
+  }).observe(document.body, { childList: true, subtree: true });
+} catch(e){}
+loadOffer().then(renderIcons).catch(renderIcons);
+setTimeout(renderIcons, 500);
+</script>
+</body>
+</html>

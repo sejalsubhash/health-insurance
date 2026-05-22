@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACC Insurance — Submit Information</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--primary:#1B2B65;--accent:#4B9CD3;--bg:#F0F2F7;--surface:#FFFFFF;--text:#1A1F36;--text-muted:#6B7280;--border:#E5E7EB;--success:#059669;--success-bg:#ECFDF5;--warning:#D97706;--warning-bg:#FFFBEB;--danger:#DC2626;--danger-bg:#FEF2F2;--radius:10px}
+html,body{min-height:100vh;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+.container{max-width:640px;margin:0 auto;padding:24px 16px}
+.header{text-align:center;padding:32px 0 24px;border-bottom:1px solid var(--border);margin-bottom:24px}
+.header h1{font-size:22px;font-weight:700;color:var(--primary)}.header h1 span{color:var(--accent)}
+.header p{font-size:13px;color:var(--text-muted);margin-top:4px}
+.card{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);margin-bottom:16px;overflow:hidden}
+.card-header{padding:14px 18px;border-bottom:1px solid var(--border);font-size:14px;font-weight:600;color:var(--primary);display:flex;align-items:center;gap:8px}
+.card-body{padding:16px 18px}
+.info-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f3f4f6;font-size:13px}
+.info-row:last-child{border-bottom:none}
+.info-label{color:var(--text-muted);font-weight:500}
+.info-value{font-weight:600;text-align:right}
+.item{border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px;transition:all 0.2s}
+.item.received{background:var(--success-bg);border-color:var(--success)}
+.item-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.item-name{font-weight:600;font-size:14px}.item-type{font-size:11px;padding:2px 8px;border-radius:12px;background:var(--bg);color:var(--text-muted);font-weight:600}
+.item-desc{font-size:12px;color:var(--text-muted);margin-bottom:10px}
+.item-mandatory{font-size:11px;color:var(--danger);font-weight:600}
+.item-fasting{font-size:11px;color:var(--warning);font-weight:600;margin-left:8px}
+.upload-zone{border:2px dashed var(--border);border-radius:8px;padding:16px;text-align:center;cursor:pointer;transition:all 0.15s;font-size:13px;color:var(--text-muted)}
+.upload-zone:hover{border-color:var(--accent);color:var(--primary)}
+.upload-zone input{display:none}
+.clarification-input{width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;min-height:60px;resize:vertical}
+.clarification-input:focus{outline:none;border-color:var(--accent)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:all 0.15s}
+.btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{background:#233580}
+.btn-success{background:var(--success);color:#fff}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.received-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:12px;background:var(--success-bg);color:var(--success);font-size:11px;font-weight:600}
+.deadline{background:var(--warning-bg);color:var(--warning);padding:10px 14px;border-radius:8px;font-size:13px;font-weight:500;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.error{text-align:center;padding:60px 20px;color:var(--danger)}
+.error h2{font-size:18px;margin-bottom:8px}
+.success-banner{background:var(--success-bg);border:1px solid var(--success);border-radius:var(--radius);padding:24px;text-align:center;margin-top:24px}
+.success-banner h3{color:var(--success);font-size:18px;margin-bottom:6px}
+.loading{text-align:center;padding:60px}
+.spinner{display:inline-block;width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.status-bar{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.status-pill{font-size:11px;padding:2px 8px;border-radius:12px;font-weight:600}
+.status-pending{background:#FFFBEB;color:#D97706}.status-partial{background:#EFF6FF;color:#2563EB}
+.status-received{background:var(--success-bg);color:var(--success)}
+[data-lucide]{display:inline-flex;vertical-align:-2px}
+[data-lucide] svg{width:14px;height:14px;stroke-width:2}
+.i-success{color:var(--success)}.i-danger{color:var(--danger)}.i-warning{color:var(--warning)}.i-muted{color:var(--text-muted)}
+</style>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>ACC <span>Health Insurance</span></h1>
+    <p>Additional Information Portal</p>
+    <span style="display:inline-block;margin-top:6px;font-size:10px;padding:2px 8px;border-radius:12px;background:#ECFDF5;color:#059669;font-weight:600" id="portalVersion">v4.0.0</span>
+  </div>
+  <div id="content"><div class="loading"><div class="spinner"></div><p style="margin-top:12px;color:var(--text-muted)">Loading your request...</p></div></div>
+</div>
+
+<script>
+const API = window.location.hostname === 'localhost' ? 'http://localhost:10000' : '';
+const params = new URLSearchParams(window.location.search);
+const token = params.get('token');
+
+let _iconBusy = false;
+function renderIcons(){ if (_iconBusy) return; _iconBusy = true; try { window.lucide && lucide.createIcons(); } catch(e){} setTimeout(() => _iconBusy = false, 0); }
+try {
+  new MutationObserver(muts => {
+    for (const m of muts) if (!_iconBusy) for (const n of m.addedNodes)
+      if (n.nodeType === 1 && (n.matches?.('[data-lucide]') || n.querySelector?.('[data-lucide]'))) { renderIcons(); return; }
+  }).observe(document.body, { childList: true, subtree: true });
+} catch(e){}
+
+if (!token) {
+  document.getElementById('content').innerHTML = '<div class="error"><h2>Invalid Link</h2><p>This link is missing the required access token. Please check the link from your notification email or SMS.</p></div>';
+  renderIcons();
+} else {
+  loadRequest().then(renderIcons).catch(renderIcons);
+  setTimeout(renderIcons, 500);
+}
+
+async function loadRequest() {
+  try {
+    const res = await fetch(`${API}/api/customer/info-request/${token}`);
+    if (res.status === 404) {
+      document.getElementById('content').innerHTML = '<div class="error"><h2>Link Not Found</h2><p>This link is invalid or has expired. Please contact our helpline if you believe this is an error.</p></div>';
+      return;
+    }
+    if (res.status === 410) {
+      const data = await res.json();
+      document.getElementById('content').innerHTML = `<div class="error"><h2>Request Closed</h2><p>${esc(data.error)}</p><p style="margin-top:8px;color:var(--text-muted)">If you need to submit additional information, please contact our helpline.</p></div>`;
+      return;
+    }
+    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+    const data = await res.json();
+    renderRequest(data);
+  } catch(e) {
+    document.getElementById('content').innerHTML = `<div class="error"><h2>Error</h2><p>Unable to load your request. Please try again later.</p><p style="margin-top:8px;font-size:12px;color:var(--text-muted)">${esc(e.message)}</p></div>`;
+  }
+}
+
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function renderRequest(data) {
+  const deadline = new Date(data.deadline);
+  const daysLeft = Math.max(0, Math.ceil((deadline - new Date()) / 86400000));
+  const allDone = data.items.every(it => it.received);
+
+  if (allDone) {
+    document.getElementById('content').innerHTML = `
+      <div class="success-banner">
+        <h3>All Information Received</h3>
+        <p style="color:var(--text-muted);font-size:13px;margin-top:4px">Thank you, ${esc(data.proposer_name)}. All requested items have been submitted successfully.</p>
+        <p style="color:var(--text-muted);font-size:12px;margin-top:8px">Proposal ${esc(data.proposal_id)} is now back under review. You will be notified of the decision.</p>
+      </div>`;
+    return;
+  }
+
+  const pendingCount = data.items.filter(it => !it.received).length;
+  const receivedCount = data.items.filter(it => it.received).length;
+  const statusClass = receivedCount > 0 ? 'status-partial' : 'status-pending';
+  const statusText = receivedCount > 0 ? `${receivedCount} of ${data.items.length} received` : 'Pending';
+
+  let html = `
+    <div class="card">
+      <div class="card-header"><i data-lucide="clipboard-list"></i> Request Details</div>
+      <div class="card-body">
+        <div class="info-row"><span class="info-label">Proposal</span><span class="info-value">${esc(data.proposal_id)}</span></div>
+        <div class="info-row"><span class="info-label">Product</span><span class="info-value">${esc(data.product_name)}</span></div>
+        <div class="info-row"><span class="info-label">Reason</span><span class="info-value">${esc(data.reason)}</span></div>
+        <div class="info-row"><span class="info-label">Status</span><span class="info-value"><span class="status-pill ${statusClass}">${statusText}</span></span></div>
+      </div>
+    </div>
+    <div class="deadline"><i data-lucide="alarm-clock"></i> Deadline: ${deadline.toLocaleDateString('en-IN')} (${daysLeft} day${daysLeft!==1?'s':''} remaining)</div>
+    <div class="card">
+      <div class="card-header"><i data-lucide="upload"></i> Items to Submit (${pendingCount} pending)</div>
+      <div class="card-body" id="itemsContainer">
+  `;
+
+  for (const item of data.items) {
+    const typeLabel = item.type === 'test' ? '<i data-lucide="flask-conical"></i> Test' : item.type === 'clarification' ? '<i data-lucide="message-circle"></i> Clarification' : '<i data-lucide="file-text"></i> Document';
+    html += `<div class="item ${item.received ? 'received' : ''}" id="item-${item.id}">
+      <div class="item-header">
+        <span class="item-name">${esc(item.name)}</span>
+        <span class="item-type">${typeLabel}</span>
+      </div>
+      <div class="item-desc">${esc(item.description)}</div>
+      <div style="margin-bottom:8px">
+        ${item.mandatory ? '<span class="item-mandatory">* Required</span>' : '<span style="font-size:11px;color:var(--text-muted)">Optional</span>'}
+        ${item.fasting_required ? '<span class="item-fasting"><i data-lucide="utensils"></i> Fasting Required</span>' : ''}
+      </div>`;
+
+    if (item.received) {
+      html += `<div class="received-badge"><i data-lucide="check"></i> Received on ${new Date(item.received_at).toLocaleDateString('en-IN')}</div>`;
+    } else if (item.type === 'clarification') {
+      html += `
+        <textarea class="clarification-input" id="clar-${item.id}" placeholder="Type your response here..."></textarea>
+        <button class="btn btn-primary" style="margin-top:8px" onclick="submitClarification('${item.id}')">Submit Response</button>`;
+    } else {
+      html += `
+        <div class="upload-zone" onclick="this.querySelector('input').click()" ondragover="event.preventDefault();this.style.borderColor='var(--accent)'" ondragleave="this.style.borderColor=''" ondrop="event.preventDefault();this.style.borderColor='';handleDrop(event,'${item.id}')">
+          <i data-lucide="folder"></i> Click to browse or drag & drop your file here
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">PDF, JPEG, PNG (max 15 MB)</div>
+          <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff" onchange="handleFile(this.files[0],'${item.id}')">
+        </div>
+        <div id="upload-status-${item.id}"></div>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `</div></div>`;
+  document.getElementById('content').innerHTML = html;
+}
+
+function handleDrop(e, itemId) {
+  const files = e.dataTransfer.files;
+  if (files.length > 0) handleFile(files[0], itemId);
+}
+
+async function handleFile(file, itemId) {
+  if (!file) return;
+  if (file.size > 15 * 1024 * 1024) {
+    alert('File exceeds 15 MB limit');
+    return;
+  }
+  const statusEl = document.getElementById(`upload-status-${itemId}`);
+  statusEl.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--accent)"><i data-lucide="hourglass"></i> Uploading...</div>';
+
+  const formData = new FormData();
+  formData.append('document', file);
+  formData.append('item_id', itemId);
+
+  try {
+    const res = await fetch(`${API}/api/customer/info-request/${token}/upload`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      statusEl.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--success)"><i data-lucide="check"></i> Uploaded successfully</div>';
+      // Refresh the page after a short delay to update statuses
+      setTimeout(() => loadRequest(), 1000);
+    } else {
+      statusEl.innerHTML = `<div style="padding:8px;font-size:12px;color:var(--danger)">Error: ${esc(data.error || 'Upload failed')}</div>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<div style="padding:8px;font-size:12px;color:var(--danger)">Network error — please try again</div>`;
+  }
+}
+
+async function submitClarification(itemId) {
+  const textarea = document.getElementById(`clar-${itemId}`);
+  if (!textarea) return;
+  const response = textarea.value.trim();
+  if (!response) { alert('Please type your response'); return; }
+
+  textarea.disabled = true;
+  try {
+    const res = await fetch(`${API}/api/customer/info-request/${token}/clarification`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, response })
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      setTimeout(() => loadRequest(), 500);
+    } else {
+      alert(data.error || 'Failed to submit');
+      textarea.disabled = false;
+    }
+  } catch(e) {
+    alert('Network error');
+    textarea.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

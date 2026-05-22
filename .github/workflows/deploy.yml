@@ -1,0 +1,85 @@
+name: Build → ECR → Deploy EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
+  BACKEND_REPO: acc-uw-backend
+  FRONTEND_REPO: acc-uw-frontend
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tags
+        id: tags
+        run: |
+          SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "backend_image=${{ env.ECR_REGISTRY }}/${{ env.BACKEND_REPO }}:$SHA" >> $GITHUB_OUTPUT
+          echo "backend_latest=${{ env.ECR_REGISTRY }}/${{ env.BACKEND_REPO }}:latest" >> $GITHUB_OUTPUT
+          echo "frontend_image=${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_REPO }}:$SHA" >> $GITHUB_OUTPUT
+          echo "frontend_latest=${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_REPO }}:latest" >> $GITHUB_OUTPUT
+
+      - name: Build & push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.backend_image }}
+            ${{ steps.tags.outputs.backend_latest }}
+          cache-from: type=registry,ref=${{ steps.tags.outputs.backend_latest }}
+          cache-to: type=inline
+
+      - name: Build & push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.frontend_image }}
+            ${{ steps.tags.outputs.frontend_latest }}
+          cache-from: type=registry,ref=${{ steps.tags.outputs.frontend_latest }}
+          cache-to: type=inline
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            aws ecr get-login-password --region ap-south-1 | \
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+            cd /opt/acc-uw
+            echo "BACKEND_IMAGE=${{ steps.tags.outputs.backend_image }}" > .env.deploy
+            echo "FRONTEND_IMAGE=${{ steps.tags.outputs.frontend_image }}" >> .env.deploy
+            docker compose --env-file .env.deploy pull
+            docker compose --env-file .env.deploy up -d --remove-orphans
+            docker image prune -f --filter "until=72h"
+            echo "Deploy complete — SHA ${{ steps.tags.outputs.sha }}"

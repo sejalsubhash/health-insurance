@@ -1,0 +1,59 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-acc-uw-backend:latest}
+    container_name: acc-uw-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET:-acc-insurance-uw}
+      REDIS_URL: ${REDIS_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      BASE_URL: ${BASE_URL:-http://localhost}
+      AZURE_AD_CLIENT_ID: ${AZURE_AD_CLIENT_ID:-}
+      AZURE_AD_CLIENT_SECRET: ${AZURE_AD_CLIENT_SECRET:-}
+      AZURE_AD_TENANT_ID: ${AZURE_AD_TENANT_ID:-}
+      AZURE_AD_REDIRECT_URI: ${AZURE_AD_REDIRECT_URI:-}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-admin@sbigic.com}
+      SKIP_AUTH: ${SKIP_AUTH:-false}
+      SES_REGION: ${SES_REGION:-ap-south-1}
+      SES_FROM_EMAIL: ${SES_FROM_EMAIL:-noreply@acc.ltd}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+    expose:
+      - "3000"
+    networks:
+      - uw-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-acc-uw-frontend:latest}
+    container_name: acc-uw-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - uw-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  uw-net:
+    driver: bridge

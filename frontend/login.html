@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Insurance Underwriting — Login</title>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;font-family:'Sora',sans-serif;background:#F4F6FA}
+.shell{display:grid;grid-template-columns:1fr 420px;height:100vh}
+
+/* ── LEFT PANEL ── */
+.left{position:relative;overflow:hidden;background:#fff;display:flex;align-items:center;justify-content:center}
+.hero-img{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  object-position:center;
+  display:block;
+}
+.left-overlay{display:none}
+.left-content{display:none}
+.acc-brand{display:flex;align-items:center;gap:10px}
+.acc-dot{width:8px;height:8px;border-radius:50%;background:#4B9CD3}
+.acc-name{font-size:13px;letter-spacing:0.08em;color:rgba(255,255,255,0.55);text-transform:uppercase;font-weight:500}
+.hero-copy{max-width:420px}
+.hero-eyebrow{font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#4B9CD3;font-weight:600;margin-bottom:14px}
+.hero-headline{font-family:'Instrument Serif',serif;font-size:40px;line-height:1.18;color:#fff;margin-bottom:18px;text-shadow:0 2px 8px rgba(0,0,0,0.5)}
+.hero-headline em{font-style:italic;color:#91C8F0}
+.hero-sub{font-size:14px;line-height:1.7;color:rgba(255,255,255,0.80);max-width:360px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+.pill{padding:5px 12px;border-radius:20px;border:1px solid rgba(255,255,255,0.14);font-size:11.5px;color:rgba(255,255,255,0.6);letter-spacing:0.02em;background:rgba(255,255,255,0.05)}
+.bottom-stats{display:flex;gap:32px}
+.stat-val{font-family:'Instrument Serif',serif;font-size:28px;color:#fff;line-height:1}
+.stat-lbl{font-size:11px;color:rgba(255,255,255,0.42);margin-top:4px;text-transform:uppercase;letter-spacing:0.07em}
+
+/* ── RIGHT PANEL ── */
+.right{background:#fff;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:48px 52px;border-left:1px solid #E8EBF2;position:relative}
+.right-inner{width:100%;max-width:300px}
+
+.sbi-badge{display:flex;align-items:center;gap:8px;margin-bottom:32px}
+.sbi-icon{width:36px;height:36px;border-radius:8px;background:#0A2D7A;display:flex;align-items:center;justify-content:center}
+.sbi-icon svg{width:20px;height:20px}
+.sbi-text-wrap{}
+.sbi-main{font-size:13px;font-weight:600;color:#0A2D7A;letter-spacing:0.01em}
+.sbi-sub{font-size:11px;color:#8A94A6;margin-top:1px}
+
+.login-title{font-family:'Instrument Serif',serif;font-size:26px;line-height:1.2;color:#0D1733;margin-bottom:6px}
+.login-hint{font-size:13px;color:#8A94A6;line-height:1.5;margin-bottom:28px}
+
+.ms-btn{
+  width:100%;padding:13px 18px;
+  background:#0A2D7A;border:none;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  font-family:'Sora',sans-serif;font-size:14px;font-weight:500;color:#fff;
+  cursor:pointer;letter-spacing:0.01em;
+  transition:background 0.18s,transform 0.1s;
+}
+.ms-btn:hover{background:#0E3A9A;transform:translateY(-1px)}
+.ms-btn:active{transform:translateY(0)}
+.ms-btn svg{width:18px;height:18px;flex-shrink:0}
+
+.sep{display:flex;align-items:center;gap:10px;margin:18px 0}
+.sep-line{flex:1;height:1px;background:#EAECF2}
+.sep-txt{font-size:11px;color:#B0B7C8;letter-spacing:0.05em}
+
+.secure-row{display:flex;align-items:center;justify-content:center;gap:6px;font-size:11.5px;color:#B0B7C8}
+.lock-icon{width:12px;height:12px;opacity:0.7}
+
+.right-footer{position:absolute;bottom:24px;left:0;right:0;text-align:center}
+.right-footer p{font-size:10.5px;color:#C4C9D8;line-height:1.8}
+.right-footer a{color:#4B9CD3;text-decoration:none}
+.ver-badge{display:inline-block;margin-top:4px;font-size:10px;color:#4B9CD3;letter-spacing:0.05em;font-weight:600}
+
+/* animate in */
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+.right-inner{animation:fadeUp 0.5s 0.1s both ease-out}
+.hero-copy{animation:fadeUp 0.6s 0.05s both ease-out}
+
+@media(max-width:820px){
+  .shell{grid-template-columns:1fr}
+  .left{display:none}
+  .right{padding:36px 24px}
+}
+
+.field-group{}
+.field-label{display:block;font-size:11px;font-weight:600;color:#5A6480;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:6px}
+.field-input{width:100%;padding:11px 14px;border:1.5px solid #E2E6F0;border-radius:9px;font-family:'Sora',sans-serif;font-size:14px;color:#0D1733;background:#FAFBFD;outline:none;transition:border-color 0.15s,box-shadow 0.15s}
+.field-input:focus{border-color:#4B9CD3;box-shadow:0 0 0 3px rgba(75,156,211,0.12);background:#fff}
+.field-input::placeholder{color:#B8BFD0}
+.ms-btn-outline{background:#fff;color:#0A2D7A;border:1.5px solid #D0D8EE;font-size:13px}
+.ms-btn-outline:hover{background:#F4F6FA;border-color:#4B9CD3}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- LEFT -->
+  <div class="left">
+    <img class="hero-img" src="Gemini_Generated_Image_jcqzs8jcqzs8jcqz.png" alt="">
+    <div class="left-overlay"></div>
+    <div class="left-content">
+      <div class="acc-brand">
+        <div class="acc-dot"></div>
+        <span class="acc-name">Applied Cloud Computing</span>
+      </div>
+      <div class="hero-copy">
+        <div class="hero-eyebrow">AI Underwriting Platform</div>
+        <h1 class="hero-headline">Secure <em>the health</em><br>you love.</h1>
+        <p class="hero-sub">15 specialized AI agents delivering consistent, auditable underwriting decisions — from biometric verification to clinical risk scoring.</p>
+        <div class="pills">
+          <span class="pill">Biometric UW</span>
+          <span class="pill">TeleMER UW</span>
+          <span class="pill">PPHC Reports</span>
+          <span class="pill">Historical Data</span>
+        </div>
+      </div>
+      <div class="bottom-stats">
+        <div>
+          <div class="stat-val">200+</div>
+          <div class="stat-lbl">Medical Parameters</div>
+        </div>
+        <div>
+          <div class="stat-val">70%</div>
+          <div class="stat-lbl">Straight-Through</div>
+        </div>
+        <div>
+          <div class="stat-val">15</div>
+          <div class="stat-lbl">AI Agents</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="right">
+    <div class="right-inner">
+
+      <div class="sbi-badge">
+        <div class="sbi-icon">
+          <!-- SBI General shield icon approximation -->
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2L4 6V12C4 16.4 7.4 20.5 12 22C16.6 20.5 20 16.4 20 12V6L12 2Z" fill="#4B9CD3"/>
+            <path d="M10 14L8 12L7 13L10 16L17 9L16 8L10 14Z" fill="white"/>
+          </svg>
+        </div>
+        <div class="sbi-text-wrap">
+          <div class="sbi-main">SBI General Insurance</div>
+          <div class="sbi-sub">Health Underwriting Portal</div>
+        </div>
+      </div>
+
+      <h2 class="login-title">Welcome back</h2>
+      <p class="login-hint">Enter your credentials to access the platform.</p>
+
+      <div class="field-group">
+        <label class="field-label">Email / Username</label>
+        <input class="field-input" id="inp_user" type="text" placeholder="you@sbigeneral.in" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('inp_pass').focus()">
+      </div>
+
+      <div class="field-group" style="margin-top:14px">
+        <label class="field-label">Password</label>
+        <input class="field-input" id="inp_pass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')handleLogin()">
+      </div>
+
+      <div id="login-error" style="display:none;margin-top:10px;padding:9px 12px;background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;font-size:12px;color:#DC2626;text-align:center"></div>
+
+      <button class="ms-btn" id="login-btn" onclick="handleLogin()" style="margin-top:20px">
+        Sign In
+      </button>
+
+      <div class="sep">
+        <div class="sep-line"></div>
+        <span class="sep-txt">or</span>
+        <div class="sep-line"></div>
+      </div>
+
+      <button class="ms-btn ms-btn-outline" onclick="handleMSLogin()">
+        <svg viewBox="0 0 23 23" xmlns="http://www.w3.org/2000/svg" style="width:16px;height:16px">
+          <path fill="#f35325" d="M1 1h10v10H1z"/>
+          <path fill="#81bc06" d="M12 1h10v10H12z"/>
+          <path fill="#05a6f0" d="M1 12h10v10H1z"/>
+          <path fill="#ffba08" d="M12 12h10v10H12z"/>
+        </svg>
+        Continue with Microsoft 365
+      </button>
+    </div>
+
+    <div class="right-footer">
+      <p>&copy; 2026 Applied Cloud Computing Pvt. Ltd.</p>
+      <p>AWS GenAI Competency Partner &bull; <a href="https://acc.ltd" target="_blank">acc.ltd</a></p>
+      <span class="ver-badge" id="verBadge">v4.0.0</span>
+    </div>
+  </div>
+
+</div>
+<script>
+const API_URL = window.location.hostname === 'localhost'
+  ? 'http://localhost:10000'
+  : '';
+
+(async function() {
+  try {
+    const res = await fetch(API_URL + '/health');
+    const data = await res.json();
+    const badge = document.getElementById('verBadge');
+    if (data.version) badge.textContent = 'v' + data.version;
+    if (data.status === 'ok') badge.style.color = '#059669';
+  } catch(e) {
+    const badge = document.getElementById('verBadge');
+    badge.textContent = 'v4.5.1 (offline)';
+    badge.style.color = '#D97706';
+  }
+})();
+
+async function handleLogin() {
+  const user = document.getElementById('inp_user').value.trim();
+  const pass = document.getElementById('inp_pass').value;
+  const errEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
+  if (!user) { errEl.textContent = 'Please enter your email.'; errEl.style.display='block'; document.getElementById('inp_user').focus(); return; }
+  if (!pass) { errEl.textContent = 'Please enter your password.'; errEl.style.display='block'; document.getElementById('inp_pass').focus(); return; }
+  errEl.style.display = 'none';
+  btn.textContent = 'Signing in…';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch(API_URL + '/api/auth/login', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: user, password: pass })
+    });
+    const data = await res.json();
+    if (data.success) {
+      localStorage.setItem('uw_logged_in', '1');
+      localStorage.setItem('uw_user', JSON.stringify(data.user));
+      window.location.href = '/app';
+    } else {
+      errEl.textContent = data.error || 'Login failed. Check your credentials.';
+      errEl.style.display = 'block';
+      btn.textContent = 'Sign In';
+      btn.disabled = false;
+    }
+  } catch(e) {
+    errEl.textContent = 'Cannot connect to server. Please try again.';
+    errEl.style.display = 'block';
+    btn.textContent = 'Sign In';
+    btn.disabled = false;
+  }
+}
+
+function handleMSLogin() {
+  localStorage.setItem('uw_logged_in', '1');
+  window.location.href = API_URL + '/auth/login';
+}
+
+const params = new URLSearchParams(window.location.search);
+if (params.get('error') === 'disabled') {
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = 'Your account has been disabled. Please contact your administrator.';
+  errEl.style.display = 'block';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('inp_user').focus();
+});
+</script>
+</body>
+</html>
