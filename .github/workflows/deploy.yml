@@ -32,16 +32,16 @@ jobs:
       # Backend
       - name: Build Backend Image
         run: |
-          docker build -t acc-uw-backend ./backend
+          docker build -t sbi-uw-backend ./backend
 
       - name: Tag Backend Image
         run: |
-          docker tag acc-uw-backend:latest \
-          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-backend:latest
+          docker tag sbi-uw-backend:latest \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-backend:latest
 
       - name: Push Backend Image
         run: |
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-backend:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-backend:latest
 
       # Frontend
       - name: Build Frontend Image
