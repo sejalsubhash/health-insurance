@@ -1,85 +1,77 @@
-name: Build → ECR → Deploy EC2
+name: Build and Push Images to ECR
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+
   workflow_dispatch:
 
 env:
   AWS_REGION: ap-south-1
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
-  BACKEND_REPO: acc-uw-backend
-  FRONTEND_REPO: acc-uw-frontend
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
 
 jobs:
-  build-and-deploy:
+  build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        id: ecr-login
+      - name: Login to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set image tags
-        id: tags
+      - name: Set Image Tag
         run: |
-          SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
-          echo "backend_image=${{ env.ECR_REGISTRY }}/${{ env.BACKEND_REPO }}:$SHA" >> $GITHUB_OUTPUT
-          echo "backend_latest=${{ env.ECR_REGISTRY }}/${{ env.BACKEND_REPO }}:latest" >> $GITHUB_OUTPUT
-          echo "frontend_image=${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_REPO }}:$SHA" >> $GITHUB_OUTPUT
-          echo "frontend_latest=${{ env.ECR_REGISTRY }}/${{ env.FRONTEND_REPO }}:latest" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
 
-      - name: Build & push backend image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          push: true
-          tags: |
-            ${{ steps.tags.outputs.backend_image }}
-            ${{ steps.tags.outputs.backend_latest }}
-          cache-from: type=registry,ref=${{ steps.tags.outputs.backend_latest }}
-          cache-to: type=inline
+      # Backend Image
+      - name: Build Backend Docker Image
+        run: |
+          docker build -t acc-uw-backend ./backend
 
-      - name: Build & push frontend image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          push: true
-          tags: |
-            ${{ steps.tags.outputs.frontend_image }}
-            ${{ steps.tags.outputs.frontend_latest }}
-          cache-from: type=registry,ref=${{ steps.tags.outputs.frontend_latest }}
-          cache-to: type=inline
+      - name: Tag Backend Image
+        run: |
+          docker tag acc-uw-backend:latest \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-backend:$IMAGE_TAG
 
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            set -e
-            aws ecr get-login-password --region ap-south-1 | \
-              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
-            cd /opt/acc-uw
-            echo "BACKEND_IMAGE=${{ steps.tags.outputs.backend_image }}" > .env.deploy
-            echo "FRONTEND_IMAGE=${{ steps.tags.outputs.frontend_image }}" >> .env.deploy
-            docker compose --env-file .env.deploy pull
-            docker compose --env-file .env.deploy up -d --remove-orphans
-            docker image prune -f --filter "until=72h"
-            echo "Deploy complete — SHA ${{ steps.tags.outputs.sha }}"
+          docker tag acc-uw-backend:latest \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-backend:latest
+
+      - name: Push Backend Image
+        run: |
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-backend:$IMAGE_TAG
+
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-backend:latest
+
+      # Frontend Image
+      - name: Build Frontend Docker Image
+        run: |
+          docker build -t acc-uw-frontend ./frontend
+
+      - name: Tag Frontend Image
+        run: |
+          docker tag acc-uw-frontend:latest \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-frontend:$IMAGE_TAG
+
+          docker tag acc-uw-frontend:latest \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-frontend:latest
+
+      - name: Push Frontend Image
+        run: |
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-frontend:$IMAGE_TAG
+
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-frontend:latest
+
+      - name: Done
+        run: echo "Images pushed successfully"
+
