@@ -1,4 +1,2 @@
-_redirects
-Dockerfile
-nginx.conf
+_redirects 
 *.md
