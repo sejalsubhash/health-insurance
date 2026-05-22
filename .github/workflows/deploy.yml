@@ -46,14 +46,14 @@ jobs:
       # Frontend
       - name: Build Frontend Image
         run: |
-          docker build -t acc-uw-frontend ./frontend
+          docker build -t sbi-uw-frontend ./frontend
 
       - name: Tag Frontend Image
         run: |
-          docker tag acc-uw-frontend:latest \
-          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-frontend:latest
+          docker tag sbi-uw-frontend:latest \
+          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-frontend:latest
 
       - name: Push Frontend Image
         run: |
-          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/acc-uw-frontend:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-frontend:latest
 
