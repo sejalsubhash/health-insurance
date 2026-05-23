@@ -7,12 +7,11 @@ services:
       NODE_ENV: production
       PORT: 3000
       AWS_REGION: ${AWS_REGION:-ap-south-1}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # AWS credentials NOT needed — EC2 IAM role provides automatic auth for S3, Bedrock, SES, etc.
       S3_BUCKET: ${S3_BUCKET:-acc-insurance-uw}
       REDIS_URL: ${REDIS_URL}
       SESSION_SECRET: ${SESSION_SECRET}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # ANTHROPIC_API_KEY removed — Bedrock uses EC2 IAM role (no key needed)
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       BASE_URL: ${BASE_URL:-http://localhost}
       AZURE_AD_CLIENT_ID: ${AZURE_AD_CLIENT_ID:-}
