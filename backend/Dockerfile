@@ -1,7 +1,8 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY package.json package-lock.json* ./
+# Use npm install instead of npm ci — regenerates lockfile if out of sync
+RUN npm install --omit=dev --no-audit --no-fund
 
 FROM node:20-alpine
 WORKDIR /app
