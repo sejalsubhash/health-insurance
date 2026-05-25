@@ -1289,7 +1289,7 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
           system: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown or explanation.',
           messages: [{ role: 'user', content: contentParts }]
          };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: 'ap.anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
+        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
         const __bedrockRaw = await claude.send(__bedrockCmd);
         const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
 
@@ -1416,7 +1416,7 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
                 system: 'You are a senior insurance underwriter writing a professional assessment summary. Write in clear, concise professional English. Use specific values and clinical terminology. IMPORTANT: Do NOT use markdown formatting — no asterisks, no hashtags, no bold markers. Use ALL CAPS for section titles. Separate sections with a blank line. Keep each section to 2-3 sentences maximum.',
                 messages: [{ role: 'user', content: `Write a professional underwriting assessment summary.\n\nPROPOSER: ${profile}\nNSTP REASON: ${(wf.nstp_reason||'').replace(/_/g,' ')}\nRISK SCORE: ${Math.round(a.risk_score?.normalized||0)}/100 (Grade ${a.risk_score?.grade||'N/A'})\nRECOMMENDATION: ${a.recommendation}\n${a.loading_percentage?'LOADING: +'+a.loading_percentage+'%':''}\nLIFESTYLE: ${lifestyleText}\nMEDICAL HISTORY: ${medHistText}\nFINDINGS:\n${findingsText||'No adverse findings'}\n${violationsText?'VIOLATIONS:\n'+violationsText:''}\n${loadingText?'LOADING FACTORS: '+loadingText:''}\n\nUse ALL CAPS section titles, NO markdown. Sections: PROPOSER PROFILE, MEDICAL ASSESSMENT, RISK FACTORS, FAVOURABLE INDICATORS, RECOMMENDATION, CONDITIONS` }]
                };
-              const __bedrockCmd = new InvokeModelCommand({ modelId: 'ap.anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
+              const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
               const __bedrockRaw = await claude.send(__bedrockCmd);
               const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
               summaryText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -2105,7 +2105,7 @@ Clear recommendation with rationale.
 CONDITIONS
 Any conditions, exclusions, waiting periods, or loading applicable.` }]
          };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: 'ap.anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
+        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
         const __bedrockRaw = await claude.send(__bedrockCmd);
         const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
         summaryText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -2290,7 +2290,7 @@ For loading_overrides: only include values that differ from these defaults — s
           system: 'You are a policy document analyzer. Extract structured scoring parameters from insurance underwriting policy documents. Return ONLY valid JSON, no markdown.',
           messages: [{ role: 'user', content: contentParts }]
          };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: 'ap.anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
+        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
         const __bedrockRaw = await claude.send(__bedrockCmd);
         const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
 
@@ -3700,7 +3700,7 @@ Map parameters to these known paths: physical_exam.bmi.value, physical_exam.bloo
           system: 'You are an insurance underwriting rules extraction AI. Extract structured rules from documents. Return ONLY valid JSON array.',
           messages: [{ role: 'user', content: contentParts }]
          };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: 'ap.anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
+        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
         const __bedrockRaw = await claude.send(__bedrockCmd);
         const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
 
