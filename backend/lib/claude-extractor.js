@@ -11,9 +11,8 @@ const client = new BedrockRuntimeClient({
   region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1'
 });
 
-// Cross-region inference profile for ap-south-1 → Singapore routing
-const MODEL = process.env.BEDROCK_MODEL_ID || 'ap.anthropic.claude-3-sonnet-20240229-v1:0';
 
+const MODEL = process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
 async function callClaude(systemPrompt, userPrompt, maxTokens = 8000) {
   const startTime = Date.now();
   try {
