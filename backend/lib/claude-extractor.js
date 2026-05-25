@@ -17,6 +17,7 @@ const client = {
   messages: {
     create: async (params) => {
       const { model, temperature, ...rest } = params;
+      if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
       const cmd = new InvokeModelCommand({
         modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
         contentType: 'application/json',

@@ -3,6 +3,8 @@
  * v4.0.0 — STP Fast-Lane + Custom Rules Enforcement + UW Routing Foundation
  */
 require('dotenv').config();
+const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
+const __bedrockClient = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -72,10 +74,10 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: NODE_ENV === 'production',
+    secure: false,
     httpOnly: true,
     maxAge: 86400000,
-    sameSite: NODE_ENV === 'production' ? 'none' : 'lax',
+    sameSite: 'lax',
     // Single container deployment — cookies are same-origin; keep .acc.ltd for custom domain compat
     domain: NODE_ENV === 'production' ? (process.env.COOKIE_DOMAIN || undefined) : undefined
   }
@@ -315,7 +317,10 @@ app.post('/api/auth/login', (req, res) => {
     authority_tier: user.authority_tier, vendor_id: user.vendor_id || null
   };
   req.session.demoUser = sessionUser;
-  res.json({ success: true, user: sessionUser });
+  req.session.save((err) => {
+    if (err) return res.status(500).json({ error: 'Session save failed' });
+    res.json({ success: true, user: sessionUser });
+  });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -1211,18 +1216,19 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
     // Try AI extraction from actual document content
     if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+// using top-level __bedrockClient
         const claude = {
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
+          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
                 modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrock.send(cmd);
+              const res = await __bedrockClient.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
@@ -1419,18 +1425,19 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
             const compScores = Object.entries(a.component_analysis||{}).map(([n,c]) => `${n.replace(/_/g,' ')}: ${c.score}/${c.max} (${c.percentage}%)`).join(', ');
             let summaryText = '';
             if (true) { // Bedrock — no API key needed, uses IAM role
-const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+// using top-level __bedrockClient
               const claude = {
                 messages: {
                   create: async (params) => {
                     const { model, temperature, ...rest } = params;
+          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
                     const cmd = new InvokeModelCommand({
                       modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                       contentType: 'application/json',
                       accept: 'application/json',
                       body: JSON.stringify(rest)
                     });
-                    const res = await __bedrock.send(cmd);
+                    const res = await __bedrockClient.send(cmd);
                     return JSON.parse(Buffer.from(res.body).toString('utf8'));
                   }
                 }
@@ -2078,18 +2085,19 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
 
     if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+// using top-level __bedrockClient
         const claude = {
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
+          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
                 modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrock.send(cmd);
+              const res = await __bedrockClient.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
@@ -2252,18 +2260,19 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
     let extractionStatus = 'skipped';
     if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+// using top-level __bedrockClient
         const claude = {
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
+          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
                 modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrock.send(cmd);
+              const res = await __bedrockClient.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
@@ -3694,18 +3703,19 @@ app.post('/api/uw-rules/upload', requireAuth, upload.single('document'), validat
 
     if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+// using top-level __bedrockClient
         const claude = {
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
+          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
                 modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrock.send(cmd);
+              const res = await __bedrockClient.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
