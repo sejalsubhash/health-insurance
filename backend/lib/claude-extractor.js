@@ -7,10 +7,27 @@
  * Module 3: PPHC medical report extraction (200+ parameters)
  * Module 4: Historical data extraction
  */
-const Anthropic = require('@anthropic-ai/sdk');
+const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = 'claude-3-sonnet-20240229';
+const __bedrockClient = new BedrockRuntimeClient({
+  region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1'
+});
+
+const client = {
+  messages: {
+    create: async (params) => {
+      const { model, temperature, ...rest } = params;
+      const cmd = new InvokeModelCommand({
+        modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+        contentType: 'application/json',
+        accept: 'application/json',
+        body: JSON.stringify(rest)
+      });
+      const res = await __bedrockClient.send(cmd);
+      return JSON.parse(Buffer.from(res.body).toString('utf8'));
+    }
+  }
+};
 
 async function callClaude(systemPrompt, userPrompt, maxTokens = 8000) {
   const startTime = Date.now();
