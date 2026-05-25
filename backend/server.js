@@ -72,13 +72,12 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    // HTTPS_ONLY=true enables secure cookies when HTTPS is configured
-    // For HTTP deployments (default) keep secure:false so cookies work
-    secure: process.env.HTTPS_ONLY === 'true',
+    secure: NODE_ENV === 'production',
     httpOnly: true,
     maxAge: 86400000,
-    sameSite: process.env.HTTPS_ONLY === 'true' ? 'none' : 'lax',
-    domain: process.env.COOKIE_DOMAIN || undefined
+    sameSite: NODE_ENV === 'production' ? 'none' : 'lax',
+    // Single container deployment — cookies are same-origin; keep .acc.ltd for custom domain compat
+    domain: NODE_ENV === 'production' ? (process.env.COOKIE_DOMAIN || undefined) : undefined
   }
 }));
 
@@ -141,7 +140,7 @@ bullQueue.setSocketManager(socketManager);
 
 // Health
 app.get('/health', (req, res) => res.json({ status: 'ok', version: '4.0.0', platform: 'ACC Health UW Automation', features: ['stp_fast_lane','custom_rules','nstp_full_pipeline'], timestamp: new Date().toISOString() }));
-app.get('/api/health', (req, res) => res.json({ status: 'ok', services: { s3: !!process.env.AWS_ACCESS_KEY_ID, redis: !!process.env.REDIS_URL, auth: !!process.env.AZURE_AD_CLIENT_ID, bedrock_enabled: true, vendors: Object.keys(vendorApi.VENDORS).length }, bedrock_configured: true }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', services: { s3: !!process.env.AWS_ACCESS_KEY_ID, redis: !!process.env.REDIS_URL, auth: !!process.env.AZURE_AD_CLIENT_ID, anthropic_api_key: !!process.env.ANTHROPIC_API_KEY, vendors: Object.keys(vendorApi.VENDORS).length }, anthropic_configured: !!process.env.ANTHROPIC_API_KEY }));
 
 // S3 Diagnostic — actually tests read/write to confirm S3 is working
 app.get('/api/s3-diagnostic', async (req, res) => {
@@ -1210,10 +1209,24 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
     const apiLog = [];
 
     // Try AI extraction from actual document content
-    if (true) { // Bedrock via IAM role — no API key needed
+    if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-        const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
-        const claude = new BedrockRuntimeClient({ region: process.env.AWS_REGION || 'ap-south-1' });
+const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+        const claude = {
+          messages: {
+            create: async (params) => {
+              const { model, temperature, ...rest } = params;
+              const cmd = new InvokeModelCommand({
+                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                contentType: 'application/json',
+                accept: 'application/json',
+                body: JSON.stringify(rest)
+              });
+              const res = await __bedrock.send(cmd);
+              return JSON.parse(Buffer.from(res.body).toString('utf8'));
+            }
+          }
+        };
 
         // Build message content with all uploaded documents
         const contentParts = [];
@@ -1282,16 +1295,13 @@ IMPORTANT INSTRUCTIONS FOR correlation_data:
 Set values to null if not found. Only extract what is ACTUALLY present. Set "flag" based on reference ranges. Count non-null values in "parameters_found".` });
 
         const startTime = Date.now();
-        const __bedrockPayload = { anthropic_version: 'bedrock-2023-05-31', 
+        const response = await claude.messages.create({
           model: 'claude-3-sonnet-20240229',
           max_tokens: 8000,
           temperature: 0,
           system: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown or explanation.',
           messages: [{ role: 'user', content: contentParts }]
-         };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
-        const __bedrockRaw = await claude.send(__bedrockCmd);
-        const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
+        });
 
         const responseText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
         const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -1408,17 +1418,28 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
             const medHistText = wf.medical_history?.pre_existing_conditions?.length ? `Pre-existing: ${wf.medical_history.pre_existing_conditions.join(', ')}` : 'No pre-existing conditions declared';
             const compScores = Object.entries(a.component_analysis||{}).map(([n,c]) => `${n.replace(/_/g,' ')}: ${c.score}/${c.max} (${c.percentage}%)`).join(', ');
             let summaryText = '';
-            if (true) { // Bedrock via IAM role — no API key needed
-              const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
-              const claude = new BedrockRuntimeClient({ region: process.env.AWS_REGION || 'ap-south-1' });
-              const __bedrockPayload = { anthropic_version: 'bedrock-2023-05-31', 
+            if (true) { // Bedrock — no API key needed, uses IAM role
+const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+              const claude = {
+                messages: {
+                  create: async (params) => {
+                    const { model, temperature, ...rest } = params;
+                    const cmd = new InvokeModelCommand({
+                      modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                      contentType: 'application/json',
+                      accept: 'application/json',
+                      body: JSON.stringify(rest)
+                    });
+                    const res = await __bedrock.send(cmd);
+                    return JSON.parse(Buffer.from(res.body).toString('utf8'));
+                  }
+                }
+              };
+              const response = await claude.messages.create({
                 model: 'claude-3-sonnet-20240229', max_tokens: 2000, temperature: 0.3,
                 system: 'You are a senior insurance underwriter writing a professional assessment summary. Write in clear, concise professional English. Use specific values and clinical terminology. IMPORTANT: Do NOT use markdown formatting — no asterisks, no hashtags, no bold markers. Use ALL CAPS for section titles. Separate sections with a blank line. Keep each section to 2-3 sentences maximum.',
                 messages: [{ role: 'user', content: `Write a professional underwriting assessment summary.\n\nPROPOSER: ${profile}\nNSTP REASON: ${(wf.nstp_reason||'').replace(/_/g,' ')}\nRISK SCORE: ${Math.round(a.risk_score?.normalized||0)}/100 (Grade ${a.risk_score?.grade||'N/A'})\nRECOMMENDATION: ${a.recommendation}\n${a.loading_percentage?'LOADING: +'+a.loading_percentage+'%':''}\nLIFESTYLE: ${lifestyleText}\nMEDICAL HISTORY: ${medHistText}\nFINDINGS:\n${findingsText||'No adverse findings'}\n${violationsText?'VIOLATIONS:\n'+violationsText:''}\n${loadingText?'LOADING FACTORS: '+loadingText:''}\n\nUse ALL CAPS section titles, NO markdown. Sections: PROPOSER PROFILE, MEDICAL ASSESSMENT, RISK FACTORS, FAVOURABLE INDICATORS, RECOMMENDATION, CONDITIONS` }]
-               };
-              const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
-              const __bedrockRaw = await claude.send(__bedrockCmd);
-              const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
+              });
               summaryText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
             }
             if (!summaryText) {
@@ -2055,11 +2076,25 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
 
     let summaryText = '';
 
-    if (true) { // Bedrock via IAM role — no API key needed
+    if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-        const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
-        const claude = new BedrockRuntimeClient({ region: process.env.AWS_REGION || 'ap-south-1' });
-        const __bedrockPayload = { anthropic_version: 'bedrock-2023-05-31', 
+const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+        const claude = {
+          messages: {
+            create: async (params) => {
+              const { model, temperature, ...rest } = params;
+              const cmd = new InvokeModelCommand({
+                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                contentType: 'application/json',
+                accept: 'application/json',
+                body: JSON.stringify(rest)
+              });
+              const res = await __bedrock.send(cmd);
+              return JSON.parse(Buffer.from(res.body).toString('utf8'));
+            }
+          }
+        };
+        const response = await claude.messages.create({
           model: 'claude-3-sonnet-20240229', max_tokens: 2000, temperature: 0.3,
           system: 'You are a senior insurance underwriter writing a professional assessment summary. Write in clear, concise professional English. Use specific values and clinical terminology. IMPORTANT: Do NOT use markdown formatting — no asterisks, no hashtags, no bold markers. Use ALL CAPS for section titles. Separate sections with a blank line. Keep each section to 2-3 sentences maximum. Be direct and clinical.',
           messages: [{ role: 'user', content: `Write a professional underwriting assessment summary for this health insurance NSTP case.
@@ -2104,10 +2139,7 @@ Clear recommendation with rationale.
 
 CONDITIONS
 Any conditions, exclusions, waiting periods, or loading applicable.` }]
-         };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
-        const __bedrockRaw = await claude.send(__bedrockCmd);
-        const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
+        });
         summaryText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
       } catch(claudeErr) {
         console.error('Claude summary error:', claudeErr.message);
@@ -2218,10 +2250,24 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
     // AI extraction of policy overrides from the uploaded document
     let extractedOverrides = null;
     let extractionStatus = 'skipped';
-    if (true) { // Bedrock via IAM role — no API key needed
+    if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-        const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
-        const claude = new BedrockRuntimeClient({ region: process.env.AWS_REGION || 'ap-south-1' });
+const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+        const claude = {
+          messages: {
+            create: async (params) => {
+              const { model, temperature, ...rest } = params;
+              const cmd = new InvokeModelCommand({
+                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                contentType: 'application/json',
+                accept: 'application/json',
+                body: JSON.stringify(rest)
+              });
+              const res = await __bedrock.send(cmd);
+              return JSON.parse(Buffer.from(res.body).toString('utf8'));
+            }
+          }
+        };
         const contentParts = [];
         const b64 = req.file.buffer.toString('base64');
         if (['image/jpeg','image/png','image/gif','image/webp'].includes(req.file.mimetype)) {
@@ -2285,14 +2331,11 @@ Known parameter paths: physical_exam.bmi.value, physical_exam.blood_pressure.sys
 
 For loading_overrides: only include values that differ from these defaults — smoker: 75%, BMI obese I: 50%, BMI obese II: 100%, diabetes controlled: 50%, diabetes uncontrolled: 100%, cardiac: 100%, hypertension controlled: 25%, hypertension uncontrolled: 75%. If the document specifies a different percentage, include it. If not mentioned, set to null.` });
 
-        const __bedrockPayload = { anthropic_version: 'bedrock-2023-05-31', 
+        const response = await claude.messages.create({
           model: 'claude-3-sonnet-20240229', max_tokens: 4000, temperature: 0,
           system: 'You are a policy document analyzer. Extract structured scoring parameters from insurance underwriting policy documents. Return ONLY valid JSON, no markdown.',
           messages: [{ role: 'user', content: contentParts }]
-         };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
-        const __bedrockRaw = await claude.send(__bedrockCmd);
-        const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
+        });
 
         const responseText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
         const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -3649,10 +3692,24 @@ app.post('/api/uw-rules/upload', requireAuth, upload.single('document'), validat
 
     let extractedRules = [];
 
-    if (true) { // Bedrock via IAM role — no API key needed
+    if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-        const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
-        const claude = new BedrockRuntimeClient({ region: process.env.AWS_REGION || 'ap-south-1' });
+const __bedrock = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+        const claude = {
+          messages: {
+            create: async (params) => {
+              const { model, temperature, ...rest } = params;
+              const cmd = new InvokeModelCommand({
+                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                contentType: 'application/json',
+                accept: 'application/json',
+                body: JSON.stringify(rest)
+              });
+              const res = await __bedrock.send(cmd);
+              return JSON.parse(Buffer.from(res.body).toString('utf8'));
+            }
+          }
+        };
 
         const contentParts = [];
         const isImage = ['image/jpeg','image/png','image/gif','image/webp'].includes(req.file.mimetype);
@@ -3695,14 +3752,11 @@ Return ONLY valid JSON array:
 
 Map parameters to these known paths: physical_exam.bmi.value, physical_exam.blood_pressure.systolic.value, blood_chemistry.fasting_glucose.value, blood_chemistry.hba1c.value, blood_chemistry.serum_creatinine.value, blood_chemistry.sgpt_alt.value, blood_chemistry.total_cholesterol.value, blood_chemistry.tc_hdl_ratio.value, blood_chemistry.hiv.value, blood_chemistry.hbsag.value, hematology.hemoglobin.value, cardiac.ecg.overall_interpretation, urine_analysis.protein.value` });
 
-        const __bedrockPayload = { anthropic_version: 'bedrock-2023-05-31', 
+        const response = await claude.messages.create({
           model: 'claude-3-sonnet-20240229', max_tokens: 4000, temperature: 0,
           system: 'You are an insurance underwriting rules extraction AI. Extract structured rules from documents. Return ONLY valid JSON array.',
           messages: [{ role: 'user', content: contentParts }]
-         };
-        const __bedrockCmd = new InvokeModelCommand({ modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0', body: JSON.stringify(__bedrockPayload), contentType: 'application/json', accept: 'application/json' });
-        const __bedrockRaw = await claude.send(__bedrockCmd);
-        const response = { content: JSON.parse(Buffer.from(__bedrockRaw.body).toString('utf-8')).content, usage: {} }
+        });
 
         const responseText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
         const jsonMatch = responseText.match(/\[[\s\S]*\]/);
