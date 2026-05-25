@@ -63,12 +63,12 @@ if (NODE_ENV === 'production' && process.env.REDIS_URL) {
 }
 
 if (!process.env.SESSION_SECRET) {
-  console.warn('[Session] SESSION_SECRET not set — using insecure default. Set this env var in Render.');
+  console.warn('[Session] SESSION_SECRET not set — generating random secret. Sessions will not persist across restarts.');
 }
 
 app.use(session({
   store: sessionStore,
-  secret: process.env.SESSION_SECRET || 'dev-secret',
+  secret: process.env.SESSION_SECRET || require('crypto').randomBytes(64).toString('hex'),
   resave: false,
   saveUninitialized: false,
   cookie: {
