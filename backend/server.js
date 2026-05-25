@@ -72,12 +72,13 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: NODE_ENV === 'production',
+    // HTTPS_ONLY=true enables secure cookies when HTTPS is configured
+    // For HTTP deployments (default) keep secure:false so cookies work
+    secure: process.env.HTTPS_ONLY === 'true',
     httpOnly: true,
     maxAge: 86400000,
-    sameSite: NODE_ENV === 'production' ? 'none' : 'lax',
-    // Single container deployment — cookies are same-origin; keep .acc.ltd for custom domain compat
-    domain: NODE_ENV === 'production' ? (process.env.COOKIE_DOMAIN || undefined) : undefined
+    sameSite: process.env.HTTPS_ONLY === 'true' ? 'none' : 'lax',
+    domain: process.env.COOKIE_DOMAIN || undefined
   }
 }));
 
