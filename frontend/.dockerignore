@@ -1,4 +1,3 @@
 _redirects
 Dockerfile
-nginx.conf
 *.md
