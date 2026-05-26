@@ -431,7 +431,6 @@ module.exports = {
   saveUpload,         // binary → S3
   saveBiometric,      // binary → S3
   saveBiometricMeta,
-
   // Audit
   saveAuditEntry,
 
