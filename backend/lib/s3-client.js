@@ -6,16 +6,21 @@
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const crypto = require('crypto');
 
-const s3 = new S3Client({
-  region: process.env.AWS_REGION || 'ap-south-1',
-  credentials: {
+// When running on EC2 with IAM role, do NOT pass credentials — SDK picks up role automatically
+// When running locally or on Render, pass static keys if set
+const s3Config = { region: process.env.AWS_REGION || 'ap-south-1' };
+if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+  s3Config.credentials = {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
-  }
-});
+  };
+}
+const s3 = new S3Client(s3Config);
 
 const BUCKET = process.env.S3_BUCKET || 'acc-insurance-uw';
-const S3_ENABLED = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+// S3 is enabled if bucket is set — on EC2, IAM role provides credentials automatically
+// No need for static AWS_ACCESS_KEY_ID when running on EC2 with instance role
+const S3_ENABLED = !!(process.env.S3_BUCKET || process.env.AWS_ACCESS_KEY_ID);
 
 // Phase 0 fix: wrap s3.send so every call becomes a no-op when S3 isn't configured.
 // This lets dev/test modes run without AWS credentials — all reads return null, all writes are dropped.
@@ -427,6 +432,46 @@ async function getConfig(key) {
   } catch (err) { return null; }
 }
 
+
+// ─── Upload Paths ───
+// Path 1: uploads/{workflowId}/documents/{docId} — raw files uploaded by user/vendor
+async function saveUpload(workflowId, docId, buffer, contentType) {
+  const key = `uploads/${workflowId}/documents/${docId}`;
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET, Key: key, Body: buffer, ContentType: contentType
+  }));
+  return { key, bucket: BUCKET, path: 'uploads' };
+}
+
+// Path 1b: uploads/{workflowId}/biometrics/{type} — face images (proposal + pphc)
+async function saveBiometric(workflowId, type, buffer, contentType) {
+  const key = `uploads/${workflowId}/biometrics/${type}`;
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET, Key: key, Body: buffer, ContentType: contentType || 'image/jpeg'
+  }));
+  return { key, bucket: BUCKET };
+}
+
+// Path 2: results/{workflowId}/analysis.json — AI extraction + risk scoring result
+async function saveAnalysisResult(workflowId, data) {
+  const key = `results/${workflowId}/analysis.json`;
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET, Key: key,
+    Body: JSON.stringify(data, null, 2), ContentType: 'application/json'
+  }));
+  return { key, bucket: BUCKET, path: 'results' };
+}
+
+// Path 2b: results/{workflowId}/extracted-data.json — raw extracted medical data
+async function saveExtractedData(workflowId, data) {
+  const key = `results/${workflowId}/extracted-data.json`;
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET, Key: key,
+    Body: JSON.stringify(data, null, 2), ContentType: 'application/json'
+  }));
+  return { key, bucket: BUCKET, path: 'results' };
+}
+
 module.exports = {
   saveAssessment,
   getAssessment,
@@ -448,5 +493,9 @@ module.exports = {
   getCustomRules,
   saveConfig,
   getConfig,
-  clearCache: () => cache.clear()
+  clearCache: () => cache.clear(),
+  saveUpload,
+  saveBiometric,
+  saveAnalysisResult,
+  saveExtractedData
 };

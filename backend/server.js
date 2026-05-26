@@ -986,9 +986,7 @@ app.put('/api/stp-rules', requireRole('Super Admin'), async (req, res) => {
     riskParams.stp_eligibility_rules = { ...riskParams.stp_eligibility_rules, ...req.body, version: (riskParams.stp_eligibility_rules?.version || '1.0.0') };
     fs.writeFileSync(filePath, JSON.stringify(riskParams, null, 2));
     // Also save to S3 for cross-instance sync
-    if (process.env.AWS_ACCESS_KEY_ID) {
       await s3Client.saveMasters('risk-params', riskParams).catch(e => console.error('S3 risk-params sync error:', e.message));
-    }
     res.json({ success: true, stp_eligibility_rules: riskParams.stp_eligibility_rules });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1171,12 +1169,10 @@ app.post('/api/workflow/:id/upload', requireAuth, upload.array('documents', 20),
         base64_data: file.buffer.toString('base64'),
         content_type: file.mimetype
       };
-      // Save document file to S3 for durability (non-blocking)
-      if (process.env.AWS_ACCESS_KEY_ID) {
-        s3Client.saveDocumentToS3(req.params.id, docRecord.id, file.buffer, file.mimetype)
-          .then(r => { docRecord.s3_key = r.key; })
-          .catch(e => console.error('S3 doc save error:', e.message));
-      }
+      // Save raw upload to S3 uploads/ path (non-blocking, works via IAM role)
+      s3Client.saveUpload(req.params.id, docRecord.id, file.buffer, file.mimetype)
+        .then(r => { docRecord.s3_key = r.key; docRecord.s3_path = 'uploads'; })
+        .catch(e => console.error('S3 upload save error:', e.message));
       workflowEngine.addDocument(req.params.id, docRecord);
       docs.push({ id: docRecord.id, name: docRecord.name, type: docRecord.type, category: docRecord.category, size: docRecord.size, mimetype: docRecord.mimetype });
     }
@@ -1354,6 +1350,10 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
     wf.decision = { recommendation: analysis.recommendation, loading_percentage: analysis.loading_percentage||0, exclusions: analysis.exclusions||[], rationale: analysis.rationale };
     wf.updated_at = new Date().toISOString();
     wf.state_history.push({ state: 'ai_analysis_complete', timestamp: new Date().toISOString(), actor: 'AI Agent', note: `Analysis complete — ${analysis.recommendation}` });
+    // Save analysis result to results/ path in S3
+    s3Client.saveAnalysisResult(wf.id, { ai_analysis: analysis, decision: wf.decision, risk_score: wf.risk_score, analyzed_at: wf.updated_at }).catch(e => console.error('S3 analysis save error:', e.message));
+    // Save extracted medical data to results/ path
+    if (wf.extracted_data) s3Client.saveExtractedData(wf.id, wf.extracted_data).catch(e => console.error('S3 extracted data save error:', e.message));
 
     // Step 3: Transition workflow state through the state machine to final decision
     try { workflowEngine.transitionState(wf.id, 'pphc_scheduled', 'system', 'PPHC completed via vendor'); } catch(e){}
@@ -2185,7 +2185,7 @@ app.post('/api/masters/uw-rules', requireRole('Super Admin'), async (req, res) =
     if (!name || !rulePath || !operator || threshold === undefined || !action) return res.status(400).json({ error: 'name, path, operator, threshold, action required' });
     const rule = { id: `CUSTOM-${String(customRules.length + 100).padStart(3,'0')}`, name, path: rulePath, operator, threshold, action, severity: severity || 'medium', source: 'admin', created_at: new Date().toISOString() };
     customRules.push(rule);
-    if (process.env.AWS_ACCESS_KEY_ID) await s3Client.saveCustomRules(customRules);
+    await s3Client.saveCustomRules(customRules);
     res.json({ success: true, rule });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -2199,7 +2199,7 @@ app.put('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, res
     if (action) rule.action = action;
     if (severity) rule.severity = severity;
     if (disabled !== undefined) rule.disabled = disabled;
-    if (process.env.AWS_ACCESS_KEY_ID) await s3Client.saveCustomRules(customRules);
+    await s3Client.saveCustomRules(customRules);
     res.json({ success: true, rule });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -2208,7 +2208,7 @@ app.delete('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, 
     const idx = customRules.findIndex(r => r.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Custom rule not found' });
     customRules.splice(idx, 1);
-    if (process.env.AWS_ACCESS_KEY_ID) await s3Client.saveCustomRules(customRules);
+    await s3Client.saveCustomRules(customRules);
     res.json({ success: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -2250,9 +2250,7 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
 
     // Store the document
     const docKey = `config/policy-documents/${policy.id}/${req.file.originalname}`;
-    if (process.env.AWS_ACCESS_KEY_ID) {
       await s3Client.saveDocumentToS3(policy.id, req.file.originalname, req.file.buffer, req.file.mimetype);
-    }
     policy.document = { name: req.file.originalname, s3_key: docKey, content_type: req.file.mimetype, size: req.file.size, uploaded_at: new Date().toISOString(), base64_data: req.file.buffer.toString('base64') };
 
     // AI extraction of policy overrides from the uploaded document
@@ -2445,11 +2443,9 @@ let productPolicyMap = {};
 // Load on startup (called below)
 async function loadProductPolicyConfig() {
   // Phase 0 fix: always load (with or without S3). S3 reads are wrapped in try/catch so failures are harmless.
-  if (process.env.AWS_ACCESS_KEY_ID) {
     try { productsConfig = (await s3Client.getConfig('products')) || []; } catch(e) { productsConfig = []; }
     try { policiesConfig = (await s3Client.getConfig('policies')) || []; } catch(e) { policiesConfig = []; }
     try { productPolicyMap = (await s3Client.getConfig('product-policy-map')) || {}; } catch(e) { productPolicyMap = {}; }
-  }
   // Seed defaults — always ensure the new product lineup exists
   const hasNewProducts = productsConfig.some(p => p.name === 'Arogya Sanjeevani');
   if (!hasNewProducts) {
@@ -3037,12 +3033,10 @@ app.post('/api/workflow/:id/issue-policy', requireAuth, async (req, res) => {
     }
 
     // Load policy counter from S3
-    if (process.env.AWS_ACCESS_KEY_ID) {
       try {
         const counterData = await s3Client.getConfig('policy-counter');
         if (counterData?.counter) policyCounter = counterData.counter;
       } catch(e) { /* Start from 0 */ }
-    }
 
     // Generate policy number
     policyCounter++;
@@ -3085,9 +3079,7 @@ app.post('/api/workflow/:id/issue-policy', requireAuth, async (req, res) => {
     workflowEngine.updateWorkflow(wf.id, wf);
 
     // Save counter to S3
-    if (process.env.AWS_ACCESS_KEY_ID) {
       s3Client.saveConfig('policy-counter', { counter: policyCounter }).catch(e => console.error('Policy counter save error:', e.message));
-    }
 
     // Send notification
     commsEngine.sendNotification('policy_issued', {
@@ -3222,11 +3214,11 @@ app.post('/api/workflow/:id/proposal-biometric', requireAuth, upload.single('fac
       capture_location: req.body.latitude && req.body.longitude ? { lat: parseFloat(req.body.latitude), lng: parseFloat(req.body.longitude) } : null
     };
 
-    // Save face image to S3
-    if (process.env.AWS_ACCESS_KEY_ID) {
-      const imgBuffer = Buffer.from(faceBase64, 'base64');
-      s3Client.saveDocumentToS3(req.params.id, 'proposal-face', imgBuffer, 'image/jpeg').catch(e => console.error('S3 proposal face save error:', e.message));
-    }
+    // Save face image to S3 uploads/biometrics/ path (uses IAM role — no static keys needed)
+    const proposalImgBuffer = Buffer.from(faceBase64, 'base64');
+    s3Client.saveBiometric(req.params.id, 'proposal-face.jpg', proposalImgBuffer, 'image/jpeg')
+      .then(r => { wf.proposal_biometrics.s3_key = r.key; })
+      .catch(e => console.error('S3 proposal face save error:', e.message));
 
     wf.state_history.push({ state: 'proposal_face_captured', timestamp: new Date().toISOString(), actor: req.user?.email || 'system', note: 'Proposal face photo captured for identity verification' });
     workflowEngine.updateWorkflow(req.params.id, wf);
@@ -3276,11 +3268,11 @@ app.post('/api/workflow/:id/vendor-biometric', requireAuth, upload.single('face_
       capture_location: req.body.latitude && req.body.longitude ? { lat: parseFloat(req.body.latitude), lng: parseFloat(req.body.longitude) } : null
     };
 
-    // Save to S3
-    if (process.env.AWS_ACCESS_KEY_ID) {
-      const imgBuffer = Buffer.from(faceBase64, 'base64');
-      s3Client.saveDocumentToS3(req.params.id, 'pphc-face', imgBuffer, 'image/jpeg').catch(e => console.error('S3 pphc face save error:', e.message));
-    }
+    // Save PPHC face to S3 uploads/biometrics/ path (uses IAM role)
+    const pphcImgBuffer = Buffer.from(faceBase64, 'base64');
+    s3Client.saveBiometric(req.params.id, 'pphc-face.jpg', pphcImgBuffer, 'image/jpeg')
+      .then(r => { wf.pphc_biometrics.s3_key = r.key; })
+      .catch(e => console.error('S3 pphc face save error:', e.message));
 
     wf.state_history.push({ state: 'pphc_face_captured', timestamp: new Date().toISOString(), actor: req.user?.email || 'vendor', note: 'PPHC face photo captured by vendor for identity verification' });
 
@@ -3453,9 +3445,7 @@ app.post('/api/historical-uw/upload', requireRole('Super Admin', 'UW Admin'), up
     const result = historicalEngine.ingestHistoricalData(records, mode, req.file.originalname);
 
     // Persist to S3
-    if (process.env.AWS_ACCESS_KEY_ID) {
       await s3Client.saveConfig('historical-uw-corpus', historicalEngine.getCorpus());
-    }
 
     res.json({
       success: true,
@@ -3500,9 +3490,7 @@ app.get('/api/historical-uw/match/:workflowId', requireAuth, (req, res) => {
 app.delete('/api/historical-uw/corpus', requireRole('Super Admin'), async (req, res) => {
   try {
     historicalEngine.ingestHistoricalData([], 'replace');
-    if (process.env.AWS_ACCESS_KEY_ID) {
       await s3Client.saveConfig('historical-uw-corpus', historicalEngine.getCorpus());
-    }
     res.json({ success: true, message: 'Historical corpus cleared' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -3519,9 +3507,7 @@ app.post('/api/historical-uw/recalibrate', requireRole('Super Admin', 'UW Admin'
     const result = historicalEngine.calculateCalibrationOffsets(allWorkflows);
 
     // Persist calibration offsets to S3
-    if (process.env.AWS_ACCESS_KEY_ID) {
       await s3Client.saveConfig('calibration-offsets', historicalEngine.getCalibrationOffsets());
-    }
 
     res.json({ success: true, ...result });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -3790,9 +3776,7 @@ Map parameters to these known paths: physical_exam.bmi.value, physical_exam.bloo
 
     // Merge with existing custom rules and persist to S3
     customRules = [...customRules, ...extractedRules];
-    if (process.env.AWS_ACCESS_KEY_ID) {
       s3Client.saveCustomRules(customRules).catch(e => console.error('S3 custom rules save error:', e.message));
-    }
 
     res.json({
       success: true,
@@ -4017,9 +4001,9 @@ app.post('/api/customer/info-request/:token/upload', upload.single('document'), 
     // Store file (S3 if configured, in-memory otherwise via no-op fallback)
     const docId = `${item_id}-${Date.now()}`;
     const s3Key = `info-requests/${workflow.id}/${request.id}/${docId}-${req.file.originalname}`;
-    if (process.env.AWS_ACCESS_KEY_ID) {
-      await s3Client.saveDocumentToS3(workflow.id, `${request.id}/${docId}-${req.file.originalname}`, req.file.buffer, req.file.mimetype);
-    }
+    // Save info request document to uploads/ path (uses IAM role)
+    await s3Client.saveUpload(workflow.id, `info-requests/${request.id}/${docId}-${req.file.originalname}`, req.file.buffer, req.file.mimetype)
+      .catch(e => console.error('S3 info request upload error:', e.message));
 
     // Update item
     item.received = true;
@@ -4505,16 +4489,14 @@ workflowEngine.registerTransitionHook(async (workflow, newState, oldState) => {
 if (process.env.REDIS_URL) bullQueue.startWorker();
 
 // Initialize S3 persistence for workflows + custom rules
-if (process.env.AWS_ACCESS_KEY_ID) {
-  workflowEngine.initPersistence(s3Client);
-  workflowEngine.loadFromS3().then(count => {
-    console.log(`[Startup] ${count} workflows restored from S3`);
-  }).catch(e => console.error('[Startup] S3 workflow load failed:', e.message));
-  // Load custom UW rules from S3
-  s3Client.getCustomRules().then(rules => {
-    if (rules.length) { customRules.push(...rules); console.log(`[Startup] ${rules.length} custom UW rules loaded from S3`); }
-  }).catch(e => console.error('[Startup] Custom rules load failed:', e.message));
-}
+// S3 persistence — works via IAM role on EC2, no static keys needed
+workflowEngine.initPersistence(s3Client);
+workflowEngine.loadFromS3().then(count => {
+  console.log(`[Startup] ${count} workflows restored from S3`);
+}).catch(e => console.error('[Startup] S3 workflow load failed:', e.message));
+s3Client.getCustomRules().then(rules => {
+  if (rules.length) { customRules.push(...rules); console.log(`[Startup] ${rules.length} custom UW rules loaded from S3`); }
+}).catch(e => console.error('[Startup] Custom rules load failed:', e.message));
 
 // Phase 0 fix: product/policy seeding runs unconditionally so dev and test modes have the full catalog
 // loadProductPolicyConfig seeds defaults if S3 is empty or unavailable
