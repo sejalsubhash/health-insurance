@@ -14,7 +14,7 @@ const crypto = require('crypto');
 // ─── Connection Pool ──────────────────────────────────────────────────────────
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  ssl: { rejectUnauthorized: false },  // RDS requires SSL — always enabled
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000
@@ -365,7 +365,6 @@ async function saveDocumentToS3(workflowId, docId, buffer, contentType) {
 }
 
 async function getDocumentFromS3(key) {
-  // Still reads binary from S3 — this stays S3-backed
   const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION || 'ap-south-1' });
   const response = await s3.send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
@@ -431,6 +430,7 @@ module.exports = {
   saveUpload,         // binary → S3
   saveBiometric,      // binary → S3
   saveBiometricMeta,
+
   // Audit
   saveAuditEntry,
 
