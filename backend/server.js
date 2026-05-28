@@ -17,7 +17,7 @@ const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
-const s3Client = require('./lib/pg-client');  // Option B: PG for JSON, S3 for binary files
+const s3Client = require('./lib/s3-client');
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
@@ -142,7 +142,7 @@ bullQueue.setSocketManager(socketManager);
 
 // Health
 app.get('/health', (req, res) => res.json({ status: 'ok', version: '4.0.0', platform: 'ACC Health UW Automation', features: ['stp_fast_lane','custom_rules','nstp_full_pipeline'], timestamp: new Date().toISOString() }));
-app.get('/api/health', (req, res) => res.json({ status: 'ok', services: { database: !!process.env.DATABASE_URL, s3: !!process.env.S3_BUCKET, redis: !!process.env.REDIS_URL, auth: !!process.env.AZURE_AD_CLIENT_ID, anthropic_api_key: !!process.env.ANTHROPIC_API_KEY, vendors: Object.keys(vendorApi.VENDORS).length }, anthropic_configured: !!process.env.ANTHROPIC_API_KEY }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', services: { s3: !!process.env.AWS_ACCESS_KEY_ID, redis: !!process.env.REDIS_URL, auth: !!process.env.AZURE_AD_CLIENT_ID, anthropic_api_key: !!process.env.ANTHROPIC_API_KEY, vendors: Object.keys(vendorApi.VENDORS).length }, anthropic_configured: !!process.env.ANTHROPIC_API_KEY }));
 
 // S3 Diagnostic — actually tests read/write to confirm S3 is working
 app.get('/api/s3-diagnostic', async (req, res) => {
@@ -4489,23 +4489,19 @@ workflowEngine.registerTransitionHook(async (workflow, newState, oldState) => {
 if (process.env.REDIS_URL) bullQueue.startWorker();
 
 // Initialize S3 persistence for workflows + custom rules
-// Persistence init moved into PG schema callback above
+// S3 persistence — works via IAM role on EC2, no static keys needed
+workflowEngine.initPersistence(s3Client);
+workflowEngine.loadFromS3().then(count => {
+  console.log(`[Startup] ${count} workflows restored from S3`);
+}).catch(e => console.error('[Startup] S3 workflow load failed:', e.message));
+s3Client.getCustomRules().then(rules => {
+  if (rules.length) { customRules.push(...rules); console.log(`[Startup] ${rules.length} custom UW rules loaded from S3`); }
+}).catch(e => console.error('[Startup] Custom rules load failed:', e.message));
 
 // Phase 0 fix: product/policy seeding runs unconditionally so dev and test modes have the full catalog
 // loadProductPolicyConfig seeds defaults if S3 is empty or unavailable
-// Initialise PostgreSQL schema then load app data
-s3Client.initSchema().then(() => {
-  loadProductPolicyConfig().catch(e => console.error('[Startup] Product-policy load failed:', e.message));
+loadProductPolicyConfig().catch(e => console.error('[Startup] Product-policy load failed:', e.message));
   loadHistoricalCorpus().catch(e => console.error('[Startup] Historical corpus load failed:', e.message));
-  // S3 persistence for workflows now uses PG
-  workflowEngine.initPersistence(s3Client);
-  workflowEngine.loadFromS3().then(count => {
-    console.log(`[Startup] \${count} workflows restored from PostgreSQL`);
-  }).catch(e => console.error('[Startup] PG workflow load failed:', e.message));
-  s3Client.getCustomRules().then(rules => {
-    if (rules.length) { customRules.push(...rules); console.log(`[Startup] \${rules.length} custom UW rules loaded`); }
-  }).catch(e => console.error('[Startup] Custom rules load failed:', e.message));
-}).catch(e => console.error('[Startup] PG schema init FAILED:', e.message));
 
 // Phase 2: register UW auto-routing hook. Fires when a workflow enters `referred` or `awaiting_additional_info`.
 // Hook is async but best-effort — failures log but don't block the state transition.

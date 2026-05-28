@@ -1,19 +1,40 @@
 ###############################################################################
-# docker-compose.yml — Single EC2 deployment
-# Runs frontend (Nginx) + backend (Node.js) + Redis on one EC2 instance
-# PostgreSQL is on RDS (external) — connection via DATABASE_URL
+# docker-compose.yml — Fully self-contained single EC2
+# All services run locally — no RDS, no ElastiCache, no NAT Gateway
+# External AWS: S3 (binary files), Bedrock (AI), ECR (images) via VPC endpoints
 ###############################################################################
 
 services:
 
-  # ─── Redis — sessions + BullMQ queue ────────────────────────────────────────
+  # ─── PostgreSQL — primary data store ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: sbi-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-sbi_uw}
+      POSTGRES_USER: ${DB_USER:-sbi_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-sbi_app} -d ${DB_NAME:-sbi_uw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sbi-net
+
+  # ─── Redis — sessions + BullMQ queue ─────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: sbi-redis
     restart: unless-stopped
     command: redis-server --maxmemory 256mb --maxmemory-policy volatile-lru --save ""
     ports:
-      - "127.0.0.1:6379:6379"   # bind to loopback only — not exposed externally
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -22,7 +43,7 @@ services:
     networks:
       - sbi-net
 
-  # ─── Backend — Node.js API + BullMQ worker ───────────────────────────────────
+  # ─── Backend — Node.js API + BullMQ worker ────────────────────────────────────
   backend:
     image: ${BACKEND_IMAGE:-sbi-uw-backend:latest}
     container_name: sbi-backend
@@ -32,9 +53,13 @@ services:
       - NODE_ENV=production
       - PORT=5000
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://${DB_USER:-sbi_app}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-sbi_uw}
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
     expose:
       - "5000"
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -42,11 +67,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 40s
     networks:
       - sbi-net
 
-  # ─── Frontend — Nginx serving static files + reverse proxy ──────────────────
+  # ─── Frontend — Nginx static files + reverse proxy ───────────────────────────
   frontend:
     image: ${FRONTEND_IMAGE:-sbi-uw-frontend:latest}
     container_name: sbi-frontend
@@ -68,3 +93,7 @@ services:
 networks:
   sbi-net:
     driver: bridge
+
+volumes:
+  pgdata:
+    driver: local

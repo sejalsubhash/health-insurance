@@ -12,9 +12,11 @@ const { Pool } = require('pg');
 const crypto = require('crypto');
 
 // ─── Connection Pool ──────────────────────────────────────────────────────────
+// Auto-detect SSL: local postgres container = no SSL, external RDS = SSL
+const isLocalDB = (process.env.DATABASE_URL || '').match(/@(postgres|localhost|127\.0\.0\.1):/);
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },  // RDS requires SSL — always enabled
+  ssl: isLocalDB ? false : { rejectUnauthorized: false },
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000
