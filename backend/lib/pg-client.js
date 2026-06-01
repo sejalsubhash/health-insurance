@@ -12,8 +12,11 @@ const { Pool } = require('pg');
 const crypto = require('crypto');
 
 // ─── Connection Pool ──────────────────────────────────────────────────────────
-// Auto-detect SSL: local postgres container = no SSL, external RDS = SSL
-const isLocalDB = (process.env.DATABASE_URL || '').match(/@(postgres|localhost|127\.0\.0\.1):/);
+// Auto-detect SSL: local Docker postgres = no SSL, external RDS = SSL
+const isLocalDB = (process.env.DATABASE_URL || '').includes('@postgres:') ||
+                  (process.env.DATABASE_URL || '').includes('@localhost:') ||
+                  (process.env.DATABASE_URL || '').includes('@127.0.0.1:');
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: isLocalDB ? false : { rejectUnauthorized: false },
@@ -259,21 +262,26 @@ async function saveUsers(users) {
 // ─── Config (products, policies, product-policy-map, custom-rules, etc.) ──────
 
 async function saveConfig(key, data) {
+  // Wrap arrays — PostgreSQL JSONB requires objects not bare arrays
+  const stored = Array.isArray(data) ? { items: data, _isArray: true } : data;
   await query(`
     INSERT INTO config (key, data, updated_at)
     VALUES ($1, $2, NOW())
     ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
-  `, [key, data]);
-  setCache(`cfg:${key}`, data);
+  `, [key, JSON.stringify(stored)]);
+  setCache(`cfg:\${key}`, data);
 }
 
 async function getConfig(key) {
-  const cached = getCache(`cfg:${key}`);
+  const cached = getCache(`cfg:\${key}`);
   if (cached) return cached;
   const r = await query('SELECT data FROM config WHERE key = $1', [key]);
   if (!r.rows.length) return null;
-  setCache(`cfg:${key}`, r.rows[0].data);
-  return r.rows[0].data;
+  const raw = r.rows[0].data;
+  // Unwrap arrays stored as objects
+  const data = (raw && raw._isArray) ? raw.items : raw;
+  setCache(`cfg:\${key}`, data);
+  return data;
 }
 
 // ─── Masters (uw-guidelines, risk-params, medical-scoring) ───────────────────

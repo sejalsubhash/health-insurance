@@ -1,12 +1,5 @@
-###############################################################################
-# docker-compose.yml — Fully self-contained single EC2
-# All services run locally — no RDS, no ElastiCache, no NAT Gateway
-# External AWS: S3 (binary files), Bedrock (AI), ECR (images) via VPC endpoints
-###############################################################################
-
 services:
 
-  # ─── PostgreSQL — primary data store ─────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: sbi-postgres
@@ -27,12 +20,11 @@ services:
     networks:
       - sbi-net
 
-  # ─── Redis — sessions + BullMQ queue ─────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: sbi-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 256mb --maxmemory-policy volatile-lru --save ""
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction --save ""
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -43,7 +35,6 @@ services:
     networks:
       - sbi-net
 
-  # ─── Backend — Node.js API + BullMQ worker ────────────────────────────────────
   backend:
     image: ${BACKEND_IMAGE:-sbi-uw-backend:latest}
     container_name: sbi-backend
@@ -71,7 +62,6 @@ services:
     networks:
       - sbi-net
 
-  # ─── Frontend — Nginx static files + reverse proxy ───────────────────────────
   frontend:
     image: ${FRONTEND_IMAGE:-sbi-uw-frontend:latest}
     container_name: sbi-frontend

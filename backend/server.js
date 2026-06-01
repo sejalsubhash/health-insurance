@@ -17,7 +17,7 @@ const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
-const s3Client = require('./lib/s3-client');
+const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for binary files
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
