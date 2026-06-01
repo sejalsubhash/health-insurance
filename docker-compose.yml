@@ -36,7 +36,7 @@ services:
       - sbi-net
 
   backend:
-    image: ${BACKEND_IMAGE:-sbi-uw-backend:latest}
+    image: ${BACKEND_IMAGE:-poc-health-claims-acc-uw-backend-ecr:latest}
     container_name: sbi-backend
     restart: unless-stopped
     env_file: .env
@@ -63,7 +63,7 @@ services:
       - sbi-net
 
   frontend:
-    image: ${FRONTEND_IMAGE:-sbi-uw-frontend:latest}
+    image: ${FRONTEND_IMAGE:-poc-health-claims-acc-uw-frontend-ecr:latest}
     container_name: sbi-frontend
     restart: unless-stopped
     ports:

@@ -36,18 +36,18 @@ jobs:
         run: |
           docker build \
             -f backend/Dockerfile \
-            -t sbi-uw-backend:latest \
+            -t poc-health-claims-acc-uw-backend-ecr:latest \
             ./backend
 
       - name: Tag Backend Image
         run: |
-          docker tag sbi-uw-backend:latest \
-            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-backend:latest
+          docker tag poc-health-claims-acc-uw-backend-ecr:latest \
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/poc-health-claims-acc-uw-backend-ecr:latest
 
       - name: Push Backend Image
         run: |
           docker push \
-            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-backend:latest
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/poc-health-claims-acc-uw-backend-ecr:latest
 
       # =========================
       # Frontend
@@ -56,15 +56,15 @@ jobs:
         run: |
           docker build \
             -f frontend/Dockerfile \
-            -t sbi-uw-frontend:latest \
+            -t poc-health-claims-acc-uw-frontend-ecr:latest \
             ./frontend
 
       - name: Tag Frontend Image
         run: |
-          docker tag sbi-uw-frontend:latest \
-            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-frontend:latest
+          docker tag poc-health-claims-acc-uw-frontend-ecr:latest \
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/poc-health-claims-acc-uw-frontend-ecr:latest
 
       - name: Push Frontend Image
         run: |
           docker push \
-            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/sbi-uw-frontend:latest
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/poc-health-claims-acc-uw-frontend-ecr:latest
