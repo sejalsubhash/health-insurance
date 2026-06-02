@@ -67,7 +67,7 @@ services:
     container_name: sbi-frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "8085:80"
     depends_on:
       backend:
         condition: service_healthy
