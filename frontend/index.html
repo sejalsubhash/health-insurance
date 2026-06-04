@@ -189,12 +189,19 @@ textarea.form-control{resize:vertical;min-height:60px}
 </div>
 </div>
 
+
 <!-- New Workflow Modal -->
 <div class="modal-overlay" id="newWorkflowModal">
 <div class="modal">
   <div class="modal-header"><h3>New NSTP Workflow</h3><button class="close-btn" onclick="closeModal('newWorkflowModal')">&times;</button></div>
   <div class="modal-body">
     <div class="grid-2">
+      <div style="margin-bottom:16px; padding:12px; background:#f0f7ff; border:1px solid #b3d4f5; border-radius:8px;">
+      <div style="font-size:13px; color:#1a56db; font-weight:600; margin-bottom:8px;">📂 Import from Proposal JSON</div>
+      <div style="font-size:12px; color:#666; margin-bottom:8px;">Upload the SBI PAS API JSON file to auto-fill form fields</div>
+      <input type="file" id="proposalJsonFile" accept=".json" style="font-size:12px; width:100%;" onchange="importProposalJSON(this)">
+      <div id="jsonImportStatus" style="font-size:12px; margin-top:6px;"></div>
+      </div>
       <div class="form-group"><label>Proposer Name *</label><input class="form-control" id="wf_name" placeholder="Full name"></div>
       <div class="form-group"><label>Age</label><input class="form-control" id="wf_age" type="number" value="35"></div>
       <div class="form-group"><label>Gender</label><select class="form-control" id="wf_gender"><option value="male">Male</option><option value="female">Female</option></select></div>
@@ -3390,6 +3397,47 @@ async function deleteWebhook(id) {
 // Start on appropriate page based on role
 const _startPage = window._currentUser?.role === 'Vendor User' ? 'vendors' : 'dashboard';
 showPage(_startPage);
+
+async function importProposalJSON(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('jsonImportStatus');
+  statusEl.innerHTML = '<span style="color:#888">Reading...</span>';
+  try {
+    const text = await file.text();
+    let json;
+    try { json = JSON.parse(text); }
+    catch(e) { try { json = JSON.parse('{' + text + '}'); } catch(e2) {
+      statusEl.innerHTML = '<span style="color:red">❌ Invalid JSON</span>'; return; } }
+    const resp = await fetch('/api/parse-proposal-json', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      credentials: 'include', body: JSON.stringify(json)
+    });
+    const result = await resp.json();
+    if (!result.success) { statusEl.innerHTML = `<span style="color:red">❌ ${result.error}</span>`; return; }
+    const d = result.data;
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el && val != null && val !== '') el.value = val; };
+    setVal('proposerName', d.proposer_name);
+    setVal('proposerAge', d.age);
+    setVal('proposerHeight', d.height_cm);
+    setVal('proposerWeight', d.weight_kg);
+    setVal('proposerSumAssured', d.sum_assured);
+    const gEl = document.getElementById('proposerGender');
+    if (gEl && d.gender) gEl.value = d.gender;
+    if (d.height_cm && d.weight_kg) {
+      const bmiEl = document.getElementById('proposerBMI');
+      if (bmiEl) bmiEl.value = (d.weight_kg / Math.pow(d.height_cm/100, 2)).toFixed(1);
+    }
+    if (d.medical_history?.pre_existing_conditions?.length > 0) {
+      const obsEl = document.getElementById('proposerObservations');
+      if (obsEl) obsEl.value = d.medical_history.pre_existing_conditions.map(p=>p.condition).join('; ');
+    }
+    const filled = ['Name','Age','Gender','Sum Assured','Height','Weight'].filter((_,i) =>
+      [d.proposer_name,d.age,d.gender,d.sum_assured,d.height_cm,d.weight_kg][i]);
+    statusEl.innerHTML = `<span style="color:green">✅ Filled: ${filled.join(', ')}</span>` +
+      (d.quotation_no ? `<br><span style="color:#888;font-size:11px">Quotation: ${d.quotation_no}</span>` : '');
+  } catch(e) { statusEl.innerHTML = `<span style="color:red">❌ ${e.message}</span>`; }
+}
 </script>
 </body>
 </html>

@@ -111,7 +111,7 @@ const ALLOWED_MIMETYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/
 const MAGIC_BYTES = { '%PDF': 'application/pdf', '\xFF\xD8\xFF': 'image/jpeg', '\x89PNG': 'image/png' };
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50*1024*1024 },  // 50 MB,
+  limits: { fileSize: 50*1024*1024 },  // 50 MB
   fileFilter: (req, file, cb) => {
     if (!ALLOWED_MIMETYPES.includes(file.mimetype)) {
       return cb(new Error(`File type not allowed: ${file.mimetype}. Allowed: PDF, JPEG, PNG, TIFF, DOC, DOCX, XLS, XLSX`));
@@ -717,6 +717,77 @@ app.get('/api/vendor-request/:id/report', requireAuth, (req, res) => { const r =
 app.get('/api/vendor-requests', requireAuth, (req, res) => res.json(vendorApi.listVendorRequests(req.query)));
 
 // Workflow
+
+// ─── Parse Proposal JSON (SBI PAS format) → pre-fill New Assessment form ─────
+app.post('/api/parse-proposal-json', requireAuth, async (req, res) => {
+  try {
+    const raw = req.body;
+    if (!raw) return res.status(400).json({ error: 'No JSON body provided' });
+
+    let policy;
+    try {
+      if (raw.PolicyObject) {
+        policy = raw;
+      } else if (raw.Response && raw.Response.body) {
+        const responseBody = typeof raw.Response.body === 'string'
+          ? JSON.parse(raw.Response.body) : raw.Response.body;
+        policy = responseBody;
+      } else {
+        return res.status(400).json({ error: 'Unrecognised JSON format. Expected PolicyObject or Response.body' });
+      }
+    } catch(e) {
+      return res.status(400).json({ error: 'Failed to parse nested JSON: ' + e.message });
+    }
+
+    const policyObj = policy.PolicyObject;
+    const customer  = policyObj?.PolicyCustomerList?.[0];
+    const riskList  = policyObj?.PolicyLobList?.[0]?.PolicyRiskList?.[0];
+
+    if (!customer || !riskList) {
+      return res.status(400).json({ error: 'Missing PolicyCustomerList or PolicyRiskList in JSON' });
+    }
+
+    let age = null;
+    if (customer.DateOfBirth) {
+      const dob = new Date(customer.DateOfBirth);
+      age = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+    }
+
+    const genderMap = { M: 'male', F: 'female', '1': 'male', '2': 'female' };
+    const gender = genderMap[customer.GenderCode] || 'male';
+
+    const preExisting = riskList.OtherPEDReason
+      ? [{ condition: riskList.OtherPEDReason, disclosed: true }] : [];
+
+    const nstpReason = riskList.NSTPReason
+      ? riskList.NSTPReason.split(';')[0].trim() : 'sum_assured_threshold';
+
+    res.json({
+      success: true,
+      data: {
+        proposer_name: customer.CustomerName || '',
+        age,
+        gender,
+        sum_assured:  policyObj.SumInsured || 0,
+        product_name: policyObj.ProductName || 'Arogya Sanjeevani',
+        height_cm:    riskList.Height ? parseFloat(riskList.Height) : null,
+        weight_kg:    riskList.Weight ? parseFloat(riskList.Weight) : null,
+        nstp_reason:  nstpReason,
+        medical_history: { pre_existing_conditions: preExisting },
+        quotation_no: policyObj.QuotationNo || '',
+        proposal_date: policyObj.ProposalDate || '',
+        pphc_flag:    riskList.PPHCFlag || '0',
+        pphc_test:    riskList.PPHCTestName || '',
+        mobile:       customer.Mobile || '',
+        email:        customer.Email || customer.ContactEmail || ''
+      }
+    });
+  } catch(e) {
+    console.error('[ParseProposalJSON] Error:', e.message);
+    res.status(500).json({ error: 'Failed to parse proposal JSON: ' + e.message });
+  }
+});
+
 app.post('/api/workflow/create', requireAuth, async (req, res) => {
   try {
     const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi } = req.body;
@@ -1243,6 +1314,13 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
           if (doc.base64_data) {
             const isImage = ['image/jpeg','image/png','image/gif','image/webp'].includes(doc.content_type);
             const isPdf = doc.content_type === 'application/pdf';
+            // Skip documents larger than 15MB base64 (~11MB original) to avoid Claude input limit
+            const base64SizeMB = (doc.base64_data.length * 0.75) / (1024 * 1024);
+            if (base64SizeMB > 15) {
+              console.warn(`[Extraction] Skipping ${doc.name} (${base64SizeMB.toFixed(1)}MB) — too large for Claude. Max 15MB per document.`);
+              contentParts.push({ type: 'text', text: `[Document: ${doc.name} — ${doc.category} — FILE TOO LARGE FOR AI EXTRACTION (${base64SizeMB.toFixed(1)}MB). Please upload a smaller or compressed version.]` });
+              continue;
+            }
             if (isImage) {
               contentParts.push({ type: 'image', source: { type: 'base64', media_type: doc.content_type, data: doc.base64_data } });
               contentParts.push({ type: 'text', text: `[Above is: ${doc.name} — ${doc.category}]` });
