@@ -189,19 +189,29 @@ textarea.form-control{resize:vertical;min-height:60px}
 </div>
 </div>
 
-
 <!-- New Workflow Modal -->
 <div class="modal-overlay" id="newWorkflowModal">
 <div class="modal">
   <div class="modal-header"><h3>New NSTP Workflow</h3><button class="close-btn" onclick="closeModal('newWorkflowModal')">&times;</button></div>
   <div class="modal-body">
-    <div class="grid-2">
-      <div style="margin-bottom:16px; padding:12px; background:#f0f7ff; border:1px solid #b3d4f5; border-radius:8px;">
-      <div style="font-size:13px; color:#1a56db; font-weight:600; margin-bottom:8px;">📂 Import from Proposal JSON</div>
-      <div style="font-size:12px; color:#666; margin-bottom:8px;">Upload the SBI PAS API JSON file to auto-fill form fields</div>
-      <input type="file" id="proposalJsonFile" accept=".json" style="font-size:12px; width:100%;" onchange="importProposalJSON(this)">
-      <div id="jsonImportStatus" style="font-size:12px; margin-top:6px;"></div>
+
+    <!-- JSON Import Section -->
+    <div style="background:var(--surface-alt);border:1.5px dashed var(--border);border-radius:10px;padding:14px 16px;margin-bottom:16px;">
+      <div style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:8px;display:flex;align-items:center;gap:6px;">
+        <i data-lucide="file-json"></i> Import from Proposal JSON
       </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Upload the SBI PAS API JSON file to auto-fill form fields</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <label style="cursor:pointer;">
+          <input type="file" id="sbiJsonInput" accept=".json,application/json" style="display:none" onchange="handleSBIJsonUpload(this)">
+          <span class="btn btn-outline btn-sm" onclick="document.getElementById('sbiJsonInput').click()"><i data-lucide="upload"></i> Choose file</span>
+        </label>
+        <span id="sbiJsonFileName" style="font-size:12px;color:var(--text-muted);">No file chosen</span>
+      </div>
+      <div id="sbiJsonStatus" style="margin-top:8px;display:none;"></div>
+    </div>
+
+    <div class="grid-2">
       <div class="form-group"><label>Proposer Name *</label><input class="form-control" id="wf_name" placeholder="Full name"></div>
       <div class="form-group"><label>Age</label><input class="form-control" id="wf_age" type="number" value="35"></div>
       <div class="form-group"><label>Gender</label><select class="form-control" id="wf_gender"><option value="male">Male</option><option value="female">Female</option></select></div>
@@ -1514,6 +1524,180 @@ function calcBMI() {
   el.innerHTML = `<span style="color:${color}">${bmiRound}</span> <span style="font-size:11px;color:${color};margin-left:6px">${category}</span> <span style="font-size:10px;color:var(--text-muted);margin-left:6px">(Ref: 18.5-24.9)</span>`;
 }
 
+// ─── SBI JSON Import ─────────────────────────────────────────────────────────
+async function handleSBIJsonUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  document.getElementById('sbiJsonFileName').textContent = file.name;
+  const statusEl = document.getElementById('sbiJsonStatus');
+  statusEl.style.display = 'block';
+  statusEl.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">⏳ Parsing JSON...</span>';
+
+  try {
+    const text = await file.text();
+    let json = JSON.parse(text);
+
+    // Handle both raw PolicyObject format AND the log wrapper format
+    // Log format: { "Request": {...}, "Response": { "body": "..." }, ... }
+    if (json.Response?.body) {
+      json = JSON.parse(json.Response.body);
+    }
+    // Also handle if it's the full log with PolicyObject directly
+    if (!json.PolicyObject && json.body) {
+      json = JSON.parse(json.body);
+    }
+
+    const po  = json.PolicyObject || {};
+    const lob = po.PolicyLobList?.[0] || {};
+    const risk = lob.PolicyRiskList?.[0] || {};
+    const cust = po.PolicyCustomerList?.[0] || {};
+    const uwResult = json.UnderwritingResult || {};
+
+    // ── Extract fields ──────────────────────────────────────────────
+    // Name
+    const name = risk.InsuredName || cust.CustomerName || '';
+
+    // Age from DOB
+    const dob = risk.DateOfBirth || cust.DateOfBirth;
+    let age = '';
+    if (dob) {
+      const dobDate = new Date(dob);
+      const today = new Date();
+      age = Math.floor((today - dobDate) / (365.25 * 24 * 60 * 60 * 1000));
+    }
+
+    // Gender
+    const genderCode = risk.GenderCode || cust.GenderCode || 'M';
+    const gender = genderCode === 'F' ? 'female' : 'male';
+
+    // Sum Assured
+    const sumAssured = po.SumInsured || lob.SumInsured || 0;
+
+    // Height & Weight (from MER if available in risk object)
+    const height = risk.Height || '';
+    const weight = risk.Weight || '';
+
+    // Product — map SUHEPlanVar to product name
+    const planVarMap = {
+      '1': 'Elite', '2': 'Platinum', '3': 'Platinum Infinite',
+      '4': 'Premier', '5': 'Prime'
+    };
+    const planVar = po.SUHEPlanVar || '';
+    const productName = planVarMap[planVar] || po.ProductName || 'Arogya Sanjeevani';
+
+    // NSTP Reason from NSTPReason field
+    const nstpRaw = (risk.NSTPReason || '').toLowerCase();
+    let nstpReason = 'age_threshold';
+    if (nstpRaw.includes('pre-exist') || nstpRaw.includes('ped')) nstpReason = 'medical_history';
+    else if (nstpRaw.includes('sum') || nstpRaw.includes('sa ') || nstpRaw.includes('sum insured')) nstpReason = 'sum_assured_threshold';
+    else if (nstpRaw.includes('age')) nstpReason = 'age_threshold';
+    else if (nstpRaw.includes('occupat')) nstpReason = 'occupation_risk';
+
+    // CAT / test type from PPHCTestName
+    const pphcTest = risk.PPHCTestName || '';
+    const catMap = {
+      'CAT 1': 'blood_work,physical_exam,urine_analysis,hematology',
+      'CAT 2': 'blood_work,physical_exam,urine_analysis,hematology,ecg',
+      'CAT 3': 'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt',
+      'CAT 4': 'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt,chest_xray',
+      'Tele MER': '',
+      'STP': ''
+    };
+    const testsToCheck = catMap[pphcTest] || '';
+
+    // PED from OtherPEDReason
+    const pedReason = (risk.OtherPEDReason || '').toLowerCase();
+    const pedConditions = [];
+    if (pedReason.includes('diabet')) pedConditions.push('diabetes');
+    if (pedReason.includes('hypertens') || pedReason.includes('blood pressure')) pedConditions.push('hypertension');
+    if (pedReason.includes('cardiac') || pedReason.includes('heart')) pedConditions.push('cardiac');
+    if (pedReason.includes('asthma') || pedReason.includes('copd')) pedConditions.push('asthma');
+    if (pedReason.includes('thyroid')) pedConditions.push('thyroid');
+    if (pedReason.includes('kidney') || pedReason.includes('renal')) pedConditions.push('kidney');
+    if (pedReason.includes('liver') || pedReason.includes('hepat')) pedConditions.push('liver');
+    if (pedReason.includes('cancer')) pedConditions.push('cancer');
+    // If DetailsPED=1 and no specific condition matched, still mark it
+    if (risk.DetailsPED == 1 && pedConditions.length === 0) {
+      // Use the raw text as observation
+    }
+
+    // Observations from NSTPReason
+    const observations = risk.NSTPReason || '';
+
+    // Quotation No
+    const quotationNo = po.QuotationNo || '';
+
+    // Vendor suggestion based on CAT
+    let vendorSuggestion = 'VEND-001'; // MedCheck India default
+    if (pphcTest === 'Tele MER') vendorSuggestion = 'VEND-003'; // DigiMedic
+    else if (pphcTest === 'CAT 3' || pphcTest === 'CAT 4') vendorSuggestion = 'VEND-002'; // HealthAssure
+
+    // ── Fill form fields ────────────────────────────────────────────
+    if (name)  document.getElementById('wf_name').value  = name;
+    if (age)   document.getElementById('wf_age').value   = age;
+    if (sumAssured) document.getElementById('wf_sum').value = sumAssured;
+    if (height) document.getElementById('wf_height').value = height;
+    if (weight) document.getElementById('wf_weight').value = weight;
+    document.getElementById('wf_gender').value = gender;
+
+    // Set product dropdown — match by name
+    const productSel = document.getElementById('wf_product');
+    for (const opt of productSel.options) {
+      if (opt.text.toLowerCase().includes(productName.toLowerCase()) ||
+          productName.toLowerCase().includes(opt.text.toLowerCase())) {
+        productSel.value = opt.value;
+        break;
+      }
+    }
+
+    // Set NSTP reason
+    document.getElementById('wf_reason').value = nstpReason;
+
+    // Set vendor
+    document.getElementById('wf_vendor').value = vendorSuggestion;
+
+    // Set observations
+    if (observations) document.getElementById('wf_observations').value = observations;
+
+    // Check required tests
+    if (testsToCheck) {
+      const testChecks = testsToCheck.split(',');
+      document.querySelectorAll('.req-test').forEach(cb => {
+        cb.checked = testChecks.includes(cb.value);
+      });
+    }
+
+    // Check PED conditions
+    document.querySelectorAll('.med-condition').forEach(cb => {
+      if (pedConditions.includes(cb.value)) cb.checked = true;
+    });
+
+    // Recalculate BMI if height/weight available
+    if (height && weight) calcBMI();
+
+    // ── Show success status ─────────────────────────────────────────
+    const filled = [
+      name && 'Name', age && 'Age', gender && 'Gender',
+      sumAssured && 'Sum Assured', height && 'Height', weight && 'Weight'
+    ].filter(Boolean);
+
+    statusEl.innerHTML = `
+      <div style="background:#e6f7ef;border:1px solid #0f6e56;border-radius:6px;padding:8px 12px;font-size:12px;">
+        <div style="color:#0f6e56;font-weight:600;margin-bottom:4px;">✅ Filled: ${filled.join(', ')}</div>
+        ${pphcTest ? `<div style="color:#085041;">SBI recommends: <strong>${pphcTest}</strong></div>` : ''}
+        ${quotationNo ? `<div style="color:var(--text-muted);margin-top:2px;">Quotation: ${quotationNo}</div>` : ''}
+        ${pedConditions.length ? `<div style="color:#854F0B;margin-top:2px;">PED detected: ${pedConditions.join(', ')}</div>` : ''}
+      </div>`;
+
+    showToast(`JSON imported — ${filled.length} fields filled. SBI test: ${pphcTest || 'STP'}`, 'success');
+
+  } catch(e) {
+    statusEl.innerHTML = `<div style="color:var(--danger);font-size:12px;">❌ Error parsing JSON: ${e.message}</div>`;
+    showToast('Invalid JSON file: ' + e.message, 'error');
+  }
+}
+
 async function createWorkflow() {
   const reqTests = [...Array.from(document.querySelectorAll('.req-test:checked')).map(c=>c.value), ...(window._customTests || [])];
   const vendorId = document.getElementById('wf_vendor').value;
@@ -2536,7 +2720,7 @@ async function renderMasters() {
       ${policies.map(p => {
         const ov = p.overrides||{}; const st = ov.score_thresholds||{}; const al = ov.age_limits||{};
         return `<div class="card" style="margin-bottom:12px"><div class="card-header"><h3>${p.name} <span style="font-size:11px;font-weight:400;color:var(--text-muted)">v${p.version||'1.0'}</span></h3>
-          <div style="display:flex;gap:6px"><button class="btn btn-sm btn-outline" onclick="editPolicy('${p.id}')">Edit</button><button class="btn btn-sm btn-outline" onclick="uploadPolicyDoc('${p.id}')"><i data-lucide="file-text"></i> Upload Doc</button><button class="btn btn-sm btn-danger" onclick="deletePolicy('${p.id}','${p.name}')">Delete</button></div>
+          <div style="display:flex;gap:6px"><button class="btn btn-sm btn-outline" onclick="editPolicy('${p.id}')">Edit</button><button class="btn btn-sm btn-outline" onclick="manageTests('${p.id}')"><i data-lucide="flask-conical"></i> Manage Tests</button><button class="btn btn-sm btn-outline" onclick="uploadPolicyDoc('${p.id}')"><i data-lucide="file-text"></i> Upload Doc</button><button class="btn btn-sm btn-danger" onclick="deletePolicy('${p.id}','${p.name}')">Delete</button></div>
         </div><div class="card-body">
           <div class="grid-3" style="gap:12px;margin-bottom:10px">
             <div style="padding:10px;background:var(--surface-alt);border-radius:6px;text-align:center"><div style="font-size:11px;color:var(--text-muted)">Approve ≥</div><div style="font-size:18px;font-weight:700;color:var(--success)">${st.approve||80}</div></div>
@@ -2752,6 +2936,154 @@ function editPolicy(id) {
     .then(r => { if (r.success) { showToast('Policy updated', 'success'); renderMasters(); } else showToast(r.error, 'error'); })
     .catch(e => showToast(e.message, 'error'));
 }
+function manageTests(policyId) {
+  const policies = window._policiesData || [];
+  const p = policies.find(p => p.id === policyId);
+  if (!p) return;
+  const ov = p.overrides || {};
+  const tests = ov.mandatory_tests || [];
+
+  // Remove existing modal if any
+  const existing = document.getElementById('manageTestsModal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'manageTestsModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+
+  function renderRows(arr) {
+    if (!arr.length) return '<div style="color:var(--text-muted);font-size:13px;padding:12px 0;">No mandatory tests configured yet.</div>';
+    return arr.map((t, i) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface-alt);border-radius:6px;margin-bottom:6px;">
+        <div>
+          <span class="badge badge-info" style="margin-right:6px;">${t.test_type || t}</span>
+          ${t.age_min !== undefined ? `<span style="font-size:12px;color:var(--text-muted)">Age: ${t.age_min}–${t.age_max || '∞'}</span>` : ''}
+          ${t.sa_min !== undefined ? `<span style="font-size:12px;color:var(--text-muted);margin-left:8px;">SA: ₹${(t.sa_min/100000).toFixed(0)}L–${t.sa_max ? '₹'+(t.sa_max/100000).toFixed(0)+'L' : '∞'}</span>` : ''}
+        </div>
+        <button onclick="removeTest('${policyId}',${i})" style="background:var(--danger);color:#fff;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px;">Remove</button>
+      </div>`).join('');
+  }
+
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;padding:24px;width:560px;max-width:95vw;max-height:90vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Mandatory Tests — ${p.name}</h3>
+        <button onclick="document.getElementById('manageTestsModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-muted);">✕</button>
+      </div>
+
+      <div id="testRows">${renderRows(tests)}</div>
+
+      <div style="margin-top:16px;padding:16px;border:1px solid var(--border);border-radius:8px;">
+        <div style="font-weight:600;margin-bottom:12px;font-size:13px;">+ Add Test Rule</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);">Test Type *</label>
+            <select id="mt_type" class="form-control" style="margin-top:4px;">
+              <option value="STP">STP (Straight Through)</option>
+              <option value="tele_mer">Tele MER</option>
+              <option value="CAT_1">CAT 1</option>
+              <option value="CAT_2">CAT 2</option>
+              <option value="CAT_3">CAT 3</option>
+              <option value="CAT_4">CAT 4</option>
+              <option value="PPHC">PPHC (Full Medical)</option>
+              <option value="ECG">ECG</option>
+              <option value="blood_chemistry">Blood Chemistry</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);">Condition</label>
+            <select id="mt_condition" class="form-control" style="margin-top:4px;" onchange="toggleTestCondition()">
+              <option value="always">Always Required</option>
+              <option value="age">Based on Age Range</option>
+              <option value="sa">Based on Sum Assured</option>
+              <option value="age_sa">Age + Sum Assured</option>
+            </select>
+          </div>
+        </div>
+        <div id="mt_age_fields" style="display:none;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);">Min Age (years)</label>
+            <input id="mt_age_min" type="number" class="form-control" placeholder="e.g. 18" style="margin-top:4px;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);">Max Age (years, blank=no limit)</label>
+            <input id="mt_age_max" type="number" class="form-control" placeholder="e.g. 55" style="margin-top:4px;">
+          </div>
+        </div>
+        <div id="mt_sa_fields" style="display:none;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);">Min Sum Assured (₹)</label>
+            <input id="mt_sa_min" type="number" class="form-control" placeholder="e.g. 300000" style="margin-top:4px;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);">Max Sum Assured (₹, blank=no limit)</label>
+            <input id="mt_sa_max" type="number" class="form-control" placeholder="e.g. 1000000" style="margin-top:4px;">
+          </div>
+        </div>
+        <button onclick="addTestRule('${policyId}')" class="btn btn-accent" style="width:100%;">+ Add Test Rule</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(modal);
+
+  window._currentModalPolicyId = policyId;
+  window.toggleTestCondition = function() {
+    const cond = document.getElementById('mt_condition').value;
+    const ageF = document.getElementById('mt_age_fields');
+    const saF = document.getElementById('mt_sa_fields');
+    ageF.style.display = (cond === 'age' || cond === 'age_sa') ? 'grid' : 'none';
+    saF.style.display = (cond === 'sa' || cond === 'age_sa') ? 'grid' : 'none';
+  };
+
+  window.removeTest = function(pid, idx) {
+    const pol = (window._policiesData||[]).find(x => x.id === pid);
+    if (!pol) return;
+    const tests = [...(pol.overrides?.mandatory_tests || [])];
+    tests.splice(idx, 1);
+    api(`/api/policies/${pid}`, { method: 'PUT', body: JSON.stringify({ overrides: { ...pol.overrides, mandatory_tests: tests } }) })
+      .then(r => {
+        if (r.success) {
+          pol.overrides.mandatory_tests = tests;
+          document.getElementById('testRows').innerHTML = renderRows(tests);
+          showToast('Test removed', 'success');
+          renderMasters();
+        } else showToast(r.error, 'error');
+      }).catch(e => showToast(e.message, 'error'));
+  };
+
+  window.addTestRule = function(pid) {
+    const testType = document.getElementById('mt_type').value;
+    const condition = document.getElementById('mt_condition').value;
+    const rule = { test_type: testType };
+    if (condition === 'age' || condition === 'age_sa') {
+      const amin = document.getElementById('mt_age_min').value;
+      const amax = document.getElementById('mt_age_max').value;
+      if (!amin) { showToast('Please enter min age', 'error'); return; }
+      rule.age_min = parseInt(amin);
+      if (amax) rule.age_max = parseInt(amax);
+    }
+    if (condition === 'sa' || condition === 'age_sa') {
+      const smin = document.getElementById('mt_sa_min').value;
+      const smax = document.getElementById('mt_sa_max').value;
+      if (!smin) { showToast('Please enter min sum assured', 'error'); return; }
+      rule.sa_min = parseInt(smin);
+      if (smax) rule.sa_max = parseInt(smax);
+    }
+    const pol = (window._policiesData||[]).find(x => x.id === pid);
+    if (!pol) return;
+    const updatedTests = [...(pol.overrides?.mandatory_tests || []), rule];
+    api(`/api/policies/${pid}`, { method: 'PUT', body: JSON.stringify({ overrides: { ...pol.overrides, mandatory_tests: updatedTests } }) })
+      .then(r => {
+        if (r.success) {
+          pol.overrides.mandatory_tests = updatedTests;
+          document.getElementById('testRows').innerHTML = renderRows(updatedTests);
+          showToast('Test rule added!', 'success');
+          renderMasters();
+        } else showToast(r.error, 'error');
+      }).catch(e => showToast(e.message, 'error'));
+  };
+}
+
 function deletePolicy(id, name) {
   if (!confirm('Delete policy "'+name+'"?')) return;
   api('/api/policies/'+id, { method: 'DELETE' })
@@ -3397,47 +3729,6 @@ async function deleteWebhook(id) {
 // Start on appropriate page based on role
 const _startPage = window._currentUser?.role === 'Vendor User' ? 'vendors' : 'dashboard';
 showPage(_startPage);
-
-async function importProposalJSON(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const statusEl = document.getElementById('jsonImportStatus');
-  statusEl.innerHTML = '<span style="color:#888">Reading...</span>';
-  try {
-    const text = await file.text();
-    let json;
-    try { json = JSON.parse(text); }
-    catch(e) { try { json = JSON.parse('{' + text + '}'); } catch(e2) {
-      statusEl.innerHTML = '<span style="color:red">❌ Invalid JSON</span>'; return; } }
-    const resp = await fetch('/api/parse-proposal-json', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      credentials: 'include', body: JSON.stringify(json)
-    });
-    const result = await resp.json();
-    if (!result.success) { statusEl.innerHTML = `<span style="color:red">❌ ${result.error}</span>`; return; }
-    const d = result.data;
-    const setVal = (id, val) => { const el = document.getElementById(id); if (el && val != null && val !== '') el.value = val; };
-    setVal('proposerName', d.proposer_name);
-    setVal('proposerAge', d.age);
-    setVal('proposerHeight', d.height_cm);
-    setVal('proposerWeight', d.weight_kg);
-    setVal('proposerSumAssured', d.sum_assured);
-    const gEl = document.getElementById('proposerGender');
-    if (gEl && d.gender) gEl.value = d.gender;
-    if (d.height_cm && d.weight_kg) {
-      const bmiEl = document.getElementById('proposerBMI');
-      if (bmiEl) bmiEl.value = (d.weight_kg / Math.pow(d.height_cm/100, 2)).toFixed(1);
-    }
-    if (d.medical_history?.pre_existing_conditions?.length > 0) {
-      const obsEl = document.getElementById('proposerObservations');
-      if (obsEl) obsEl.value = d.medical_history.pre_existing_conditions.map(p=>p.condition).join('; ');
-    }
-    const filled = ['Name','Age','Gender','Sum Assured','Height','Weight'].filter((_,i) =>
-      [d.proposer_name,d.age,d.gender,d.sum_assured,d.height_cm,d.weight_kg][i]);
-    statusEl.innerHTML = `<span style="color:green">✅ Filled: ${filled.join(', ')}</span>` +
-      (d.quotation_no ? `<br><span style="color:#888;font-size:11px">Quotation: ${d.quotation_no}</span>` : '');
-  } catch(e) { statusEl.innerHTML = `<span style="color:red">❌ ${e.message}</span>`; }
-}
 </script>
 </body>
 </html>
