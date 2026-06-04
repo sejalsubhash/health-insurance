@@ -3726,6 +3726,94 @@ async function deleteWebhook(id) {
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }
 
+// ─── SBI JSON Import ─────────────────────────────────────────────────────────
+async function handleSBIJsonUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('sbiJsonFileName').textContent = file.name;
+  const statusEl = document.getElementById('sbiJsonStatus');
+  statusEl.style.display = 'block';
+  statusEl.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">⏳ Parsing JSON...</span>';
+  try {
+    const text = await file.text();
+    let json = JSON.parse(text);
+    if (json.Response?.body) json = JSON.parse(json.Response.body);
+    if (!json.PolicyObject && json.body) json = JSON.parse(json.body);
+    const po   = json.PolicyObject || {};
+    const lob  = po.PolicyLobList?.[0] || {};
+    const risk = lob.PolicyRiskList?.[0] || {};
+    const cust = po.PolicyCustomerList?.[0] || {};
+    const name = risk.InsuredName || cust.CustomerName || '';
+    const dob  = risk.DateOfBirth || cust.DateOfBirth;
+    let age = '';
+    if (dob) age = Math.floor((Date.now() - new Date(dob)) / (365.25*24*60*60*1000));
+    const genderCode = risk.GenderCode || cust.GenderCode || 'M';
+    const gender = genderCode === 'F' ? 'female' : 'male';
+    const sumAssured = po.SumInsured || lob.SumInsured || 0;
+    const height = risk.Height || '';
+    const weight = risk.Weight || '';
+    const planVarMap = {'1':'Elite','2':'Platinum','3':'Platinum Infinite','4':'Premier','5':'Prime'};
+    const productName = planVarMap[po.SUHEPlanVar] || po.ProductName || 'Arogya Sanjeevani';
+    const nstpRaw = (risk.NSTPReason || '').toLowerCase();
+    let nstpReason = 'age_threshold';
+    if (nstpRaw.includes('pre-exist') || nstpRaw.includes('ped')) nstpReason = 'medical_history';
+    else if (nstpRaw.includes('sum') || nstpRaw.includes('sa ')) nstpReason = 'sum_assured_threshold';
+    else if (nstpRaw.includes('age')) nstpReason = 'age_threshold';
+    const pphcTest = risk.PPHCTestName || '';
+    const catMap = {'CAT 1':'blood_work,physical_exam,urine_analysis,hematology','CAT 2':'blood_work,physical_exam,urine_analysis,hematology,ecg','CAT 3':'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt','CAT 4':'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt,chest_xray'};
+    const testsToCheck = catMap[pphcTest] || '';
+    const pedReason = (risk.OtherPEDReason || '').toLowerCase();
+    const pedConditions = [];
+    if (pedReason.includes('diabet')) pedConditions.push('diabetes');
+    if (pedReason.includes('hypertens')) pedConditions.push('hypertension');
+    if (pedReason.includes('cardiac') || pedReason.includes('heart')) pedConditions.push('cardiac');
+    if (pedReason.includes('asthma')) pedConditions.push('asthma');
+    if (pedReason.includes('thyroid')) pedConditions.push('thyroid');
+    if (pedReason.includes('kidney') || pedReason.includes('renal')) pedConditions.push('kidney');
+    if (pedReason.includes('liver')) pedConditions.push('liver');
+    if (pedReason.includes('cancer')) pedConditions.push('cancer');
+    const observations = risk.NSTPReason || '';
+    const quotationNo = po.QuotationNo || '';
+    let vendorSuggestion = 'VEND-001';
+    if (pphcTest === 'Tele MER') vendorSuggestion = 'VEND-003';
+    else if (pphcTest === 'CAT 3' || pphcTest === 'CAT 4') vendorSuggestion = 'VEND-002';
+    if (name)       document.getElementById('wf_name').value   = name;
+    if (age)        document.getElementById('wf_age').value    = age;
+    if (sumAssured) document.getElementById('wf_sum').value    = sumAssured;
+    if (height)     document.getElementById('wf_height').value = height;
+    if (weight)     document.getElementById('wf_weight').value = weight;
+    document.getElementById('wf_gender').value = gender;
+    const productSel = document.getElementById('wf_product');
+    for (const opt of productSel.options) {
+      if (opt.text.toLowerCase().includes(productName.toLowerCase().substring(0,5)) ||
+          productName.toLowerCase().includes(opt.text.toLowerCase().substring(0,5))) {
+        productSel.value = opt.value; break;
+      }
+    }
+    document.getElementById('wf_reason').value  = nstpReason;
+    document.getElementById('wf_vendor').value  = vendorSuggestion;
+    if (observations) document.getElementById('wf_observations').value = observations;
+    if (testsToCheck) {
+      const testChecks = testsToCheck.split(',');
+      document.querySelectorAll('.req-test').forEach(cb => { cb.checked = testChecks.includes(cb.value); });
+    }
+    document.querySelectorAll('.med-condition').forEach(cb => { if (pedConditions.includes(cb.value)) cb.checked = true; });
+    if (height && weight) calcBMI();
+    const filled = [name&&'Name', age&&'Age', gender&&'Gender', sumAssured&&'Sum Assured', height&&'Height', weight&&'Weight'].filter(Boolean);
+    statusEl.innerHTML = `<div style="background:#e6f7ef;border:1px solid #0f6e56;border-radius:6px;padding:8px 12px;font-size:12px;">
+      <div style="color:#0f6e56;font-weight:600;margin-bottom:4px;">✅ Filled: ${filled.join(', ')}</div>
+      ${pphcTest ? `<div style="color:#085041;">SBI recommends: <strong>${pphcTest}</strong></div>` : ''}
+      ${quotationNo ? `<div style="color:var(--text-muted);margin-top:2px;">Quotation: ${quotationNo}</div>` : ''}
+      ${pedConditions.length ? `<div style="color:#854F0B;margin-top:2px;">PED: ${pedConditions.join(', ')}</div>` : ''}
+    </div>`;
+    showToast(`JSON imported — ${filled.length} fields filled`, 'success');
+  } catch(e) {
+    statusEl.innerHTML = `<div style="color:var(--danger);font-size:12px;">❌ Error: ${e.message}</div>`;
+    showToast('Invalid JSON: ' + e.message, 'error');
+  }
+}
+
+
 // Start on appropriate page based on role
 const _startPage = window._currentUser?.role === 'Vendor User' ? 'vendors' : 'dashboard';
 showPage(_startPage);
