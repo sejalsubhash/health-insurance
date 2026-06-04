@@ -17,7 +17,7 @@ const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
-const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for binary files
+const s3Client = require('./lib/s3-client');
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
@@ -111,7 +111,7 @@ const ALLOWED_MIMETYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/
 const MAGIC_BYTES = { '%PDF': 'application/pdf', '\xFF\xD8\xFF': 'image/jpeg', '\x89PNG': 'image/png' };
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15*1024*1024 },
+  limits: { fileSize: 50*1024*1024 },  // 50 MB,
   fileFilter: (req, file, cb) => {
     if (!ALLOWED_MIMETYPES.includes(file.mimetype)) {
       return cb(new Error(`File type not allowed: ${file.mimetype}. Allowed: PDF, JPEG, PNG, TIFF, DOC, DOCX, XLS, XLSX`));
