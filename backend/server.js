@@ -756,10 +756,24 @@ app.get('/api/vendor-requests', requireAuth, (req, res) => res.json(vendorApi.li
 // Workflow
 app.post('/api/workflow/create', requireAuth, async (req, res) => {
   try {
-    const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi } = req.body;
+    const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi, pre_existing_conditions, detailed_ped } = req.body;
     if (!proposer_name) return res.status(400).json({ error: 'proposer_name required' });
-    const selectedVendor = vendor_id || 'VEND-001';
+
+    // Resolve CAT level first to determine correct vendor
+    const productConfig0 = getProductScoringConfig(product_name);
+    const hasPED0 = !!((pre_existing_conditions && pre_existing_conditions.length) ||
+                       (medical_history?.pre_existing_conditions?.length) || detailed_ped);
+    const catResult0 = resolveCAT(age || 35, sum_assured || 0, productConfig0?.overrides, hasPED0);
+
+    // Auto-assign vendor based on CAT level
+    const CAT_VENDOR_MAP = {
+      'STP': 'VEND-001', 'tele_mer': 'VEND-003', 'CAT_1': 'VEND-001',
+      'CAT_2': 'VEND-002', 'CAT_3': 'VEND-004', 'CAT_4': 'VEND-005'
+    };
+    const autoVendor = CAT_VENDOR_MAP[catResult0.cat] || 'VEND-001';
+    const selectedVendor = vendor_id || autoVendor;
     const vendor = vendorApi.getVendor(selectedVendor);
+    console.log(`[Vendor] CAT: ${catResult0.cat} → Assigned: ${selectedVendor} (${vendor?.name})`);
 
     // Layer 3: Historical PPHC-skip evaluation before creating workflow
     let pphcEvaluation = null;
@@ -781,18 +795,16 @@ app.post('/api/workflow/create', requireAuth, async (req, res) => {
     } catch(e) { /* Historical evaluation not critical */ }
 
     // Step 1: Create workflow — merge product mandatory tests with UW-selected tests
-    const productConfig = getProductScoringConfig(product_name);
-    const hasPED = !!(pre_existing_conditions?.length || proposal?.DetailsPED == 1);
-    const catResult = resolveCAT(age, sum_assured, productConfig?.overrides, hasPED);
+    const catResult = catResult0;  // reuse the CAT resolved above
     const policyMandatoryTests = catResult.cat !== 'STP' && catResult.cat !== 'tele_mer'
       ? [catResult.cat.toLowerCase()]
-      : (productConfig?.overrides?.mandatory_tests || []);
-    console.log(`[resolveCAT] ${product_name} | Age ${age} | SA ₹${sum_assured} | PED: ${hasPED} → ${catResult.cat} | ${catResult.reason}`);
+      : (productConfig0?.overrides?.mandatory_tests || []);
+    console.log(`[resolveCAT] ${product_name} | Age ${age} | SA ₹${sum_assured} | PED: ${hasPED0} → ${catResult.cat} | ${catResult.reason}`);
     const uwSelectedTests = required_tests || [];
     // Combine: policy mandatory tests + UW additional tests (deduplicated)
     const mergedTests = [...new Set([...policyMandatoryTests, ...uwSelectedTests])];
 
-    const wf = workflowEngine.createWorkflow({ proposer_name, age: age||35, gender: gender||'male', sum_assured: sum_assured||0, product_name, policy_type, nstp_reason, observations: observations||'', required_tests: mergedTests, assigned_vendor_id: selectedVendor, lifestyle: lifestyle||{}, medical_history: medical_history||{}, height_cm: height_cm||null, weight_kg: weight_kg||null, declared_bmi: declared_bmi||null });
+    const wf = workflowEngine.createWorkflow({ proposer_name, age: age||35, gender: gender||'male', sum_assured: sum_assured||0, product_name, policy_type, nstp_reason, observations: observations||'', required_tests: mergedTests, assigned_vendor_id: selectedVendor, cat_level: catResult.cat, cat_reason: catResult.reason, lifestyle: lifestyle||{}, medical_history: medical_history||{}, height_cm: height_cm||null, weight_kg: weight_kg||null, declared_bmi: declared_bmi||null });
 
     // Store historical evaluation on workflow
     if (pphcEvaluation && pphcEvaluation.match_count > 0) {
