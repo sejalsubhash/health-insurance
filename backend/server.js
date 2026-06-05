@@ -2547,7 +2547,6 @@ async function loadProductPolicyConfig() {
       status:'active', created_at:new Date().toISOString(),
       description:'Employer-sponsored group mediclaim. Simplified UW for groups above 50 lives.' }
   ];
-  const SBI_VER = 'sbi-superhealth-v3';
   const isVersioned = productsConfig.some(p => p._ver === SBI_VER);
   if (!isVersioned) {
     // Completely overwrite — remove ALL old products, save only SBI lineup
