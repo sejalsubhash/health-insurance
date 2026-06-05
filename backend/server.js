@@ -17,7 +17,7 @@ const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
-const s3Client = require('./lib/s3-client');
+const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for binary files
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
@@ -111,7 +111,7 @@ const ALLOWED_MIMETYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/
 const MAGIC_BYTES = { '%PDF': 'application/pdf', '\xFF\xD8\xFF': 'image/jpeg', '\x89PNG': 'image/png' };
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50*1024*1024 },  // 50 MB
+  limits: { fileSize: 15*1024*1024 },
   fileFilter: (req, file, cb) => {
     if (!ALLOWED_MIMETYPES.includes(file.mimetype)) {
       return cb(new Error(`File type not allowed: ${file.mimetype}. Allowed: PDF, JPEG, PNG, TIFF, DOC, DOCX, XLS, XLSX`));
@@ -717,77 +717,6 @@ app.get('/api/vendor-request/:id/report', requireAuth, (req, res) => { const r =
 app.get('/api/vendor-requests', requireAuth, (req, res) => res.json(vendorApi.listVendorRequests(req.query)));
 
 // Workflow
-
-// ─── Parse Proposal JSON (SBI PAS format) → pre-fill New Assessment form ─────
-app.post('/api/parse-proposal-json', requireAuth, async (req, res) => {
-  try {
-    const raw = req.body;
-    if (!raw) return res.status(400).json({ error: 'No JSON body provided' });
-
-    let policy;
-    try {
-      if (raw.PolicyObject) {
-        policy = raw;
-      } else if (raw.Response && raw.Response.body) {
-        const responseBody = typeof raw.Response.body === 'string'
-          ? JSON.parse(raw.Response.body) : raw.Response.body;
-        policy = responseBody;
-      } else {
-        return res.status(400).json({ error: 'Unrecognised JSON format. Expected PolicyObject or Response.body' });
-      }
-    } catch(e) {
-      return res.status(400).json({ error: 'Failed to parse nested JSON: ' + e.message });
-    }
-
-    const policyObj = policy.PolicyObject;
-    const customer  = policyObj?.PolicyCustomerList?.[0];
-    const riskList  = policyObj?.PolicyLobList?.[0]?.PolicyRiskList?.[0];
-
-    if (!customer || !riskList) {
-      return res.status(400).json({ error: 'Missing PolicyCustomerList or PolicyRiskList in JSON' });
-    }
-
-    let age = null;
-    if (customer.DateOfBirth) {
-      const dob = new Date(customer.DateOfBirth);
-      age = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
-    }
-
-    const genderMap = { M: 'male', F: 'female', '1': 'male', '2': 'female' };
-    const gender = genderMap[customer.GenderCode] || 'male';
-
-    const preExisting = riskList.OtherPEDReason
-      ? [{ condition: riskList.OtherPEDReason, disclosed: true }] : [];
-
-    const nstpReason = riskList.NSTPReason
-      ? riskList.NSTPReason.split(';')[0].trim() : 'sum_assured_threshold';
-
-    res.json({
-      success: true,
-      data: {
-        proposer_name: customer.CustomerName || '',
-        age,
-        gender,
-        sum_assured:  policyObj.SumInsured || 0,
-        product_name: policyObj.ProductName || 'Arogya Sanjeevani',
-        height_cm:    riskList.Height ? parseFloat(riskList.Height) : null,
-        weight_kg:    riskList.Weight ? parseFloat(riskList.Weight) : null,
-        nstp_reason:  nstpReason,
-        medical_history: { pre_existing_conditions: preExisting },
-        quotation_no: policyObj.QuotationNo || '',
-        proposal_date: policyObj.ProposalDate || '',
-        pphc_flag:    riskList.PPHCFlag || '0',
-        pphc_test:    riskList.PPHCTestName || '',
-        mobile:       customer.Mobile || '',
-        email:        customer.Email || customer.ContactEmail || ''
-      }
-    });
-  } catch(e) {
-    console.error('[ParseProposalJSON] Error:', e.message);
-    res.status(500).json({ error: 'Failed to parse proposal JSON: ' + e.message });
-  }
-});
-
 app.post('/api/workflow/create', requireAuth, async (req, res) => {
   try {
     const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi } = req.body;
@@ -816,7 +745,12 @@ app.post('/api/workflow/create', requireAuth, async (req, res) => {
 
     // Step 1: Create workflow — merge product mandatory tests with UW-selected tests
     const productConfig = getProductScoringConfig(product_name);
-    const policyMandatoryTests = productConfig?.overrides?.mandatory_tests || [];
+    const hasPED = !!(pre_existing_conditions?.length || proposal?.DetailsPED == 1);
+    const catResult = resolveCAT(age, sum_assured, productConfig?.overrides, hasPED);
+    const policyMandatoryTests = catResult.cat !== 'STP' && catResult.cat !== 'tele_mer'
+      ? [catResult.cat.toLowerCase()]
+      : (productConfig?.overrides?.mandatory_tests || []);
+    console.log(`[resolveCAT] ${product_name} | Age ${age} | SA ₹${sum_assured} | PED: ${hasPED} → ${catResult.cat} | ${catResult.reason}`);
     const uwSelectedTests = required_tests || [];
     // Combine: policy mandatory tests + UW additional tests (deduplicated)
     const mergedTests = [...new Set([...policyMandatoryTests, ...uwSelectedTests])];
@@ -996,11 +930,35 @@ app.post('/api/workflow/stp-evaluate', requireAuth, async (req, res) => {
     const selectedVendor = vendor_id || 'VEND-001';
     const vendor = vendorApi.getVendor(selectedVendor);
 
+    // Resolve the correct CAT level based on age + SA + policy rules
+    const hasPED_stp = !!(proposal.pre_existing_conditions?.length || proposal.detailed_ped);
+    const catResolved = resolveCAT(proposal.age, proposal.sum_assured, policyOverrides, hasPED_stp);
+    console.log(`[resolveCAT] ${proposal.product_name} | Age ${proposal.age} | SA ₹${proposal.sum_assured} | PED: ${hasPED_stp} → ${catResolved.cat} | ${catResolved.reason}`);
+
+    // Override route if resolveCAT says tele_mer and evaluation didn't already set it
+    if (catResolved.cat === 'tele_mer' && evaluation.route !== 'nstp_telemer') {
+      evaluation.route = 'nstp_telemer';
+      evaluation.reason = `Policy rule override: ${catResolved.reason}`;
+    }
+
+    // Build required_tests list from CAT level
+    const catTestsMap = {
+      'STP':      [],
+      'tele_mer': [],
+      'CAT_1':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology'],
+      'CAT_2':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry'],
+      'CAT_3':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry', 'cardiac_echo', 'tmt'],
+      'CAT_4':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry', 'cardiac_echo', 'tmt', 'chest_xray', 'thyroid', 'liver_function']
+    };
+    const requiredTests = catTestsMap[catResolved.cat] || (policyOverrides?.mandatory_tests || []);
+
     const wf = workflowEngine.createWorkflow({
       ...proposal,
       nstp_reason: effectiveShadow && evaluation.eligible ? 'stp_shadow_mode_forced_nstp' : (evaluation.blocking_factors[0]?.code || evaluation.route),
       assigned_vendor_id: selectedVendor,
-      required_tests: (productConfig?.overrides?.mandatory_tests) || [],
+      required_tests: requiredTests,
+      cat_level: catResolved.cat,
+      cat_reason: catResolved.reason,
       route_type: effectiveShadow && evaluation.eligible ? 'stp_auto_issue' : evaluation.route,
       stp_evaluation: evaluation,
       stp_shadow_mode: effectiveShadow
@@ -1314,13 +1272,6 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
           if (doc.base64_data) {
             const isImage = ['image/jpeg','image/png','image/gif','image/webp'].includes(doc.content_type);
             const isPdf = doc.content_type === 'application/pdf';
-            // Skip documents larger than 15MB base64 (~11MB original) to avoid Claude input limit
-            const base64SizeMB = (doc.base64_data.length * 0.75) / (1024 * 1024);
-            if (base64SizeMB > 15) {
-              console.warn(`[Extraction] Skipping ${doc.name} (${base64SizeMB.toFixed(1)}MB) — too large for Claude. Max 15MB per document.`);
-              contentParts.push({ type: 'text', text: `[Document: ${doc.name} — ${doc.category} — FILE TOO LARGE FOR AI EXTRACTION (${base64SizeMB.toFixed(1)}MB). Please upload a smaller or compressed version.]` });
-              continue;
-            }
             if (isImage) {
               contentParts.push({ type: 'image', source: { type: 'base64', media_type: doc.content_type, data: doc.base64_data } });
               contentParts.push({ type: 'text', text: `[Above is: ${doc.name} — ${doc.category}]` });
@@ -1582,8 +1533,20 @@ async function runAIAnalysis(wf) {
     if (ov.age_limits) riskParams._age_limits = ov.age_limits;
     // Merge SA limits
     if (ov.sa_limits) riskParams._sa_limits = ov.sa_limits;
-    // Store mandatory tests for checking
-    if (ov.mandatory_tests?.length) riskParams._mandatory_tests = ov.mandatory_tests;
+    // Store mandatory tests for checking — use resolveCAT for accurate CAT level
+    const hasPED_ai = !!(wf.pre_existing_conditions?.length || wf.detailed_ped);
+    const catForAI = resolveCAT(wf.age, wf.sum_assured, ov, hasPED_ai);
+    const catTestsMapAI = {
+      'STP':      [],
+      'tele_mer': [],
+      'CAT_1':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology'],
+      'CAT_2':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry'],
+      'CAT_3':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry', 'cardiac_echo', 'tmt'],
+      'CAT_4':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry', 'cardiac_echo', 'tmt', 'chest_xray', 'thyroid', 'liver_function']
+    };
+    riskParams._mandatory_tests = catTestsMapAI[catForAI.cat] || ov.mandatory_tests || [];
+    riskParams._cat_level = catForAI.cat;
+    console.log(`[resolveCAT AI] ${wf.product_name} | Age ${wf.age} | SA ₹${wf.sum_assured} | PED: ${hasPED_ai} → ${catForAI.cat}`);
   }
 
   // Build document summary for AI
@@ -2524,23 +2487,39 @@ async function loadProductPolicyConfig() {
     try { productsConfig = (await s3Client.getConfig('products')) || []; } catch(e) { productsConfig = []; }
     try { policiesConfig = (await s3Client.getConfig('policies')) || []; } catch(e) { policiesConfig = []; }
     try { productPolicyMap = (await s3Client.getConfig('product-policy-map')) || {}; } catch(e) { productPolicyMap = {}; }
-  // Seed defaults — always ensure the new product lineup exists
-  const hasNewProducts = productsConfig.some(p => p.name === 'Arogya Sanjeevani');
-  if (!hasNewProducts) {
-    // Remove old products if they exist
-    const oldNames = ['Health Shield', 'Health Guard Pro', 'Critical Care Plus', 'Family Floater'];
+  // Seed defaults — always ensure SBI Superhealth product lineup exists
+  const hasSBIProducts = productsConfig.some(p => p.name === 'Prime');
+  if (!hasSBIProducts) {
+    // Remove old generic/demo products — replace with real SBI Superhealth plans
+    const oldNames = ['Arogya Sanjeevani','Arogya Premier','Critical Illness','Super Health Top-Up',
+                      'Arogya Supreme','Group Health','Health Shield','Health Guard Pro',
+                      'Critical Care Plus','Family Floater','Demo'];
     productsConfig = productsConfig.filter(p => !oldNames.includes(p.name));
-    const newProducts = [
-      { id: 'PROD-001', name: 'Arogya Sanjeevani', code: 'AS', type: 'health', description: 'Standard IRDAI-mandated health plan. Basic coverage, standardized benefits.', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-002', name: 'Arogya Premier', code: 'AP', type: 'health', description: 'Enhanced health plan with higher SI limits, broader network, room rent waiver.', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-003', name: 'Critical Illness', code: 'CI', type: 'critical_illness', description: 'Lump-sum payout on diagnosis of specified critical illnesses — cancer, cardiac, stroke, organ failure.', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-004', name: 'Super Health Top-Up', code: 'SHTU', type: 'top_up', description: 'Top-up policy over existing base cover. Activates above deductible threshold.', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-005', name: 'Arogya Supreme', code: 'ASU', type: 'health', description: 'Premium comprehensive plan. Global coverage, no sub-limits, SI up to 5Cr.', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-006', name: 'Group Health', code: 'GH', type: 'group', description: 'Employer-sponsored group mediclaim. Simplified UW for groups above 50 lives.', status: 'active', created_at: new Date().toISOString() }
+    const sbiProducts = [
+      // ── SBI Super Health Insurance (Superhealth) plans ──────────────────
+      { id: 'PROD-007', name: 'Prime',              code: 'SUHE-PRM', type: 'health',
+        description: 'SBI Superhealth — Prime Plan. SA bands: 3L/5L/7L/10L and 15L/20L/25L. SUHEPlanVar=5.',
+        plan_var: '5', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
+      { id: 'PROD-008', name: 'Elite',              code: 'SUHE-ELT', type: 'health',
+        description: 'SBI Superhealth — Elite Plan. SA bands: 3L/5L/7L/10L and 15L/20L/25L. SUHEPlanVar=1.',
+        plan_var: '1', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
+      { id: 'PROD-009', name: 'Platinum',           code: 'SUHE-PLT', type: 'health',
+        description: 'SBI Superhealth — Platinum Plan. SA bands: 10L-25L and 30L-50L. SUHEPlanVar=2.',
+        plan_var: '2', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
+      { id: 'PROD-010', name: 'Premier',            code: 'SUHE-PRE', type: 'health',
+        description: 'SBI Superhealth — Premier Plan. SA band: 3L/5L/7L/10L. SUHEPlanVar=4.',
+        plan_var: '4', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
+      { id: 'PROD-011', name: 'Platinum Infinite',  code: 'SUHE-PLI', type: 'health',
+        description: 'SBI Superhealth — Platinum Infinite. SA bands: 50L, 75L and 1Cr+. SUHEPlanVar=3.',
+        plan_var: '3', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
+      // ── Keep Group Health for legacy group cases ──────────────────────────
+      { id: 'PROD-006', name: 'Group Health',       code: 'GH',       type: 'group',
+        description: 'Employer-sponsored group mediclaim. Simplified UW for groups above 50 lives.',
+        status: 'active', created_at: new Date().toISOString() }
     ];
-    for (const np of newProducts) { if (!productsConfig.find(p => p.id === np.id)) productsConfig.push(np); }
+    for (const np of sbiProducts) { if (!productsConfig.find(p => p.id === np.id)) productsConfig.push(np); }
     s3Client.saveConfig('products', productsConfig).catch(e => console.error('Products seed save error:', e.message));
-    console.log('[Startup] New product lineup seeded (replaced old products)');
+    console.log('[Startup] SBI Superhealth product lineup seeded (Prime, Elite, Platinum, Premier, Platinum Infinite, Group Health)');
   }
 
   // Seed default policies — always ensure the new policies exist
@@ -2636,26 +2615,141 @@ async function loadProductPolicyConfig() {
           stp_max_sa: 2000000
         },
         description: 'Relaxed group UW — STP-enabled up to full cap (SA 20L, age 50). Group risk spreading justifies broader STP eligibility.'
+      },
+
+      // ─── SBI Super Health Insurance — Prime Plan ─────────────────────────────
+      {
+        id: 'POL-007', name: 'Prime UW Policy', version: '1.0',
+        overrides: {
+          score_thresholds: { approve: 75, refer: 55, decline_below: 40 },
+          age_limits: { min: 0, max: 65 },
+          sa_limits: { min: 300000, max: 2500000 },
+          loading_overrides: { smoker_current: 75, bmi_obese_1: 50, bmi_obese_2: 100, diabetes_controlled: 50, hypertension_controlled: 25 },
+          rule_overrides: {},
+          stp_eligible: true,
+          stp_max_age: 45,
+          stp_max_sa: 1000000,
+          waiting_periods: { diabetes: { years: 4 }, hypertension: { years: 4 }, cardiac: { years: 4 } },
+          // ── CAT matrix from SBI Excel (age × SA → test type) ──────────────
+          // SA Band 1: 3L, 5L, 7L, 10L (300000 – 1000000)
+          // SA Band 2: 15L, 20L, 25L   (1500000 – 2500000)
+          mandatory_tests: [
+            // Band 1 — 3L to 10L
+            { test_type: 'STP',      age_min: 0,  age_max: 55, sa_min: 300000,  sa_max: 1000000, description: 'Prime 3L-10L, age 91days-55 → STP' },
+            { test_type: 'CAT_1',    age_min: 56,              sa_min: 300000,  sa_max: 1000000, description: 'Prime 3L-10L, age 56+ → CAT 1' },
+            // Band 2 — 15L to 25L
+            { test_type: 'STP',      age_min: 0,  age_max: 45, sa_min: 1500000, sa_max: 2500000, description: 'Prime 15L-25L, age 0-45 → STP' },
+            { test_type: 'tele_mer', age_min: 46, age_max: 55, sa_min: 1500000, sa_max: 2500000, description: 'Prime 15L-25L, age 46-55 → Tele MER' },
+            { test_type: 'CAT_1',    age_min: 56, age_max: 60, sa_min: 1500000, sa_max: 2500000, description: 'Prime 15L-25L, age 56-60 → CAT 1' },
+            { test_type: 'CAT_2',    age_min: 61,              sa_min: 1500000, sa_max: 2500000, description: 'Prime 15L-25L, age 61+ → CAT 2' }
+          ]
+        },
+        description: 'SBI Super Health Insurance — Prime Plan. STP up to age 45 and SA 10L. TeleMER for 15L-25L age 46-55. CAT 1 for age 56+ on lower bands.'
+      },
+
+      // ─── SBI Super Health Insurance — Elite Plan ─────────────────────────────
+      {
+        id: 'POL-008', name: 'Elite UW Policy', version: '1.0',
+        overrides: {
+          score_thresholds: { approve: 78, refer: 58, decline_below: 42 },
+          age_limits: { min: 0, max: 65 },
+          sa_limits: { min: 300000, max: 2500000 },
+          loading_overrides: { smoker_current: 75, bmi_obese_1: 50, bmi_obese_2: 100, diabetes_controlled: 50, hypertension_controlled: 25 },
+          rule_overrides: {},
+          stp_eligible: true,
+          stp_max_age: 45,
+          stp_max_sa: 1000000,
+          waiting_periods: { diabetes: { years: 4 }, hypertension: { years: 4 }, cardiac: { years: 4 } },
+          mandatory_tests: [
+            // Band 1 — 3L to 10L (same as Prime)
+            { test_type: 'STP',      age_min: 0,  age_max: 55, sa_min: 300000,  sa_max: 1000000, description: 'Elite 3L-10L, age 0-55 → STP' },
+            { test_type: 'CAT_1',    age_min: 56,              sa_min: 300000,  sa_max: 1000000, description: 'Elite 3L-10L, age 56+ → CAT 1' },
+            // Band 2 — 15L to 25L
+            { test_type: 'STP',      age_min: 0,  age_max: 45, sa_min: 1500000, sa_max: 2500000, description: 'Elite 15L-25L, age 0-45 → STP' },
+            { test_type: 'tele_mer', age_min: 46, age_max: 55, sa_min: 1500000, sa_max: 2500000, description: 'Elite 15L-25L, age 46-55 → Tele MER' },
+            { test_type: 'CAT_1',    age_min: 56, age_max: 60, sa_min: 1500000, sa_max: 2500000, description: 'Elite 15L-25L, age 56-60 → CAT 1' },
+            { test_type: 'CAT_2',    age_min: 61,              sa_min: 1500000, sa_max: 2500000, description: 'Elite 15L-25L, age 61+ → CAT 2' }
+          ]
+        },
+        description: 'SBI Super Health Insurance — Elite Plan. Similar to Prime with slightly stricter score thresholds.'
+      },
+
+      // ─── SBI Super Health Insurance — Platinum Plan ──────────────────────────
+      {
+        id: 'POL-009', name: 'Platinum UW Policy', version: '1.0',
+        overrides: {
+          score_thresholds: { approve: 80, refer: 62, decline_below: 46 },
+          age_limits: { min: 0, max: 65 },
+          sa_limits: { min: 1000000, max: 5000000 },
+          loading_overrides: { smoker_current: 75, bmi_obese_1: 50, bmi_obese_2: 100, diabetes_controlled: 50, cardiac_history: 75 },
+          rule_overrides: {},
+          stp_eligible: true,
+          stp_max_age: 45,
+          stp_max_sa: 1000000,
+          waiting_periods: { diabetes: { years: 4 }, hypertension: { years: 4 }, cardiac: { years: 4 } },
+          mandatory_tests: [
+            // Band 1 — 10L to 25L
+            { test_type: 'STP',      age_min: 0,  age_max: 45, sa_min: 1000000, sa_max: 2500000, description: 'Platinum 10L-25L, age 0-45 → STP' },
+            { test_type: 'tele_mer', age_min: 46, age_max: 50, sa_min: 1000000, sa_max: 2500000, description: 'Platinum 10L-25L, age 46-50 → Tele MER' },
+            { test_type: 'CAT_1',    age_min: 51, age_max: 55, sa_min: 1000000, sa_max: 2500000, description: 'Platinum 10L-25L, age 51-55 → CAT 1' },
+            { test_type: 'CAT_1',    age_min: 56, age_max: 60, sa_min: 1000000, sa_max: 2500000, description: 'Platinum 10L-25L, age 56-60 → CAT 1' },
+            { test_type: 'CAT_2',    age_min: 61,              sa_min: 1000000, sa_max: 2500000, description: 'Platinum 10L-25L, age 61+ → CAT 2' },
+            // Band 2 — 30L to 50L
+            { test_type: 'STP',      age_min: 0,  age_max: 17, sa_min: 3000000, sa_max: 5000000, description: 'Platinum 30L-50L, age 0-17 → STP' },
+            { test_type: 'CAT_1',    age_min: 18, age_max: 45, sa_min: 3000000, sa_max: 5000000, description: 'Platinum 30L-50L, age 18-45 → CAT 1' },
+            { test_type: 'CAT_2',    age_min: 46,              sa_min: 3000000, sa_max: 5000000, description: 'Platinum 30L-50L, age 46+ → CAT 2' }
+          ]
+        },
+        description: 'SBI Super Health Insurance — Platinum Plan. Higher SA band (10L-50L). TeleMER entry at age 46. CAT 1 for 51-60. CAT 2 for 61+.'
+      },
+
+      // ─── SBI Super Health Insurance — Premier Plan ───────────────────────────
+      {
+        id: 'POL-010', name: 'Premier UW Policy', version: '1.0',
+        overrides: {
+          score_thresholds: { approve: 78, refer: 60, decline_below: 44 },
+          age_limits: { min: 0, max: 65 },
+          sa_limits: { min: 300000, max: 1000000 },
+          loading_overrides: { smoker_current: 75, bmi_obese_1: 50, bmi_obese_2: 100 },
+          rule_overrides: {},
+          stp_eligible: true,
+          stp_max_age: 45,
+          stp_max_sa: 1000000,
+          waiting_periods: { diabetes: { years: 4 }, hypertension: { years: 4 } },
+          mandatory_tests: [
+            // Premier only has 3L-10L band
+            { test_type: 'STP',   age_min: 0,  age_max: 55, sa_min: 300000, sa_max: 1000000, description: 'Premier 3L-10L, age 0-55 → STP' },
+            { test_type: 'CAT_1', age_min: 56,              sa_min: 300000, sa_max: 1000000, description: 'Premier 3L-10L, age 56+ → CAT 1' }
+          ]
+        },
+        description: 'SBI Super Health Insurance — Premier Plan. Entry-level plan SA 3L-10L. STP up to age 55. CAT 1 for age 56+.'
       }
     ];
     policiesConfig.forEach(p => { p.created_at = new Date().toISOString(); if (!p.status) p.status = 'active'; });
     s3Client.saveConfig('policies', policiesConfig).catch(e => console.error('Policies seed save error:', e.message));
   }
 
-  // Auto-map products to policies — ensure all 6 mappings exist
-  const hasMappings = productPolicyMap['PROD-001'] === 'POL-001' && productPolicyMap['PROD-003'] === 'POL-003';
+  // Auto-map products to policies — ensure all SBI plan mappings exist
+  const hasMappings = productPolicyMap['PROD-007'] === 'POL-007' && productPolicyMap['PROD-008'] === 'POL-008';
   if (!hasMappings) {
     productPolicyMap = {
       ...productPolicyMap,
+      // SBI Superhealth plans → their specific UW policies with CAT rules
+      'PROD-007': 'POL-007',  // Prime → Prime UW Policy
+      'PROD-008': 'POL-008',  // Elite → Elite UW Policy
+      'PROD-009': 'POL-009',  // Platinum → Platinum UW Policy
+      'PROD-010': 'POL-010',  // Premier → Premier UW Policy
+      'PROD-011': 'POL-007',  // Platinum Infinite → uses Prime-like policy (closest match)
+      'PROD-006': 'POL-006',  // Group Health → Group Health UW Policy
+      // Legacy mappings kept in case old cases exist in DB
       'PROD-001': 'POL-001',
       'PROD-002': 'POL-002',
       'PROD-003': 'POL-003',
       'PROD-004': 'POL-004',
-      'PROD-005': 'POL-005',
-      'PROD-006': 'POL-006'
+      'PROD-005': 'POL-005'
     };
     s3Client.saveConfig('product-policy-map', productPolicyMap).catch(e => console.error('Mapping seed save error:', e.message));
-    console.log('[Startup] Product-policy mappings seeded');
+    console.log('[Startup] SBI product-policy mappings seeded (Prime→POL-007, Elite→POL-008, Platinum→POL-009, Premier→POL-010)');
   }
   console.log(`[Startup] Products: ${productsConfig.length}, Policies: ${policiesConfig.length}, Mappings: ${Object.keys(productPolicyMap).length}`);
 }
@@ -2776,6 +2870,61 @@ function getProductScoringConfig(productName) {
   const policy = policiesConfig.find(p => p.id === policyId && (p.status === 'active' || !p.status));
   if (!policy) return null;
   return { product, policy, overrides: policy.overrides || {} };
+}
+
+// ─── resolveCAT ──────────────────────────────────────────────────────────────
+// Takes age, sumAssured and policy overrides → returns the correct CAT level
+// Rules are stored in policy.overrides.mandatory_tests as an array of objects:
+//   { test_type, age_min, age_max, sa_min, sa_max, ped_required }
+// Falls back to flat string array for backward compatibility.
+function resolveCAT(age, sumAssured, overrides, hasPED = false) {
+  const tests = overrides?.mandatory_tests || [];
+  if (!tests.length) return { cat: 'STP', reason: 'No mandatory test rules configured' };
+
+  // Backward compat — old flat string array like ['blood_work', 'ecg']
+  if (typeof tests[0] === 'string') {
+    return { cat: 'CAT_1', reason: 'Legacy flat test list — defaulting to CAT 1', tests };
+  }
+
+  // PED is always a hard override — if declared, skip TeleMER, go straight to CAT
+  if (hasPED) {
+    // Find the lowest CAT rule that matches age+SA (ignore tele_mer for PED cases)
+    const pedRules = tests.filter(r => {
+      const ageOk = (r.age_min === undefined || age >= r.age_min) &&
+                    (r.age_max === undefined || age <= r.age_max);
+      const saOk  = (r.sa_min === undefined || sumAssured >= r.sa_min) &&
+                    (r.sa_max === undefined || sumAssured <= r.sa_max);
+      return ageOk && saOk && r.test_type !== 'STP' && r.test_type !== 'tele_mer';
+    });
+    if (pedRules.length) {
+      const rule = pedRules[0];
+      return {
+        cat: rule.test_type,
+        reason: `PED declared — TeleMER skipped. Age ${age}, SA ₹${(sumAssured/100000).toFixed(0)}L → ${rule.test_type}`,
+        rule
+      };
+    }
+    // PED declared but no CAT rule found — default to CAT_1
+    return { cat: 'CAT_1', reason: `PED declared — no matching rule, defaulting to CAT 1` };
+  }
+
+  // Normal flow — find first matching rule for this age + SA
+  for (const rule of tests) {
+    const ageOk = (rule.age_min === undefined || age >= rule.age_min) &&
+                  (rule.age_max === undefined || age <= rule.age_max);
+    const saOk  = (rule.sa_min === undefined || sumAssured >= rule.sa_min) &&
+                  (rule.sa_max === undefined || sumAssured <= rule.sa_max);
+    if (ageOk && saOk) {
+      return {
+        cat: rule.test_type,
+        reason: `Age ${age} in [${rule.age_min||0}–${rule.age_max||'∞'}], SA ₹${(sumAssured/100000).toFixed(0)}L in [₹${((rule.sa_min||0)/100000).toFixed(0)}L–₹${((rule.sa_max||99999999)/100000).toFixed(0)}L] → ${rule.test_type}`,
+        rule
+      };
+    }
+  }
+
+  // No rule matched — default STP
+  return { cat: 'STP', reason: `No rule matched age ${age} + SA ₹${(sumAssured/100000).toFixed(0)}L — defaulting to STP` };
 }
 
 // ─── Premium Calculation & Policy Issuance ───
@@ -3225,7 +3374,54 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
       if (qId === 'GEN_01' && answer.value === 'yes' && answer.followup) {
         // Parse medication mentions
         const medText = answer.followup.toLowerCase();
-        const medMap = { metformin: 'diabetes', glimepiride: 'diabetes', insulin: 'diabetes', amlodipine: 'hypertension', telmisartan: 'hypertension', atenolol: 'hypertension', atorvastatin: 'high_cholesterol', rosuvastatin: 'high_cholesterol', thyroxine: 'thyroid', levothyroxine: 'thyroid', aspirin: 'cardiac_risk' };
+        const medMap = {
+          // Diabetes
+          metformin: 'diabetes', glimepiride: 'diabetes', insulin: 'diabetes',
+          glipizide: 'diabetes', glyburide: 'diabetes', sitagliptin: 'diabetes',
+          vildagliptin: 'diabetes', empagliflozin: 'diabetes', dapagliflozin: 'diabetes',
+          // Hypertension
+          amlodipine: 'hypertension', telmisartan: 'hypertension', atenolol: 'hypertension',
+          losartan: 'hypertension', ramipril: 'hypertension', lisinopril: 'hypertension',
+          olmesartan: 'hypertension', valsartan: 'hypertension', bisoprolol: 'hypertension',
+          nebivolol: 'hypertension', telma: 'hypertension', inderai: 'hypertension',
+          inderal: 'hypertension',
+          // Cholesterol / Lipids
+          atorvastatin: 'high_cholesterol', rosuvastatin: 'high_cholesterol',
+          simvastatin: 'high_cholesterol', pitavastatin: 'high_cholesterol',
+          fenofibrate: 'high_cholesterol', ezetimibe: 'high_cholesterol',
+          // Thyroid
+          thyroxine: 'thyroid', levothyroxine: 'thyroid', eltroxin: 'thyroid',
+          thyronorm: 'thyroid', methimazole: 'thyroid', carbimazole: 'thyroid',
+          // Cardiac risk (anti-platelets / anti-coagulants)
+          aspirin: 'cardiac_risk', clopidogrel: 'cardiac_risk',
+          warfarin: 'cardiac_risk', rivaroxaban: 'cardiac_risk',
+          dabigatran: 'cardiac_risk', apixaban: 'cardiac_risk',
+          ecosprin: 'cardiac_risk',
+          // ── NEW categories ────────────────────────────────────────────────
+          // Parkinson's disease — critical non-disclosure (like Rajeev Mathur case)
+          syndopa: 'parkinsons', levodopa: 'parkinsons', carbidopa: 'parkinsons',
+          aciten: 'parkinsons', pramipexole: 'parkinsons', ropinirole: 'parkinsons',
+          selegiline: 'parkinsons', rasagiline: 'parkinsons', amantadine: 'parkinsons',
+          'tab. syndopa': 'parkinsons', 'tab. aciten': 'parkinsons',
+          // Kidney / Proteinuria (renal conditions)
+          wysolone: 'kidney_disease', deflazacort: 'kidney_disease',
+          tacrolimus: 'kidney_disease', cyclosporine: 'kidney_disease',
+          mycophenolate: 'kidney_disease', raflate: 'kidney_disease',
+          // Autoimmune / Inflammation
+          prednisolone: 'autoimmune', methylprednisolone: 'autoimmune',
+          dexamethasone: 'autoimmune', hydroxychloroquine: 'autoimmune',
+          methotrexate: 'autoimmune', sulfasalazine: 'autoimmune',
+          // Gout / Uric acid
+          allopurinol: 'gout', febuxostat: 'gout', probenecid: 'gout',
+          // Mental health / Neurological
+          risperidone: 'psychiatric', olanzapine: 'psychiatric',
+          quetiapine: 'psychiatric', haloperidol: 'psychiatric',
+          clonazepam: 'neurological', phenytoin: 'neurological',
+          valproate: 'neurological', carbamazepine: 'neurological',
+          // Cancer (chemotherapy drugs — immediate escalation)
+          tamoxifen: 'cancer', letrozole: 'cancer', anastrozole: 'cancer',
+          imatinib: 'cancer', capecitabine: 'cancer',
+        };
         for (const [med, condition] of Object.entries(medMap)) {
           if (medText.includes(med)) {
             medications.push({ name: med, treats: condition });
