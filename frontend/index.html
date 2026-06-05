@@ -613,7 +613,7 @@ async function renderDashboard() {
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
       <input type="text" id="dashSearch" placeholder="Search Case ID..." style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;width:160px" oninput="filterDashboard()">
       <select id="dashStatus" class="form-control" style="width:130px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Status</option><option value="vendor_assigned">Vendor Assigned</option><option value="auto_approved">Approved</option><option value="auto_rejected">Rejected</option><option value="counter_offered">Counter Offer</option><option value="referred">Referred</option></select>
-      <select id="dashProduct" class="form-control" style="width:150px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Product</option><option value="Arogya Sanjeevani">Arogya Sanjeevani</option><option value="Arogya Premier">Arogya Premier</option><option value="Critical Illness">Critical Illness</option><option value="Super Health Top-Up">Super Health Top-Up</option><option value="Arogya Supreme">Arogya Supreme</option><option value="Group Health">Group Health</option></select>
+      <select id="dashProduct" class="form-control" style="width:150px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Product</option><option value="Prime">Prime</option><option value="Elite">Elite</option><option value="Platinum">Platinum</option><option value="Premier">Premier</option><option value="Platinum Infinite">Platinum Infinite</option><option value="Group Health">Group Health</option></select>
       <select id="dashVendor" class="form-control" style="width:130px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Vendor</option><option value="VEND-001">MedCheck India</option><option value="VEND-002">HealthAssure</option><option value="VEND-003">DigiMedic</option></select>
       <span style="color:var(--primary);font-size:12px;cursor:pointer;margin-left:4px" onclick="document.getElementById('dashSearch').value='';document.getElementById('dashStatus').value='';document.getElementById('dashProduct').value='';document.getElementById('dashVendor').value='';filterDashboard()">Clear</span>
       <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="renderDashboard()">↻ Refresh</button>
@@ -1041,7 +1041,7 @@ function showWfTab(tab, wfId) {
         { id:'medical', title:'Medical Parameters', clauses:[
           {id:'3.1',title:'Scoring Components',text:'Risk assessment uses: Medical Parameters (35 pts), Lifestyle Risk (20 pts), Medical History (15 pts), Clinical Correlation (15 pts), Documentation Quality (15 pts). EM scoring covers all extracted parameters.'},
           {id:'3.2',title:'Critical Thresholds',text:'Auto-decline: BMI >40, Systolic BP >180, Fasting Glucose >300, HbA1c >10, Creatinine >3.0, LVEF <30%, HIV positive.'},
-          {id:'3.3',title:'Decision Thresholds',text:'Product-specific. Example — Arogya Premier: Accept ≥80, Refer ≥65, Decline <50. Critical Illness: Accept ≥85, Refer ≥70, Decline <55.'}
+          {id:'3.3',title:'Decision Thresholds',text:'Product-specific. Example — Prime: Accept ≥75, Refer ≥55, Decline <40. Platinum Infinite: Accept ≥82, Refer ≥62, Decline <46.'}
         ]},
         { id:'loading', title:'Loading & Exclusions', clauses:[
           {id:'4.1',title:'Premium Loading',text:'BMI 25-30: +15%. BMI 30-35: +50%. Current smoker: +75%. Controlled hypertension: +25%. Controlled diabetes: +50%. Cardiac history: +100%. Product-specific overrides apply.'},
@@ -3545,7 +3545,7 @@ async function renderInfoRequests() {
           </div>
           <button class="btn btn-sm btn-outline" onclick="addIrItem()" style="margin-bottom:12px">+ Add Item</button>
 
-          <div class="form-group"><label>Reason for Request</label><input class="form-control" id="ir_reason" placeholder="e.g., Missing mandatory ECG for Critical Illness product"></div>
+          <div class="form-group"><label>Reason for Request</label><input class="form-control" id="ir_reason" placeholder="e.g., Missing mandatory ECG for Platinum plan CAT 2 case"></div>
           <div class="form-group"><label>Deadline (days)</label><input type="number" class="form-control" id="ir_deadline" value="14" min="3" max="30" style="width:100px"></div>
           <button class="btn btn-primary" onclick="createInfoRequest()"><i data-lucide="upload"></i> Send Info Request</button>
           <div id="irResult" style="margin-top:8px"></div>

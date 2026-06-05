@@ -2487,39 +2487,37 @@ async function loadProductPolicyConfig() {
     try { productsConfig = (await s3Client.getConfig('products')) || []; } catch(e) { productsConfig = []; }
     try { policiesConfig = (await s3Client.getConfig('policies')) || []; } catch(e) { policiesConfig = []; }
     try { productPolicyMap = (await s3Client.getConfig('product-policy-map')) || {}; } catch(e) { productPolicyMap = {}; }
-  // Seed defaults — always ensure SBI Superhealth product lineup exists
-  const hasSBIProducts = productsConfig.some(p => p.name === 'Prime');
-  if (!hasSBIProducts) {
-    // Remove old generic/demo products — replace with real SBI Superhealth plans
-    const oldNames = ['Arogya Sanjeevani','Arogya Premier','Critical Illness','Super Health Top-Up',
-                      'Arogya Supreme','Group Health','Health Shield','Health Guard Pro',
-                      'Critical Care Plus','Family Floater','Demo'];
-    productsConfig = productsConfig.filter(p => !oldNames.includes(p.name));
-    const sbiProducts = [
-      // ── SBI Super Health Insurance (Superhealth) plans ──────────────────
-      { id: 'PROD-007', name: 'Prime',              code: 'SUHE-PRM', type: 'health',
-        description: 'SBI Superhealth — Prime Plan. SA bands: 3L/5L/7L/10L and 15L/20L/25L. SUHEPlanVar=5.',
-        plan_var: '5', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-008', name: 'Elite',              code: 'SUHE-ELT', type: 'health',
-        description: 'SBI Superhealth — Elite Plan. SA bands: 3L/5L/7L/10L and 15L/20L/25L. SUHEPlanVar=1.',
-        plan_var: '1', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-009', name: 'Platinum',           code: 'SUHE-PLT', type: 'health',
-        description: 'SBI Superhealth — Platinum Plan. SA bands: 10L-25L and 30L-50L. SUHEPlanVar=2.',
-        plan_var: '2', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-010', name: 'Premier',            code: 'SUHE-PRE', type: 'health',
-        description: 'SBI Superhealth — Premier Plan. SA band: 3L/5L/7L/10L. SUHEPlanVar=4.',
-        plan_var: '4', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
-      { id: 'PROD-011', name: 'Platinum Infinite',  code: 'SUHE-PLI', type: 'health',
-        description: 'SBI Superhealth — Platinum Infinite. SA bands: 50L, 75L and 1Cr+. SUHEPlanVar=3.',
-        plan_var: '3', product_code: 'SUHE001', status: 'active', created_at: new Date().toISOString() },
-      // ── Keep Group Health for legacy group cases ──────────────────────────
-      { id: 'PROD-006', name: 'Group Health',       code: 'GH',       type: 'group',
-        description: 'Employer-sponsored group mediclaim. Simplified UW for groups above 50 lives.',
-        status: 'active', created_at: new Date().toISOString() }
-    ];
-    for (const np of sbiProducts) { if (!productsConfig.find(p => p.id === np.id)) productsConfig.push(np); }
-    s3Client.saveConfig('products', productsConfig).catch(e => console.error('Products seed save error:', e.message));
-    console.log('[Startup] SBI Superhealth product lineup seeded (Prime, Elite, Platinum, Premier, Platinum Infinite, Group Health)');
+  // ── ALWAYS force-reset to SBI Superhealth products on every startup ──────────
+  // Version token forces re-seed whenever bumped — change this string to re-seed.
+  const SBI_VER = 'sbi-superhealth-v3';
+  const SBI_PRODUCTS = [
+    { id:'PROD-007', name:'Prime',             code:'SUHE-PRM', type:'health',   _ver:SBI_VER,
+      plan_var:'5', product_code:'SUHE001', status:'active', created_at:new Date().toISOString(),
+      description:'SBI Super Health Insurance — Prime Plan. SA: 3L/5L/7L/10L and 15L/20L/25L. SUHEPlanVar=5.' },
+    { id:'PROD-008', name:'Elite',             code:'SUHE-ELT', type:'health',   _ver:SBI_VER,
+      plan_var:'1', product_code:'SUHE001', status:'active', created_at:new Date().toISOString(),
+      description:'SBI Super Health Insurance — Elite Plan. SA: 3L/5L/7L/10L and 15L/20L/25L. SUHEPlanVar=1.' },
+    { id:'PROD-009', name:'Platinum',          code:'SUHE-PLT', type:'health',   _ver:SBI_VER,
+      plan_var:'2', product_code:'SUHE001', status:'active', created_at:new Date().toISOString(),
+      description:'SBI Super Health Insurance — Platinum Plan. SA: 10L-25L and 30L-50L. SUHEPlanVar=2.' },
+    { id:'PROD-010', name:'Premier',           code:'SUHE-PRE', type:'health',   _ver:SBI_VER,
+      plan_var:'4', product_code:'SUHE001', status:'active', created_at:new Date().toISOString(),
+      description:'SBI Super Health Insurance — Premier Plan. SA: 3L/5L/7L/10L. SUHEPlanVar=4.' },
+    { id:'PROD-011', name:'Platinum Infinite', code:'SUHE-PLI', type:'health',   _ver:SBI_VER,
+      plan_var:'3', product_code:'SUHE001', status:'active', created_at:new Date().toISOString(),
+      description:'SBI Super Health Insurance — Platinum Infinite. SA: 50L, 75L, 1Cr+. SUHEPlanVar=3.' },
+    { id:'PROD-006', name:'Group Health',      code:'GH',       type:'group',    _ver:SBI_VER,
+      status:'active', created_at:new Date().toISOString(),
+      description:'Employer-sponsored group mediclaim. Simplified UW for groups above 50 lives.' }
+  ];
+  const isVersioned = productsConfig.some(p => p._ver === SBI_VER);
+  if (!isVersioned) {
+    // Completely overwrite — remove ALL old products, save only SBI lineup
+    productsConfig = SBI_PRODUCTS;
+    await s3Client.saveConfig('products', productsConfig).catch(e => console.error('Products seed error:', e.message));
+    console.log('[Startup] ✅ SBI products force-seeded: Prime, Elite, Platinum, Premier, Platinum Infinite, Group Health');
+  } else {
+    console.log('[Startup] ✅ SBI products already current — skipping reset');
   }
 
   // Seed default policies — always ensure the new policies exist
@@ -2729,27 +2727,20 @@ async function loadProductPolicyConfig() {
     s3Client.saveConfig('policies', policiesConfig).catch(e => console.error('Policies seed save error:', e.message));
   }
 
-  // Auto-map products to policies — ensure all SBI plan mappings exist
-  const hasMappings = productPolicyMap['PROD-007'] === 'POL-007' && productPolicyMap['PROD-008'] === 'POL-008';
-  if (!hasMappings) {
-    productPolicyMap = {
-      ...productPolicyMap,
-      // SBI Superhealth plans → their specific UW policies with CAT rules
-      'PROD-007': 'POL-007',  // Prime → Prime UW Policy
-      'PROD-008': 'POL-008',  // Elite → Elite UW Policy
-      'PROD-009': 'POL-009',  // Platinum → Platinum UW Policy
-      'PROD-010': 'POL-010',  // Premier → Premier UW Policy
-      'PROD-011': 'POL-007',  // Platinum Infinite → uses Prime-like policy (closest match)
-      'PROD-006': 'POL-006',  // Group Health → Group Health UW Policy
-      // Legacy mappings kept in case old cases exist in DB
-      'PROD-001': 'POL-001',
-      'PROD-002': 'POL-002',
-      'PROD-003': 'POL-003',
-      'PROD-004': 'POL-004',
-      'PROD-005': 'POL-005'
-    };
-    s3Client.saveConfig('product-policy-map', productPolicyMap).catch(e => console.error('Mapping seed save error:', e.message));
-    console.log('[Startup] SBI product-policy mappings seeded (Prime→POL-007, Elite→POL-008, Platinum→POL-009, Premier→POL-010)');
+  // ── Always ensure correct SBI product-policy mapping ────────────────────────
+  const SBI_MAP = {
+    'PROD-007': 'POL-007',  // Prime            → Prime UW Policy
+    'PROD-008': 'POL-008',  // Elite             → Elite UW Policy
+    'PROD-009': 'POL-009',  // Platinum          → Platinum UW Policy
+    'PROD-010': 'POL-010',  // Premier           → Premier UW Policy
+    'PROD-011': 'POL-007',  // Platinum Infinite → Prime-like UW Policy
+    'PROD-006': 'POL-006',  // Group Health      → Group Health UW Policy
+  };
+  const mapCorrect = Object.entries(SBI_MAP).every(([k,v]) => productPolicyMap[k] === v);
+  if (!mapCorrect) {
+    productPolicyMap = { ...productPolicyMap, ...SBI_MAP };
+    await s3Client.saveConfig('product-policy-map', productPolicyMap).catch(e => console.error('Mapping seed error:', e.message));
+    console.log('[Startup] ✅ SBI product-policy map updated: Prime→POL-007, Elite→POL-008, Platinum→POL-009, Premier→POL-010');
   }
   console.log(`[Startup] Products: ${productsConfig.length}, Policies: ${policiesConfig.length}, Mappings: ${Object.keys(productPolicyMap).length}`);
 }
