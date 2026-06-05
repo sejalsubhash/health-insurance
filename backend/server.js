@@ -432,7 +432,7 @@ app.get('/api/workflow/:id/export-pdf', requireAuth, (req, res) => {
   const score = a.risk_score?.normalized || 0;
   const grade = a.risk_score?.grade || 'N/A';
   const rec = a.recommendation || 'pending';
-  const vendorNames = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic'};
+  const vendorNames = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic','VEND-004':'ClinAssure Diagnostics','VEND-005':'MedElite Advanced Diagnostics'};
   const recLabels = { accept_standard:'APPROVED — Standard Rates', accept_with_loading:'APPROVED — With Loading', refer:'REFERRED — Senior UW Review', decline:'DECLINED', pending:'PENDING' };
   // Phase 1: override banner for auto_issued STP workflows
   const isAutoIssued = wf.state === 'auto_issued' || wf.state === 'policy_issued' || wf.route_type === 'stp_auto_issue';
@@ -964,13 +964,26 @@ app.post('/api/workflow/stp-evaluate', requireAuth, async (req, res) => {
     }
 
     // 6. Not eligible (or shadow mode or lightweight downgrade) → create NSTP workflow
-    const selectedVendor = vendor_id || 'VEND-001';
-    const vendor = vendorApi.getVendor(selectedVendor);
 
     // Resolve the correct CAT level based on age + SA + policy rules
     const hasPED_stp = !!(proposal.pre_existing_conditions?.length || proposal.detailed_ped);
     const catResolved = resolveCAT(proposal.age, proposal.sum_assured, policyOverrides, hasPED_stp);
     console.log(`[resolveCAT] ${proposal.product_name} | Age ${proposal.age} | SA ₹${proposal.sum_assured} | PED: ${hasPED_stp} → ${catResolved.cat} | ${catResolved.reason}`);
+
+    // Auto-assign vendor based on CAT level
+    // CAT 1 → MedCheck India, CAT 2 → HealthAssure, CAT 3 → ClinAssure, CAT 4 → MedElite, TeleMER → DigiMedic
+    const CAT_VENDOR_MAP = {
+      'STP':      null,
+      'tele_mer': 'VEND-003',  // DigiMedic — phone interview
+      'CAT_1':    'VEND-001',  // MedCheck India — basic medical
+      'CAT_2':    'VEND-002',  // HealthAssure — + ECG
+      'CAT_3':    'VEND-004',  // ClinAssure Diagnostics — + Echo, TMT, LFT, KFT
+      'CAT_4':    'VEND-005',  // MedElite Advanced — + Chest X-Ray, PSA/PAP, Thyroid
+    };
+    const autoVendor = CAT_VENDOR_MAP[catResolved.cat] || 'VEND-001';
+    const selectedVendor = vendor_id || autoVendor;
+    const vendor = vendorApi.getVendor(selectedVendor);
+    console.log(`[Vendor] CAT: ${catResolved.cat} → Auto-assigned: ${selectedVendor}`);
 
     // Override route if resolveCAT says tele_mer and evaluation didn't already set it
     if (catResolved.cat === 'tele_mer' && evaluation.route !== 'nstp_telemer') {
@@ -978,14 +991,14 @@ app.post('/api/workflow/stp-evaluate', requireAuth, async (req, res) => {
       evaluation.reason = `Policy rule override: ${catResolved.reason}`;
     }
 
-    // Build required_tests list from CAT level
+    // Build required_tests list from CAT level per SBI guidelines
     const catTestsMap = {
       'STP':      [],
       'tele_mer': [],
-      'CAT_1':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology'],
-      'CAT_2':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry'],
-      'CAT_3':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry', 'cardiac_echo', 'tmt'],
-      'CAT_4':    ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'ecg', 'blood_chemistry', 'cardiac_echo', 'tmt', 'chest_xray', 'thyroid', 'liver_function']
+      'CAT_1':    ['physical_exam', 'urine_analysis', 'hematology', 'esr', 'sgpt', 'hba1c', 'serum_creatinine', 'total_cholesterol'],
+      'CAT_2':    ['physical_exam', 'urine_analysis', 'hematology', 'esr', 'ecg', 'sgpt', 'hba1c', 'serum_creatinine', 'total_cholesterol', 'serum_triglycerides', 'urine_microalbumin'],
+      'CAT_3':    ['physical_exam', 'urine_analysis', 'hematology', 'esr', 'ecg', 'hba1c', 'urine_microalbumin', 'lipid_profile', 'lft', 'kft', 'cardiac_echo', 'tmt'],
+      'CAT_4':    ['physical_exam', 'urine_analysis', 'hematology', 'esr', 'ecg', 'hba1c', 'urine_microalbumin', 'lipid_profile', 'lft', 'kft', 'cardiac_echo', 'tmt', 'chest_xray', 'psa_pap']
     };
     const requiredTests = catTestsMap[catResolved.cat] || (policyOverrides?.mandatory_tests || []);
 
@@ -1149,7 +1162,7 @@ app.post('/api/workflow/:id/reassign', requireAuth, (req, res) => {
     const { reason } = req.body;
     if (!reason || reason.trim().length === 0) return res.status(400).json({ error: 'Reason for reassignment is required' });
     const wf = workflowEngine.reassignToVendor(req.params.id, reason, req.user?.email || 'UW Admin');
-    const vendorNames = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic'};
+    const vendorNames = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic','VEND-004':'ClinAssure Diagnostics','VEND-005':'MedElite Advanced Diagnostics'};
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'reassigned', reason });
     socketManager.emitGlobal('vendor_case_reassigned', { workflow_id: wf.id, vendor_id: wf.vendor_id, vendor_name: vendorNames[wf.vendor_id] || wf.vendor_id, reason });
     res.json({ success: true, workflow: wf, message: `Case reassigned to ${vendorNames[wf.vendor_id] || wf.vendor_id}. Reason: ${reason}` });

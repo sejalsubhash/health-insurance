@@ -11,27 +11,52 @@
 const { v4: uuidv4 } = require('uuid');
 
 // ─── Vendor Registry ───
+// CAT assignment: CAT1→VEND-001, CAT2→VEND-002, CAT3→VEND-004, CAT4→VEND-005, TeleMER→VEND-003
 const VENDORS = {
   'VEND-001': {
     id: 'VEND-001', name: 'MedCheck India', code: 'MCI',
-    type: 'full_pphc', regions: ['Mumbai', 'Delhi', 'Bangalore', 'Chennai', 'Hyderabad', 'Pune'],
+    type: 'full_pphc', cat_level: 'CAT_1',
+    regions: ['Mumbai', 'Delhi', 'Bangalore', 'Chennai', 'Hyderabad', 'Pune', 'Ghaziabad', 'Noida'],
     sla_hours: 48, api_version: 'v2', status: 'active',
-    capabilities: ['blood_work', 'ecg', 'echo', 'tmt', 'usg_abdomen', 'chest_xray', 'physical_exam', 'urine_analysis'],
-    avg_tat_hours: 36, compliance_rate: 97.2
+    capabilities: ['blood_work', 'urine_analysis', 'physical_exam', 'hematology', 'esr', 'sgpt', 'hba1c', 'serum_creatinine', 'total_cholesterol'],
+    avg_tat_hours: 36, compliance_rate: 97.2,
+    description: 'CAT 1 specialist — MER, CBC, ESR, SGPT, HbA1c, Serum Creatinine, Total Cholesterol, Urine Routine'
   },
   'VEND-002': {
     id: 'VEND-002', name: 'HealthAssure', code: 'HA',
-    type: 'full_pphc', regions: ['Mumbai', 'Delhi', 'Kolkata', 'Ahmedabad', 'Jaipur'],
+    type: 'full_pphc', cat_level: 'CAT_2',
+    regions: ['Mumbai', 'Delhi', 'Kolkata', 'Ahmedabad', 'Jaipur', 'Pune', 'Surat'],
     sla_hours: 72, api_version: 'v1', status: 'active',
-    capabilities: ['blood_work', 'ecg', 'physical_exam', 'urine_analysis', 'chest_xray'],
-    avg_tat_hours: 52, compliance_rate: 94.8
+    capabilities: ['blood_work', 'ecg', 'urine_analysis', 'physical_exam', 'hematology', 'esr', 'sgpt', 'hba1c', 'serum_creatinine', 'total_cholesterol', 'serum_triglycerides', 'urine_microalbumin', 'blood_chemistry'],
+    avg_tat_hours: 52, compliance_rate: 94.8,
+    description: 'CAT 2 specialist — All CAT 1 tests + ECG, Total Cholesterol, Serum Triglycerides, Urine Microalbumin'
   },
   'VEND-003': {
     id: 'VEND-003', name: 'DigiMedic', code: 'DM',
-    type: 'tele_pphc', regions: ['Pan India'],
+    type: 'tele_pphc', cat_level: 'tele_mer',
+    regions: ['Pan India'],
     sla_hours: 24, api_version: 'v2', status: 'active',
     capabilities: ['tele_mer', 'video_mer', 'face_scan', 'finger_scan', 'chatbot_assessment'],
-    avg_tat_hours: 8, compliance_rate: 99.1
+    avg_tat_hours: 8, compliance_rate: 99.1,
+    description: 'Tele MER specialist — Phone/video medical interview, questionnaire, examiner assessment'
+  },
+  'VEND-004': {
+    id: 'VEND-004', name: 'ClinAssure Diagnostics', code: 'CAD',
+    type: 'full_pphc', cat_level: 'CAT_3',
+    regions: ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Pune', 'Kolkata'],
+    sla_hours: 96, api_version: 'v2', status: 'active',
+    capabilities: ['blood_work', 'ecg', 'urine_analysis', 'physical_exam', 'hematology', 'esr', 'sgpt', 'hba1c', 'serum_creatinine', 'total_cholesterol', 'serum_triglycerides', 'urine_microalbumin', 'lipid_profile', 'lft', 'kft', 'blood_chemistry', 'cardiac_echo', 'tmt'],
+    avg_tat_hours: 72, compliance_rate: 96.4,
+    description: 'CAT 3 specialist — All CAT 2 tests + Lipid Profile (HDL/LDL/VLDL), LFT, KFT, 2D Echo, TMT'
+  },
+  'VEND-005': {
+    id: 'VEND-005', name: 'MedElite Advanced Diagnostics', code: 'MEAD',
+    type: 'full_pphc', cat_level: 'CAT_4',
+    regions: ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai'],
+    sla_hours: 120, api_version: 'v2', status: 'active',
+    capabilities: ['blood_work', 'ecg', 'urine_analysis', 'physical_exam', 'hematology', 'esr', 'sgpt', 'hba1c', 'serum_creatinine', 'total_cholesterol', 'serum_triglycerides', 'urine_microalbumin', 'lipid_profile', 'lft', 'kft', 'blood_chemistry', 'cardiac_echo', 'tmt', 'chest_xray', 'psa', 'pap_smear', 'thyroid_panel', 'extended_kidney'],
+    avg_tat_hours: 96, compliance_rate: 98.7,
+    description: 'CAT 4 specialist — All CAT 3 tests + Chest X-Ray, PSA (Male), PAP Smear (Female), Thyroid Panel, Extended Kidney Function'
   }
 };
 

@@ -211,17 +211,30 @@ textarea.form-control{resize:vertical;min-height:60px}
       <div id="sbiJsonStatus" style="margin-top:8px;display:none;"></div>
     </div>
 
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;padding:6px 10px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary)">
+      <i data-lucide="lock"></i> Fields marked with <span style="color:var(--primary)">🔒</span> are auto-filled from JSON and cannot be edited.
+    </div>
     <div class="grid-2">
-      <div class="form-group"><label>Proposer Name *</label><input class="form-control" id="wf_name" placeholder="Full name"></div>
-      <div class="form-group"><label>Age</label><input class="form-control" id="wf_age" type="number" value="35"></div>
-      <div class="form-group"><label>Gender</label><select class="form-control" id="wf_gender"><option value="male">Male</option><option value="female">Female</option></select></div>
-      <div class="form-group"><label>Sum Assured (₹)</label><input class="form-control" id="wf_sum" type="number" value="5000000"></div>
-      <div class="form-group"><label>Height (cm)</label><input class="form-control" id="wf_height" type="number" placeholder="e.g. 170" oninput="calcBMI()"></div>
-      <div class="form-group"><label>Weight (kg)</label><input class="form-control" id="wf_weight" type="number" placeholder="e.g. 75" oninput="calcBMI()"></div>
-      <div class="form-group"><label>BMI (auto-calculated)</label><div id="bmiDisplay" style="padding:8px 12px;background:var(--surface-alt);border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:var(--text-muted);min-height:36px;display:flex;align-items:center">Enter height & weight</div></div>
-      <div class="form-group"><label>Product</label><select class="form-control" id="wf_product" onchange="updateRequiredTests()"><option value="">Loading products...</option></select></div>
-      <div class="form-group"><label>NSTP Reason</label><select class="form-control" id="wf_reason"><option value="sum_assured_threshold">Sum Assured Threshold</option><option value="age_threshold">Age Threshold</option><option value="medical_history">Medical History</option><option value="occupation_risk">Occupation Risk</option></select></div>
-      <div class="form-group"><label>Assign to Vendor</label><select class="form-control" id="wf_vendor"><option value="VEND-001">MedCheck India (Full PPHC)</option><option value="VEND-002">HealthAssure (Full PPHC)</option><option value="VEND-003">DigiMedic (Tele PPHC)</option></select></div>
+      <div class="form-group"><label>Proposer Name * 🔒</label><input class="form-control" id="wf_name" placeholder="Auto-filled from JSON" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
+      <div class="form-group"><label>Age 🔒</label><input class="form-control" id="wf_age" type="number" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
+      <div class="form-group"><label>Gender 🔒</label><input class="form-control" id="wf_gender" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
+      <div class="form-group"><label>Sum Assured (₹) 🔒</label><input class="form-control" id="wf_sum" type="number" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
+      <div class="form-group"><label>Height (cm) 🔒</label><input class="form-control" id="wf_height" type="number" placeholder="Auto-filled from JSON" readonly style="background:var(--surface-alt);cursor:not-allowed"></div>
+      <div class="form-group"><label>Weight (kg) 🔒</label><input class="form-control" id="wf_weight" type="number" placeholder="Auto-filled from JSON" readonly style="background:var(--surface-alt);cursor:not-allowed"></div>
+      <div class="form-group"><label>BMI (auto-calculated) 🔒</label><div id="bmiDisplay" style="padding:8px 12px;background:var(--surface-alt);border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:var(--text-muted);min-height:36px;display:flex;align-items:center">Auto-calculated from height & weight</div></div>
+      <div class="form-group"><label>Product 🔒</label>
+        <div style="padding:8px 12px;background:var(--surface-alt);border-radius:6px;font-weight:500;font-size:13px;min-height:36px;display:flex;align-items:center;border:1px solid var(--border)">
+          <span id="wf_product_display" style="color:var(--text-primary)">Auto-filled from JSON</span>
+          <input type="hidden" id="wf_product">
+        </div>
+      </div>
+      <div class="form-group"><label>NSTP Reason 🔒</label><input class="form-control" id="wf_reason" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
+      <div class="form-group"><label>Assigned Vendor 🔒 <span id="wf_vendor_cat_badge" style="font-size:11px;padding:2px 8px;border-radius:10px;background:var(--info-bg);color:var(--info);margin-left:4px"></span></label>
+        <div style="padding:8px 12px;background:var(--surface-alt);border-radius:6px;font-weight:500;font-size:13px;min-height:36px;display:flex;align-items:center;border:1px solid var(--border)">
+          <span id="wf_vendor_display" style="color:var(--text-primary)">Auto-assigned based on CAT level</span>
+          <input type="hidden" id="wf_vendor" value="VEND-001">
+        </div>
+      </div>
     </div>
     <div class="form-group"><label>Observations / Required Reports</label><textarea class="form-control" id="wf_observations" rows="2" placeholder="E.g.: Proposer has history of hypertension. Require full cardiac workup..."></textarea></div>
     <div class="form-group"><label>Required Tests <span id="mandatoryTestHint" style="font-weight:400;font-size:11px;color:var(--info)"></span></label>
@@ -307,7 +320,7 @@ textarea.form-control{resize:vertical;min-height:60px}
     <div class="form-group"><label>Email</label><input type="email" class="form-control" id="new_user_email" placeholder="user@acc.ltd"></div>
     <div class="form-group"><label>Name</label><input type="text" class="form-control" id="new_user_name" placeholder="Full name"></div>
     <div class="form-group"><label>Role</label><select class="form-control" id="new_user_role" onchange="document.getElementById('vendorAssignGroup').style.display=this.value==='Vendor User'?'block':'none'"><option value="Viewer">Viewer (Read-only)</option><option value="UW Admin">UW Admin (Underwriter)</option><option value="Vendor User">Vendor User</option><option value="Super Admin">Super Admin</option></select></div>
-    <div class="form-group" id="vendorAssignGroup" style="display:none"><label>Assign to Vendor</label><select class="form-control" id="new_user_vendor"><option value="">Select vendor...</option><option value="VEND-001">MedCheck India</option><option value="VEND-002">HealthAssure</option><option value="VEND-003">DigiMedic</option></select></div>
+    <div class="form-group" id="vendorAssignGroup" style="display:none"><label>Assign to Vendor</label><select class="form-control" id="new_user_vendor"><option value="">Select vendor...</option><option value="VEND-001">MedCheck India (CAT 1)</option><option value="VEND-002">HealthAssure (CAT 2)</option><option value="VEND-003">DigiMedic (Tele MER)</option><option value="VEND-004">ClinAssure Diagnostics (CAT 3)</option><option value="VEND-005">MedElite Advanced Diagnostics (CAT 4)</option></select></div>
   </div>
   <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal('addUserModal')">Cancel</button><button class="btn btn-accent" onclick="addNewUser()">Add User</button></div>
 </div>
@@ -470,24 +483,13 @@ function showPage(page) { currentPage = page; document.querySelectorAll('.nav-it
 function openModal(id) { document.getElementById(id).classList.add('active'); if (id === 'newWorkflowModal') loadProductDropdown(); setTimeout(renderIcons, 0); }
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 async function loadProductDropdown() {
-  try {
-    const products = await api('/api/products');
-    const sel = document.getElementById('wf_product');
-    if (sel && products.length) {
-      // SBI plans first, Group Health last
-      const order = ['Prime','Elite','Platinum','Premier','Platinum Infinite','Group Health'];
-      const sorted = [...products.filter(p=>p.status==='active')].sort((a,b) => {
-        const ai = order.indexOf(a.name); const bi = order.indexOf(b.name);
-        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-      });
-      sel.innerHTML = sorted.map(p => `<option value="${p.name}">${p.name}${p.code ? ' ('+p.code+')' : ''}</option>`).join('');
-      updateRequiredTests();
-    }
-  } catch(e) {
-    // Fallback to SBI products if API fails
-    const sel = document.getElementById('wf_product');
-    if (sel) sel.innerHTML = ['Prime','Elite','Platinum','Premier','Platinum Infinite','Group Health']
-      .map(n => `<option value="${n}">${n}</option>`).join('');
+  // Product is now a read-only display field — set default from JSON upload only
+  // No dropdown needed — product is always set from JSON import
+  const hidden = document.getElementById('wf_product');
+  const display = document.getElementById('wf_product_display');
+  if (hidden && !hidden.value) {
+    hidden.value = '';
+    if (display) display.textContent = 'Upload JSON to auto-fill product';
   }
 }
 
@@ -1653,37 +1655,50 @@ async function handleSBIJsonUpload(input) {
     // Quotation No
     const quotationNo = po.QuotationNo || '';
 
-    // Vendor suggestion based on CAT
-    let vendorSuggestion = 'VEND-001'; // MedCheck India default
-    if (pphcTest === 'Tele MER') vendorSuggestion = 'VEND-003'; // DigiMedic
-    else if (pphcTest === 'CAT 3' || pphcTest === 'CAT 4') vendorSuggestion = 'VEND-002'; // HealthAssure
+    // CAT → Vendor auto-assignment (matches server-side CAT_VENDOR_MAP)
+    const CAT_VENDOR_MAP = {
+      'STP':      { id: 'VEND-001', name: 'MedCheck India',              cat: 'STP' },
+      'Tele MER': { id: 'VEND-003', name: 'DigiMedic',                   cat: 'Tele MER' },
+      'CAT 1':    { id: 'VEND-001', name: 'MedCheck India',              cat: 'CAT 1' },
+      'CAT 2':    { id: 'VEND-002', name: 'HealthAssure',                cat: 'CAT 2' },
+      'CAT 3':    { id: 'VEND-004', name: 'ClinAssure Diagnostics',      cat: 'CAT 3' },
+      'CAT 4':    { id: 'VEND-005', name: 'MedElite Advanced Diagnostics', cat: 'CAT 4' },
+    };
+    const vendorInfo = CAT_VENDOR_MAP[pphcTest] || CAT_VENDOR_MAP['CAT 1'];
+    const vendorSuggestion = vendorInfo.id;
 
-    // ── Fill form fields ────────────────────────────────────────────
-    if (name)  document.getElementById('wf_name').value  = name;
-    if (age)   document.getElementById('wf_age').value   = age;
-    if (sumAssured) document.getElementById('wf_sum').value = sumAssured;
-    if (height) document.getElementById('wf_height').value = height;
-    if (weight) document.getElementById('wf_weight').value = weight;
+    // ── Fill form fields (all read-only — from JSON) ────────────────
+    if (name)       document.getElementById('wf_name').value  = name;
+    if (age)        document.getElementById('wf_age').value   = age;
+    if (sumAssured) document.getElementById('wf_sum').value   = sumAssured;
+    if (height)     document.getElementById('wf_height').value = height;
+    if (weight)     document.getElementById('wf_weight').value = weight;
     document.getElementById('wf_gender').value = gender;
 
-    // Set product dropdown — match by name
-    const productSel = document.getElementById('wf_product');
-    for (const opt of productSel.options) {
-      if (opt.text.toLowerCase().includes(productName.toLowerCase()) ||
-          productName.toLowerCase().includes(opt.text.toLowerCase())) {
-        productSel.value = opt.value;
-        break;
-      }
-    }
+    // Product — set hidden input value AND visible display text (no dropdown)
+    document.getElementById('wf_product').value = productName;
+    const disp = document.getElementById('wf_product_display');
+    if (disp) disp.textContent = productName || 'Not detected';
 
-    // Set NSTP reason
-    document.getElementById('wf_reason').value = nstpReason;
+    // NSTP reason — read-only display
+    const nstpReasonLabels = {
+      'age_threshold': 'Age Threshold', 'sum_assured_threshold': 'Sum Assured Threshold',
+      'medical_history': 'Medical History / PED', 'occupation_risk': 'Occupation Risk'
+    };
+    document.getElementById('wf_reason').value = nstpReasonLabels[nstpReason] || nstpReason;
 
-    // Set vendor
+    // Vendor — auto-assigned, locked display field
     document.getElementById('wf_vendor').value = vendorSuggestion;
+    const vendorDisp = document.getElementById('wf_vendor_display');
+    const vendorBadge = document.getElementById('wf_vendor_cat_badge');
+    if (vendorDisp) vendorDisp.textContent = vendorInfo.name;
+    if (vendorBadge) { vendorBadge.textContent = vendorInfo.cat; vendorBadge.style.display = vendorInfo.cat ? 'inline' : 'none'; }
 
-    // Set observations
+    // Observations
     if (observations) document.getElementById('wf_observations').value = observations;
+
+    // Trigger BMI calculation
+    if (height && weight) calcBMI();
 
     // Check required tests
     if (testsToCheck) {
@@ -2616,17 +2631,176 @@ async function submitUWReview(id) {
 async function renderVendors() {
   const el = document.getElementById('mainContent');
   try {
-    const vendors = await api('/api/vendors');
-    el.innerHTML = `<div style="margin-bottom:16px;font-size:13px;color:var(--text-muted)">Click a vendor to view their allocated cases</div>
-    <div class="grid-3" style="margin-bottom:16px">${vendors.map(v=>`<div class="vendor-card" onclick="viewVendorCases('${v.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:start"><div><div style="font-weight:600;font-size:15px">${v.name}</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">${v.code} — ${v.type}</div></div><span class="badge badge-success">${v.status}</span></div>
-      <div style="margin-top:12px;font-size:12px;color:var(--text-muted)"><div>Regions: ${v.regions.join(', ')}</div><div style="margin-top:4px">SLA: ${v.sla_hours}h | Avg TAT: ${v.avg_tat_hours}h | Compliance: ${v.compliance_rate}%</div><div style="margin-top:4px">Capabilities: ${v.capabilities.length} tests</div></div>
-      <div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between">
-        <div style="font-size:13px"><strong style="font-size:18px;font-family:'JetBrains Mono',monospace">${v.case_count||0}</strong> total ${v.pending_cases?`<span class="badge badge-warning" style="margin-left:4px">${v.pending_cases} pending</span>`:''} ${v.submitted_cases?`<span class="badge badge-success" style="margin-left:4px">${v.submitted_cases} submitted</span>`:''}</div>
-        <button class="btn btn-sm btn-primary">View Cases →</button>
-      </div>
-    </div>`).join('')}</div>`;
+    let vendors = await api('/api/vendors');
+
+    // Auto-seed CAT3 and CAT4 vendors if missing
+    const CAT3_VEND = { id:'VEND-004', name:'ClinAssure Diagnostics', code:'CAD', type:'full_pphc',
+      regions:['Mumbai','Delhi','Bangalore','Chennai','Hyderabad','Pune','Kolkata'],
+      sla_hours:72, avg_tat_hours:60, compliance_rate:96.5, status:'active',
+      cat_level:'CAT_3',
+      capabilities:['blood_work','physical_exam','urine_analysis','hematology','ecg','blood_chemistry','cardiac_echo','tmt'],
+      description:'Specialist vendor for CAT 3 cases. Full cardiac workup including 2D Echo and TMT stress test.' };
+    const CAT4_VEND = { id:'VEND-005', name:'MedElite Advanced Diagnostics', code:'MEAD', type:'full_pphc',
+      regions:['Pan India'],
+      sla_hours:96, avg_tat_hours:80, compliance_rate:98.2, status:'active',
+      cat_level:'CAT_4',
+      capabilities:['blood_work','physical_exam','urine_analysis','hematology','ecg','blood_chemistry','cardiac_echo','tmt','chest_xray','thyroid','liver_function','psa','pap_smear'],
+      description:'Premium vendor for CAT 4 cases. Extended panels including thyroid, LFT, KFT, PSA/PAP.' };
+
+    const hasCAT3 = vendors.some(v => v.id === 'VEND-004' || v.name === 'ClinAssure Diagnostics');
+    const hasCAT4 = vendors.some(v => v.id === 'VEND-005' || v.name === 'MedElite Advanced Diagnostics');
+    if (!hasCAT3) { await api('/api/vendors', { method:'POST', body:JSON.stringify(CAT3_VEND) }).catch(()=>{}); }
+    if (!hasCAT4) { await api('/api/vendors', { method:'POST', body:JSON.stringify(CAT4_VEND) }).catch(()=>{}); }
+    if (!hasCAT3 || !hasCAT4) { vendors = await api('/api/vendors'); showToast('CAT 3 & CAT 4 vendors added', 'success'); }
+
+    el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-size:13px;color:var(--text-muted)">Click a vendor to view their allocated cases</div>
+      <button class="btn btn-accent btn-sm" onclick="addVendorModal()"><i data-lucide="plus"></i> Add Vendor</button>
+    </div>
+    <div class="grid-3" style="margin-bottom:16px">${vendors.map(v=>`
+      <div class="vendor-card">
+        <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:10px">
+          <div>
+            <div style="font-weight:600;font-size:15px">${v.name}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${v.code||''} — ${v.type||''}</div>
+          </div>
+          <div style="display:flex;gap:4px;align-items:center">
+            <span class="badge badge-success">${v.status}</span>
+            <button class="btn btn-sm btn-outline" onclick="event.stopPropagation();editVendorModal('${v.id}')" title="Edit vendor" style="padding:2px 8px;font-size:11px">✎ Edit</button>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted)">
+          <div>Regions: ${(v.regions||[]).join(', ')}</div>
+          <div style="margin-top:4px">SLA: ${v.sla_hours||'—'}h | Avg TAT: ${v.avg_tat_hours||'—'}h | Compliance: ${v.compliance_rate||'—'}%</div>
+          <div style="margin-top:4px">Capabilities: ${(v.capabilities||[]).length} tests</div>
+          ${v.cat_level ? `<div style="margin-top:4px"><span class="badge badge-info" style="font-size:10px">${v.cat_level.replace('_',' ')}</span></div>` : ''}
+        </div>
+        <div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:13px">
+            <strong style="font-size:18px;font-family:'JetBrains Mono',monospace">${v.case_count||0}</strong> total
+            ${v.pending_cases?`<span class="badge badge-warning" style="margin-left:4px">${v.pending_cases} pending</span>`:''}
+            ${v.submitted_cases?`<span class="badge badge-success" style="margin-left:4px">${v.submitted_cases} submitted</span>`:''}
+          </div>
+          <button class="btn btn-sm btn-primary" onclick="viewVendorCases('${v.id}')">View Cases →</button>
+        </div>
+      </div>`).join('')}</div>`;
   } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading vendors</p></div>'; }
+}
+
+function addVendorModal() {
+  const existing = document.getElementById('vendorModal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'vendorModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;padding:24px;width:520px;max-width:95vw;max-height:90vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Add New Vendor</h3>
+        <button onclick="document.getElementById('vendorModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <div class="grid-2" style="gap:10px;">
+        <div class="form-group"><label>Vendor Name *</label><input class="form-control" id="vm_name" placeholder="e.g. MedCheck India"></div>
+        <div class="form-group"><label>Code *</label><input class="form-control" id="vm_code" placeholder="e.g. MCI"></div>
+        <div class="form-group"><label>Type</label><select class="form-control" id="vm_type"><option value="full_pphc">Full PPHC</option><option value="tele_pphc">Tele PPHC</option></select></div>
+        <div class="form-group"><label>CAT Level</label><select class="form-control" id="vm_cat"><option value="">Any</option><option value="tele_mer">Tele MER</option><option value="CAT_1">CAT 1</option><option value="CAT_2">CAT 2</option><option value="CAT_3">CAT 3</option><option value="CAT_4">CAT 4</option></select></div>
+        <div class="form-group"><label>SLA (hours)</label><input class="form-control" id="vm_sla" type="number" value="48"></div>
+        <div class="form-group"><label>Compliance Rate (%)</label><input class="form-control" id="vm_compliance" type="number" value="95"></div>
+        <div class="form-group" style="grid-column:span 2"><label>Regions (comma separated)</label><input class="form-control" id="vm_regions" placeholder="Mumbai, Delhi, Bangalore"></div>
+        <div class="form-group" style="grid-column:span 2"><label>Description</label><textarea class="form-control" id="vm_desc" rows="2" placeholder="Vendor specialization..."></textarea></div>
+      </div>
+      <button onclick="saveNewVendor()" class="btn btn-accent" style="width:100%;margin-top:12px;">Add Vendor</button>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveNewVendor() {
+  const name = document.getElementById('vm_name')?.value?.trim();
+  const code = document.getElementById('vm_code')?.value?.trim();
+  if (!name || !code) { showToast('Name and Code are required', 'error'); return; }
+  const vendor = {
+    name, code,
+    type: document.getElementById('vm_type')?.value || 'full_pphc',
+    cat_level: document.getElementById('vm_cat')?.value || '',
+    sla_hours: parseInt(document.getElementById('vm_sla')?.value) || 48,
+    compliance_rate: parseFloat(document.getElementById('vm_compliance')?.value) || 95,
+    regions: (document.getElementById('vm_regions')?.value || '').split(',').map(s=>s.trim()).filter(Boolean),
+    description: document.getElementById('vm_desc')?.value || '',
+    status: 'active', avg_tat_hours: 36, capabilities: []
+  };
+  try {
+    const r = await api('/api/vendors', { method:'POST', body:JSON.stringify(vendor) });
+    if (r.success || r.id) {
+      showToast('Vendor added successfully', 'success');
+      document.getElementById('vendorModal')?.remove();
+      renderVendors();
+    } else showToast(r.error || 'Failed to add vendor', 'error');
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function editVendorModal(vendorId) {
+  let vendors = [];
+  try { vendors = await api('/api/vendors'); } catch(e) {}
+  const v = vendors.find(x => x.id === vendorId);
+  if (!v) { showToast('Vendor not found', 'error'); return; }
+  const existing = document.getElementById('vendorModal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'vendorModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;padding:24px;width:520px;max-width:95vw;max-height:90vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Edit Vendor — ${v.name}</h3>
+        <button onclick="document.getElementById('vendorModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <div class="grid-2" style="gap:10px;">
+        <div class="form-group"><label>Vendor Name *</label><input class="form-control" id="vm_name" value="${v.name||''}"></div>
+        <div class="form-group"><label>Code *</label><input class="form-control" id="vm_code" value="${v.code||''}"></div>
+        <div class="form-group"><label>Type</label><select class="form-control" id="vm_type"><option value="full_pphc" ${v.type==='full_pphc'?'selected':''}>Full PPHC</option><option value="tele_pphc" ${v.type==='tele_pphc'?'selected':''}>Tele PPHC</option></select></div>
+        <div class="form-group"><label>CAT Level</label><select class="form-control" id="vm_cat">
+          <option value="" ${!v.cat_level?'selected':''}>Any</option>
+          <option value="tele_mer" ${v.cat_level==='tele_mer'?'selected':''}>Tele MER</option>
+          <option value="CAT_1" ${v.cat_level==='CAT_1'?'selected':''}>CAT 1</option>
+          <option value="CAT_2" ${v.cat_level==='CAT_2'?'selected':''}>CAT 2</option>
+          <option value="CAT_3" ${v.cat_level==='CAT_3'?'selected':''}>CAT 3</option>
+          <option value="CAT_4" ${v.cat_level==='CAT_4'?'selected':''}>CAT 4</option>
+        </select></div>
+        <div class="form-group"><label>SLA (hours)</label><input class="form-control" id="vm_sla" type="number" value="${v.sla_hours||48}"></div>
+        <div class="form-group"><label>Compliance Rate (%)</label><input class="form-control" id="vm_compliance" type="number" value="${v.compliance_rate||95}"></div>
+        <div class="form-group" style="grid-column:span 2"><label>Regions (comma separated)</label><input class="form-control" id="vm_regions" value="${(v.regions||[]).join(', ')}"></div>
+        <div class="form-group" style="grid-column:span 2"><label>Description</label><textarea class="form-control" id="vm_desc" rows="2">${v.description||''}</textarea></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button onclick="saveEditVendor('${vendorId}')" class="btn btn-accent" style="flex:1;">Save Changes</button>
+        <button onclick="document.getElementById('vendorModal').remove()" class="btn btn-outline" style="flex:1;">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveEditVendor(vendorId) {
+  const name = document.getElementById('vm_name')?.value?.trim();
+  const code = document.getElementById('vm_code')?.value?.trim();
+  if (!name || !code) { showToast('Name and Code are required', 'error'); return; }
+  const updates = {
+    name, code,
+    type: document.getElementById('vm_type')?.value,
+    cat_level: document.getElementById('vm_cat')?.value || '',
+    sla_hours: parseInt(document.getElementById('vm_sla')?.value) || 48,
+    compliance_rate: parseFloat(document.getElementById('vm_compliance')?.value) || 95,
+    regions: (document.getElementById('vm_regions')?.value || '').split(',').map(s=>s.trim()).filter(Boolean),
+    description: document.getElementById('vm_desc')?.value || ''
+  };
+  try {
+    const r = await api(`/api/vendors/${vendorId}`, { method:'PUT', body:JSON.stringify(updates) });
+    if (r.success || r.id || r.name) {
+      showToast('Vendor updated', 'success');
+      document.getElementById('vendorModal')?.remove();
+      renderVendors();
+    } else showToast(r.error || 'Failed to update', 'error');
+  } catch(e) { showToast(e.message, 'error'); }
 }
 
 async function viewVendorCases(vendorId) {
@@ -2726,11 +2900,56 @@ async function renderMasters() {
   if (_mastersView === 'products') {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
-      const products = await api('/api/products');
+      // Always force SBI products — replace any old Arogya products on the fly
+      const SBI_PRODUCTS = [
+        { id:'PROD-007', name:'Prime',             code:'SUHE-PRM', type:'health',   status:'active', description:'SBI Super Health Insurance — Prime Plan. SA: 3L/5L/7L/10L and 15L/20L/25L.' },
+        { id:'PROD-008', name:'Elite',             code:'SUHE-ELT', type:'health',   status:'active', description:'SBI Super Health Insurance — Elite Plan. SA: 3L/5L/7L/10L and 15L/20L/25L.' },
+        { id:'PROD-009', name:'Platinum',          code:'SUHE-PLT', type:'health',   status:'active', description:'SBI Super Health Insurance — Platinum Plan. SA: 10L-25L and 30L-50L.' },
+        { id:'PROD-010', name:'Premier',           code:'SUHE-PRE', type:'health',   status:'active', description:'SBI Super Health Insurance — Premier Plan. SA: 3L/5L/7L/10L.' },
+        { id:'PROD-011', name:'Platinum Infinite', code:'SUHE-PLI', type:'health',   status:'active', description:'SBI Super Health Insurance — Platinum Infinite. SA: 50L, 75L, 1Cr+.' },
+        { id:'PROD-006', name:'Group Health',      code:'GH',       type:'group',    status:'active', description:'Employer-sponsored group mediclaim.' }
+      ];
+      const OLD_NAMES = ['Arogya Sanjeevani','Arogya Premier','Critical Illness','Super Health Top-Up','Arogya Supreme','Demo'];
+      let products = await api('/api/products');
+      // Check if any old products exist — if so, delete them and upsert SBI ones
+      const hasOld = products.some(p => OLD_NAMES.includes(p.name));
+      const hasSBI = products.some(p => p.name === 'Prime');
+      if (hasOld || !hasSBI) {
+        // Delete old products
+        for (const p of products.filter(x => OLD_NAMES.includes(x.name))) {
+          await api(`/api/products/${p.id}`, { method:'DELETE' }).catch(()=>{});
+        }
+        // Upsert SBI products
+        for (const sp of SBI_PRODUCTS) {
+          const existing = products.find(p => p.id === sp.id || p.name === sp.name);
+          if (existing) {
+            await api(`/api/products/${existing.id}`, { method:'PUT', body:JSON.stringify(sp) }).catch(()=>{});
+          } else {
+            await api('/api/products', { method:'POST', body:JSON.stringify(sp) }).catch(()=>{});
+          }
+        }
+        products = await api('/api/products');
+        showToast('Products updated to SBI Superhealth lineup', 'success');
+      }
+      // Sort SBI products in correct order
+      const ORDER = ['Prime','Elite','Platinum','Premier','Platinum Infinite','Group Health'];
+      products.sort((a,b) => { const ai=ORDER.indexOf(a.name); const bi=ORDER.indexOf(b.name); return (ai===-1?99:ai)-(bi===-1?99:bi); });
       el.innerHTML = backBtn + `
-      <div style="display:flex;justify-content:space-between;margin-bottom:12px"><h3>Products</h3><button class="btn btn-accent" onclick="addProductPrompt()"><i data-lucide="plus"></i> Add Product</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3>Products</h3>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="_mastersView='products';renderMasters()"><i data-lucide="refresh-cw"></i> Refresh</button>
+          <button class="btn btn-accent" onclick="addProductPrompt()"><i data-lucide="plus"></i> Add Product</button>
+        </div>
+      </div>
       <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr><th>Name</th><th>Code</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${products.map(p => `<tr><td style="font-weight:600">${p.name}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.code||'—'}</td><td><span class="badge badge-info">${p.type}</span></td><td><span class="badge ${p.status==='active'?'badge-success':'badge-danger'}">${p.status}</span></td><td><button class="btn btn-sm btn-outline" onclick="editProduct('${p.id}')">Edit</button></td></tr>`).join('')}
+      ${products.map(p => `<tr>
+        <td style="font-weight:600">${p.name}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.code||'—'}</td>
+        <td><span class="badge badge-info">${p.type}</span></td>
+        <td><span class="badge ${p.status==='active'?'badge-success':'badge-danger'}">${p.status}</span></td>
+        <td><button class="btn btn-sm btn-outline" onclick="editProduct('${p.id}')">Edit</button></td>
+      </tr>`).join('')}
       </tbody></table></div></div>`;
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
