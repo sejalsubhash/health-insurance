@@ -238,18 +238,32 @@ textarea.form-control{resize:vertical;min-height:60px}
     </div>
     <div class="form-group"><label>Observations / Required Reports</label><textarea class="form-control" id="wf_observations" rows="2" placeholder="E.g.: Proposer has history of hypertension. Require full cardiac workup..."></textarea></div>
     <div class="form-group"><label>Required Tests <span id="mandatoryTestHint" style="font-weight:400;font-size:11px;color:var(--info)"></span></label>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px" id="reqTestsContainer">
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="blood_work"> Blood Work</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="ecg"> ECG</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="echo"> 2D Echo</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="tmt"> TMT</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="usg_abdomen"> USG Abdomen</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="chest_xray"> Chest X-Ray</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="urine_analysis"> Urine</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="hematology"> CBC / Hematology</label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="physical_exam"> Physical Exam</label>
+      <div id="catTestsAutoDisplay" style="margin-top:4px;padding:12px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info);display:none">
+        <div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:8px">
+          <span id="catTestsHeader">Tests required for this category</span>
+        </div>
+        <div id="catTestsList" style="display:flex;flex-wrap:wrap;gap:6px"></div>
       </div>
-      <div id="additionalTestInput" style="margin-top:6px;display:flex;gap:6px">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;display:none" id="reqTestsContainer">
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="mer"> MER</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="ecg"> ECG</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="urine_routine"> Urine Routine</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="cbc"> CBC</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="esr"> ESR</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="sgpt"> SGPT</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="hba1c"> HbA1C</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="serum_creatinine"> Serum Creatinine</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="total_cholesterol"> Total Cholesterol</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="serum_triglyceride"> Serum Triglyceride</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="urine_microalbumin"> Urine Microalbumin</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="lipid_profile"> Lipid Profile</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="lft"> LFT</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="kft"> KFT</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="2d_echo"> 2D Echo</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="psa"> PSA (Male)</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer"><input type="checkbox" class="req-test" value="pap_smear"> PAP Smear (Female)</label>
+      </div>
+      <div id="additionalTestInput" style="margin-top:6px;display:none;gap:6px">
         <input type="text" class="form-control" id="wf_custom_test" placeholder="Add custom test (e.g., lipid_profile, psa)" style="flex:1;font-size:12px">
         <button class="btn btn-outline btn-sm" type="button" onclick="addCustomTest()">+ Add</button>
       </div>
@@ -1621,17 +1635,27 @@ async function handleSBIJsonUpload(input) {
     else if (nstpRaw.includes('age')) nstpReason = 'age_threshold';
     else if (nstpRaw.includes('occupat')) nstpReason = 'occupation_risk';
 
-    // CAT / test type from PPHCTestName
+    // CAT / test type from PPHCTestName — exact SBI test tables
     const pphcTest = risk.PPHCTestName || '';
-    const catMap = {
-      'CAT 1': 'blood_work,physical_exam,urine_analysis,hematology',
-      'CAT 2': 'blood_work,physical_exam,urine_analysis,hematology,ecg',
-      'CAT 3': 'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt',
-      'CAT 4': 'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt,chest_xray',
-      'Tele MER': '',
-      'STP': ''
+    // Maps to readable test names exactly as per SBI Superhealth CAT table
+    const CAT_TEST_TABLE = {
+      'CAT 1':    ['MER','ECG','Urine Routine','CBC','ESR','SGPT','HbA1C','Serum Creatinine','Total Cholesterol'],
+      'CAT 2':    ['MER','ECG','Urine Routine','CBC','ESR','Total Cholesterol','HbA1C','Serum Creatinine','Serum Triglyceride','SGPT','Urine Microalbumin'],
+      'CAT 3':    ['MER','ECG','Urine Routine','CBC','ESR','Urine Microalbumin','HbA1C','Lipid Profile','LFT','KFT'],
+      'CAT 4':    ['MER','ECG','Urine Routine','CBC','ESR','Urine Microalbumin','HbA1C','Lipid Profile','LFT','KFT','2D echo','PSA (male)','PAP smear (Female)'],
+      'Tele MER': ['Tele Medical Examination Report (phone/video interview)'],
+      'STP':      []
     };
-    const testsToCheck = catMap[pphcTest] || '';
+    const catTestList = CAT_TEST_TABLE[pphcTest] || [];
+    // Also build the value list for hidden checkboxes (for backend submission)
+    const VALUE_MAP = {
+      'MER':'mer','ECG':'ecg','Urine Routine':'urine_routine','CBC':'cbc','ESR':'esr',
+      'SGPT':'sgpt','HbA1C':'hba1c','Serum Creatinine':'serum_creatinine','Total Cholesterol':'total_cholesterol',
+      'Serum Triglyceride':'serum_triglyceride','Urine Microalbumin':'urine_microalbumin',
+      'Lipid Profile':'lipid_profile','LFT':'lft','KFT':'kft','2D echo':'2d_echo',
+      'PSA (male)':'psa','PAP smear (Female)':'pap_smear'
+    };
+    const testsToCheck = catTestList.map(t => VALUE_MAP[t]).filter(Boolean).join(',');
 
     // PED from OtherPEDReason
     const pedReason = (risk.OtherPEDReason || '').toLowerCase();
@@ -1700,12 +1724,38 @@ async function handleSBIJsonUpload(input) {
     // Trigger BMI calculation
     if (height && weight) calcBMI();
 
-    // Check required tests
+    // Check required tests (hidden checkboxes for backend submission)
     if (testsToCheck) {
       const testChecks = testsToCheck.split(',');
       document.querySelectorAll('.req-test').forEach(cb => {
         cb.checked = testChecks.includes(cb.value);
       });
+    }
+
+    // Render the visual CAT test list (read-only display matching SBI table)
+    const autoDisplay = document.getElementById('catTestsAutoDisplay');
+    const testsListEl = document.getElementById('catTestsList');
+    const headerEl = document.getElementById('catTestsHeader');
+    if (autoDisplay && testsListEl) {
+      if (catTestList.length > 0) {
+        const catColors = {
+          'CAT 1': '#185FA5', 'CAT 2': '#E26B0A', 'CAT 3': '#C00000',
+          'CAT 4': '#5C2E91', 'Tele MER': '#BF8F00'
+        };
+        const color = catColors[pphcTest] || '#185FA5';
+        headerEl.textContent = `${pphcTest} — Mandatory Tests (${catTestList.length})`;
+        headerEl.style.color = color;
+        autoDisplay.style.borderLeftColor = color;
+        testsListEl.innerHTML = catTestList.map(t =>
+          `<span style="font-size:12px;padding:5px 12px;background:#fff;border:1px solid ${color}33;border-radius:6px;color:${color};font-weight:500">✓ ${t}</span>`
+        ).join('');
+        autoDisplay.style.display = 'block';
+      } else {
+        // STP — no tests needed
+        headerEl.textContent = `${pphcTest || 'STP'} — No medical tests required (auto-process)`;
+        testsListEl.innerHTML = '';
+        autoDisplay.style.display = 'block';
+      }
     }
 
     // Check PED conditions
