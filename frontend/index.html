@@ -256,6 +256,14 @@ textarea.form-control{resize:vertical;min-height:60px}
     </div>
     <div style="font-size:13px;font-weight:600;color:var(--primary);margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px">Lifestyle & Medical History</div>
     <div class="grid-2">
+      <div class="form-group">
+  <label>Category (auto from JSON)</label>
+  <input class="form-control" id="wf_category" readonly style="background:var(--surface-alt);font-weight:700;color:var(--primary)">
+</div>
+<div class="form-group">
+  <label>Quotation No</label>
+  <input class="form-control" id="wf_quotation_no" placeholder="e.g. QSUHE001000000155888">
+</div>
       <div class="form-group"><label>Smoking Status</label><select class="form-control" id="wf_smoking"><option value="never">Never Smoked</option><option value="former">Former Smoker</option><option value="current">Current Smoker</option></select></div>
       <div class="form-group"><label>Alcohol Consumption</label><select class="form-control" id="wf_alcohol"><option value="never">Never</option><option value="occasional">Occasional</option><option value="regular">Regular</option><option value="heavy">Heavy</option></select></div>
       <div class="form-group"><label>Tobacco Chewing</label><select class="form-control" id="wf_tobacco"><option value="never">Never</option><option value="former">Former</option><option value="current">Current</option></select></div>
@@ -1524,179 +1532,7 @@ function calcBMI() {
   el.innerHTML = `<span style="color:${color}">${bmiRound}</span> <span style="font-size:11px;color:${color};margin-left:6px">${category}</span> <span style="font-size:10px;color:var(--text-muted);margin-left:6px">(Ref: 18.5-24.9)</span>`;
 }
 
-// ─── SBI JSON Import ─────────────────────────────────────────────────────────
-async function handleSBIJsonUpload(input) {
-  const file = input.files[0];
-  if (!file) return;
 
-  document.getElementById('sbiJsonFileName').textContent = file.name;
-  const statusEl = document.getElementById('sbiJsonStatus');
-  statusEl.style.display = 'block';
-  statusEl.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">⏳ Parsing JSON...</span>';
-
-  try {
-    const text = await file.text();
-    let json = JSON.parse(text);
-
-    // Handle both raw PolicyObject format AND the log wrapper format
-    // Log format: { "Request": {...}, "Response": { "body": "..." }, ... }
-    if (json.Response?.body) {
-      json = JSON.parse(json.Response.body);
-    }
-    // Also handle if it's the full log with PolicyObject directly
-    if (!json.PolicyObject && json.body) {
-      json = JSON.parse(json.body);
-    }
-
-    const po  = json.PolicyObject || {};
-    const lob = po.PolicyLobList?.[0] || {};
-    const risk = lob.PolicyRiskList?.[0] || {};
-    const cust = po.PolicyCustomerList?.[0] || {};
-    const uwResult = json.UnderwritingResult || {};
-
-    // ── Extract fields ──────────────────────────────────────────────
-    // Name
-    const name = risk.InsuredName || cust.CustomerName || '';
-
-    // Age from DOB
-    const dob = risk.DateOfBirth || cust.DateOfBirth;
-    let age = '';
-    if (dob) {
-      const dobDate = new Date(dob);
-      const today = new Date();
-      age = Math.floor((today - dobDate) / (365.25 * 24 * 60 * 60 * 1000));
-    }
-
-    // Gender
-    const genderCode = risk.GenderCode || cust.GenderCode || 'M';
-    const gender = genderCode === 'F' ? 'female' : 'male';
-
-    // Sum Assured
-    const sumAssured = po.SumInsured || lob.SumInsured || 0;
-
-    // Height & Weight (from MER if available in risk object)
-    const height = risk.Height || '';
-    const weight = risk.Weight || '';
-
-    // Product — map SUHEPlanVar to product name
-    const planVarMap = {
-      '1': 'Elite', '2': 'Platinum', '3': 'Platinum Infinite',
-      '4': 'Premier', '5': 'Prime'
-    };
-    const planVar = po.SUHEPlanVar || '';
-    const productName = planVarMap[planVar] || po.ProductName || 'Arogya Sanjeevani';
-
-    // NSTP Reason from NSTPReason field
-    const nstpRaw = (risk.NSTPReason || '').toLowerCase();
-    let nstpReason = 'age_threshold';
-    if (nstpRaw.includes('pre-exist') || nstpRaw.includes('ped')) nstpReason = 'medical_history';
-    else if (nstpRaw.includes('sum') || nstpRaw.includes('sa ') || nstpRaw.includes('sum insured')) nstpReason = 'sum_assured_threshold';
-    else if (nstpRaw.includes('age')) nstpReason = 'age_threshold';
-    else if (nstpRaw.includes('occupat')) nstpReason = 'occupation_risk';
-
-    // CAT / test type from PPHCTestName
-    const pphcTest = risk.PPHCTestName || '';
-    const catMap = {
-      'CAT 1': 'blood_work,physical_exam,urine_analysis,hematology',
-      'CAT 2': 'blood_work,physical_exam,urine_analysis,hematology,ecg',
-      'CAT 3': 'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt',
-      'CAT 4': 'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt,chest_xray',
-      'Tele MER': '',
-      'STP': ''
-    };
-    const testsToCheck = catMap[pphcTest] || '';
-
-    // PED from OtherPEDReason
-    const pedReason = (risk.OtherPEDReason || '').toLowerCase();
-    const pedConditions = [];
-    if (pedReason.includes('diabet')) pedConditions.push('diabetes');
-    if (pedReason.includes('hypertens') || pedReason.includes('blood pressure')) pedConditions.push('hypertension');
-    if (pedReason.includes('cardiac') || pedReason.includes('heart')) pedConditions.push('cardiac');
-    if (pedReason.includes('asthma') || pedReason.includes('copd')) pedConditions.push('asthma');
-    if (pedReason.includes('thyroid')) pedConditions.push('thyroid');
-    if (pedReason.includes('kidney') || pedReason.includes('renal')) pedConditions.push('kidney');
-    if (pedReason.includes('liver') || pedReason.includes('hepat')) pedConditions.push('liver');
-    if (pedReason.includes('cancer')) pedConditions.push('cancer');
-    // If DetailsPED=1 and no specific condition matched, still mark it
-    if (risk.DetailsPED == 1 && pedConditions.length === 0) {
-      // Use the raw text as observation
-    }
-
-    // Observations from NSTPReason
-    const observations = risk.NSTPReason || '';
-
-    // Quotation No
-    const quotationNo = po.QuotationNo || '';
-
-    // Vendor suggestion based on CAT
-    let vendorSuggestion = 'VEND-001'; // MedCheck India default
-    if (pphcTest === 'Tele MER') vendorSuggestion = 'VEND-003'; // DigiMedic
-    else if (pphcTest === 'CAT 3' || pphcTest === 'CAT 4') vendorSuggestion = 'VEND-002'; // HealthAssure
-
-    // ── Fill form fields ────────────────────────────────────────────
-    if (name)  document.getElementById('wf_name').value  = name;
-    if (age)   document.getElementById('wf_age').value   = age;
-    if (sumAssured) document.getElementById('wf_sum').value = sumAssured;
-    if (height) document.getElementById('wf_height').value = height;
-    if (weight) document.getElementById('wf_weight').value = weight;
-    document.getElementById('wf_gender').value = gender;
-
-    // Set product dropdown — match by name
-    const productSel = document.getElementById('wf_product');
-    for (const opt of productSel.options) {
-      if (opt.text.toLowerCase().includes(productName.toLowerCase()) ||
-          productName.toLowerCase().includes(opt.text.toLowerCase())) {
-        productSel.value = opt.value;
-        break;
-      }
-    }
-
-    // Set NSTP reason
-    document.getElementById('wf_reason').value = nstpReason;
-
-    // Set vendor
-    document.getElementById('wf_vendor').value = vendorSuggestion;
-
-    // Set observations
-    if (observations) document.getElementById('wf_observations').value = observations;
-
-    // Check required tests
-    if (testsToCheck) {
-      const testChecks = testsToCheck.split(',');
-      document.querySelectorAll('.req-test').forEach(cb => {
-        cb.checked = testChecks.includes(cb.value);
-      });
-    }
-
-    // Check PED conditions
-    document.querySelectorAll('.med-condition').forEach(cb => {
-      if (pedConditions.includes(cb.value)) cb.checked = true;
-    });
-
-    // Recalculate BMI if height/weight available
-    if (height && weight) calcBMI();
-
-    // ── Show success status ─────────────────────────────────────────
-    const filled = [
-      name && 'Name', age && 'Age', gender && 'Gender',
-      sumAssured && 'Sum Assured', height && 'Height', weight && 'Weight'
-    ].filter(Boolean);
-
-    statusEl.innerHTML = `
-      <div style="background:#e6f7ef;border:1px solid #0f6e56;border-radius:6px;padding:8px 12px;font-size:12px;">
-        <div style="color:#0f6e56;font-weight:600;margin-bottom:4px;">✅ Filled: ${filled.join(', ')}</div>
-        ${pphcTest ? `<div style="color:#085041;">SBI recommends: <strong>${pphcTest}</strong></div>` : ''}
-        ${quotationNo ? `<div style="color:var(--text-muted);margin-top:2px;">Quotation: ${quotationNo}</div>` : ''}
-        ${pedConditions.length ? `<div style="color:#854F0B;margin-top:2px;">PED detected: ${pedConditions.join(', ')}</div>` : ''}
-      </div>`;
-
-    showToast(`JSON imported — ${filled.length} fields filled. SBI test: ${pphcTest || 'STP'}`, 'success');
-
-  } catch(e) {
-    statusEl.innerHTML = `<div style="color:var(--danger);font-size:12px;">❌ Error parsing JSON: ${e.message}</div>`;
-    showToast('Invalid JSON file: ' + e.message, 'error');
-  }
-}
 
 async function createWorkflow() {
   const reqTests = [...Array.from(document.querySelectorAll('.req-test:checked')).map(c=>c.value), ...(window._customTests || [])];
@@ -3727,93 +3563,250 @@ async function deleteWebhook(id) {
 }
 
 // ─── SBI JSON Import ─────────────────────────────────────────────────────────
+// ─── SBI JSON Import ─────────────────────────────────────────────────────────
+
+// ── CAT Classification Matrix (SBI Superhealth UW Guidelines) ────────────────
+function getSBICategory(plan, sumInsuredLacs, age, hasPED) {
+  function applyPED(cat) {
+    if (!hasPED) return cat;
+    if (cat === 'STP' || cat === 'Tele MER') return 'CAT 1';
+    return cat;
+  }
+  const p = (plan || '').toLowerCase();
+  if (p.includes('prime') || p.includes('elite')) {
+    if (sumInsuredLacs <= 10) {
+      return applyPED(age <= 55 ? 'STP' : 'CAT 1');
+    } else {
+      if (age <= 45) return applyPED('STP');
+      if (age <= 55) return applyPED('Tele MER');
+      if (age <= 60) return applyPED('CAT 1');
+      return applyPED('CAT 2');
+    }
+  }
+  if (p.includes('premier')) {
+    return applyPED(age <= 55 ? 'STP' : 'CAT 1');
+  }
+  if (p.includes('infinite')) {
+    if (sumInsuredLacs <= 50) {
+      if (age <= 15) return applyPED('STP');
+      if (age <= 17) return applyPED('Tele MER');
+      return applyPED('CAT 3');
+    } else {
+      if (age <= 15) return applyPED('STP');
+      if (age <= 17) return applyPED('Tele MER');
+      if (age <= 45) return applyPED('CAT 3');
+      return applyPED('CAT 4');
+    }
+  }
+  if (p.includes('platinum')) {
+    if (sumInsuredLacs <= 25) {
+      if (age <= 45) return applyPED('STP');
+      if (age <= 55) return applyPED('Tele MER');
+      if (age <= 60) return applyPED('CAT 1');
+      return applyPED('CAT 2');
+    } else {
+      return applyPED(age <= 45 ? 'CAT 1' : 'CAT 2');
+    }
+  }
+  return applyPED('STP');
+}
+
+// ── Mandatory tests per CAT level ────────────────────────────────────────────
+const _CAT_TESTS = {
+  'STP'     : [],
+  'Tele MER': ['tele_mer_interview'],
+  'CAT 1'   : ['physical_exam','urine_analysis','hematology','blood_work'],
+  'CAT 2'   : ['physical_exam','urine_analysis','hematology','blood_work','ecg'],
+  'CAT 3'   : ['physical_exam','urine_analysis','hematology','blood_work','ecg','tmt'],
+  'CAT 4'   : ['physical_exam','urine_analysis','hematology','blood_work','ecg','tmt','echo'],
+};
+
+const _CAT_LABELS = {
+  physical_exam : 'Physical Exam (MER)',
+  urine_analysis: 'Urine Routine Analysis',
+  hematology    : 'CBC + ESR',
+  blood_work    : 'Blood Chemistry (SGPT, HbA1c, Cholesterol, Creatinine)',
+  ecg           : 'ECG',
+  tmt           : 'TMT — Treadmill Test',
+  echo          : '2D Echo',
+  tele_mer_interview: 'Tele MER Interview',
+};
+
 async function handleSBIJsonUpload(input) {
   const file = input.files[0];
   if (!file) return;
+
   document.getElementById('sbiJsonFileName').textContent = file.name;
   const statusEl = document.getElementById('sbiJsonStatus');
   statusEl.style.display = 'block';
   statusEl.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">⏳ Parsing JSON...</span>';
+
   try {
     const text = await file.text();
-    let json = JSON.parse(text);
+    let json;
+    try { json = JSON.parse(text); } catch(e) { json = JSON.parse('{' + text + '}'); }
     if (json.Response?.body) json = JSON.parse(json.Response.body);
     if (!json.PolicyObject && json.body) json = JSON.parse(json.body);
+
     const po   = json.PolicyObject || {};
     const lob  = po.PolicyLobList?.[0] || {};
     const risk = lob.PolicyRiskList?.[0] || {};
     const cust = po.PolicyCustomerList?.[0] || {};
-    const name = risk.InsuredName || cust.CustomerName || '';
-    const dob  = risk.DateOfBirth || cust.DateOfBirth;
-    let age = '';
-    if (dob) age = Math.floor((Date.now() - new Date(dob)) / (365.25*24*60*60*1000));
+
+    // ── Core fields ───────────────────────────────────────────────────────────
+    const name       = risk.InsuredName || cust.CustomerName || '';
+    const dob        = risk.DateOfBirth || cust.DateOfBirth || '';
+    const age        = dob ? Math.floor((Date.now() - new Date(dob)) / (365.25*24*60*60*1000)) : '';
     const genderCode = risk.GenderCode || cust.GenderCode || 'M';
-    const gender = genderCode === 'F' ? 'female' : 'male';
+    const gender     = genderCode === 'F' ? 'female' : 'male';
     const sumAssured = po.SumInsured || lob.SumInsured || 0;
-    const height = risk.Height || '';
-    const weight = risk.Weight || '';
+    const sumLacs    = sumAssured / 100000;
+    const height     = risk.Height || '';
+    const weight     = risk.Weight || '';
+    const quotationNo = po.QuotationNo || '';
+
+    // ── Plan / Product ────────────────────────────────────────────────────────
     const planVarMap = {'1':'Elite','2':'Platinum','3':'Platinum Infinite','4':'Premier','5':'Prime'};
-    const productName = planVarMap[po.SUHEPlanVar] || po.ProductName || 'Arogya Sanjeevani';
+    const plan       = planVarMap[po.SUHEPlanVar] || po.ProductName || 'Prime';
+
+    // ── PED detection ─────────────────────────────────────────────────────────
+    const pedRawText = risk.OtherPEDReason || '';
+    const pedLower   = pedRawText.toLowerCase();
+    const hasPED     = (risk.DetailsPED == 1) || pedLower.length > 0;
+
+    // ── Calculate CAT from matrix ─────────────────────────────────────────────
+    const category      = getSBICategory(plan, sumLacs, age, hasPED);
+    const mandatoryTests = _CAT_TESTS[category] || [];
+
+    // ── NSTP reason ───────────────────────────────────────────────────────────
     const nstpRaw = (risk.NSTPReason || '').toLowerCase();
     let nstpReason = 'age_threshold';
-    if (nstpRaw.includes('pre-exist') || nstpRaw.includes('ped')) nstpReason = 'medical_history';
-    else if (nstpRaw.includes('sum') || nstpRaw.includes('sa ')) nstpReason = 'sum_assured_threshold';
-    else if (nstpRaw.includes('age')) nstpReason = 'age_threshold';
-    const pphcTest = risk.PPHCTestName || '';
-    const catMap = {'CAT 1':'blood_work,physical_exam,urine_analysis,hematology','CAT 2':'blood_work,physical_exam,urine_analysis,hematology,ecg','CAT 3':'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt','CAT 4':'blood_work,physical_exam,urine_analysis,hematology,ecg,echo,tmt,chest_xray'};
-    const testsToCheck = catMap[pphcTest] || '';
-    const pedReason = (risk.OtherPEDReason || '').toLowerCase();
-    const pedConditions = [];
-    if (pedReason.includes('diabet')) pedConditions.push('diabetes');
-    if (pedReason.includes('hypertens')) pedConditions.push('hypertension');
-    if (pedReason.includes('cardiac') || pedReason.includes('heart')) pedConditions.push('cardiac');
-    if (pedReason.includes('asthma')) pedConditions.push('asthma');
-    if (pedReason.includes('thyroid')) pedConditions.push('thyroid');
-    if (pedReason.includes('kidney') || pedReason.includes('renal')) pedConditions.push('kidney');
-    if (pedReason.includes('liver')) pedConditions.push('liver');
-    if (pedReason.includes('cancer')) pedConditions.push('cancer');
-    const observations = risk.NSTPReason || '';
-    const quotationNo = po.QuotationNo || '';
+    if (hasPED || nstpRaw.includes('pre-exist') || nstpRaw.includes('ped')) nstpReason = 'medical_history';
+    else if (nstpRaw.includes('sum') || nstpRaw.includes('sa '))           nstpReason = 'sum_assured_threshold';
+    else if (nstpRaw.includes('age'))                                       nstpReason = 'age_threshold';
+    else if (nstpRaw.includes('occupat'))                                   nstpReason = 'occupation_risk';
+
+    // ── Vendor suggestion ─────────────────────────────────────────────────────
     let vendorSuggestion = 'VEND-001';
-    if (pphcTest === 'Tele MER') vendorSuggestion = 'VEND-003';
-    else if (pphcTest === 'CAT 3' || pphcTest === 'CAT 4') vendorSuggestion = 'VEND-002';
-    if (name)       document.getElementById('wf_name').value   = name;
-    if (age)        document.getElementById('wf_age').value    = age;
-    if (sumAssured) document.getElementById('wf_sum').value    = sumAssured;
-    if (height)     document.getElementById('wf_height').value = height;
-    if (weight)     document.getElementById('wf_weight').value = weight;
-    document.getElementById('wf_gender').value = gender;
+    if (category === 'Tele MER')                       vendorSuggestion = 'VEND-003';
+    else if (category === 'CAT 3' || category === 'CAT 4') vendorSuggestion = 'VEND-002';
+
+    // ── PED conditions for checkboxes ─────────────────────────────────────────
+    const pedConditions = [];
+    if (pedLower.includes('diabet'))                                    pedConditions.push('diabetes');
+    if (pedLower.includes('hypertens') || pedLower.includes('blood pressure')) pedConditions.push('hypertension');
+    if (pedLower.includes('cardiac') || pedLower.includes('heart'))    pedConditions.push('cardiac');
+    if (pedLower.includes('asthma') || pedLower.includes('copd'))      pedConditions.push('asthma');
+    if (pedLower.includes('thyroid'))                                   pedConditions.push('thyroid');
+    if (pedLower.includes('kidney') || pedLower.includes('renal'))     pedConditions.push('kidney');
+    if (pedLower.includes('liver') || pedLower.includes('hepat'))      pedConditions.push('liver');
+    if (pedLower.includes('cancer'))                                    pedConditions.push('cancer');
+
+    // ── FILL FORM FIELDS ──────────────────────────────────────────────────────
+    const setVal = (id, val) => {
+      const el = document.getElementById(id);
+      if (el && val != null && val !== '') el.value = val;
+    };
+
+    setVal('wf_name',          name);
+    setVal('wf_age',           age);
+    setVal('wf_sum',           sumAssured);
+    setVal('wf_height',        height);
+    setVal('wf_weight',        weight);
+    setVal('wf_reason',        nstpReason);
+    setVal('wf_vendor',        vendorSuggestion);
+    setVal('wf_category',      category);
+    setVal('wf_quotation_no',  quotationNo);
+
+    // Observations — medical history only (PED reason, not NSTP reason)
+    setVal('wf_observations', pedRawText);
+
+    // Gender
+    const gEl = document.getElementById('wf_gender');
+    if (gEl) gEl.value = gender;
+
+    // Product dropdown — match by plan name
     const productSel = document.getElementById('wf_product');
-    for (const opt of productSel.options) {
-      if (opt.text.toLowerCase().includes(productName.toLowerCase().substring(0,5)) ||
-          productName.toLowerCase().includes(opt.text.toLowerCase().substring(0,5))) {
-        productSel.value = opt.value; break;
+    if (productSel) {
+      for (const opt of productSel.options) {
+        if (opt.text.toLowerCase().includes(plan.toLowerCase().substring(0,5)) ||
+            plan.toLowerCase().includes(opt.text.toLowerCase().substring(0,5))) {
+          productSel.value = opt.value; break;
+        }
       }
     }
-    document.getElementById('wf_reason').value  = nstpReason;
-    document.getElementById('wf_vendor').value  = vendorSuggestion;
-    if (observations) document.getElementById('wf_observations').value = observations;
-    if (testsToCheck) {
-      const testChecks = testsToCheck.split(',');
-      document.querySelectorAll('.req-test').forEach(cb => { cb.checked = testChecks.includes(cb.value); });
-    }
-    document.querySelectorAll('.med-condition').forEach(cb => { if (pedConditions.includes(cb.value)) cb.checked = true; });
+
+    // Required tests — uncheck all, then check mandatory
+    document.querySelectorAll('.req-test').forEach(cb => {
+      cb.checked = false;
+      cb.closest('label').style.border    = '1px solid var(--border)';
+      cb.closest('label').style.background = '';
+    });
+    mandatoryTests.forEach(test => {
+      const cb = document.querySelector(`.req-test[value="${test}"]`);
+      if (cb) {
+        cb.checked = true;
+        cb.closest('label').style.border    = '1.5px solid var(--info)';
+        cb.closest('label').style.background = 'var(--info-bg)';
+      }
+    });
+
+    // PED condition checkboxes
+    document.querySelectorAll('.med-condition').forEach(cb => {
+      if (pedConditions.includes(cb.value)) cb.checked = true;
+    });
+
+    // BMI
     if (height && weight) calcBMI();
-    const filled = [name&&'Name', age&&'Age', gender&&'Gender', sumAssured&&'Sum Assured', height&&'Height', weight&&'Weight'].filter(Boolean);
-    statusEl.innerHTML = `<div style="background:#e6f7ef;border:1px solid #0f6e56;border-radius:6px;padding:8px 12px;font-size:12px;">
-      <div style="color:#0f6e56;font-weight:600;margin-bottom:4px;">✅ Filled: ${filled.join(', ')}</div>
-      ${pphcTest ? `<div style="color:#085041;">SBI recommends: <strong>${pphcTest}</strong></div>` : ''}
-      ${quotationNo ? `<div style="color:var(--text-muted);margin-top:2px;">Quotation: ${quotationNo}</div>` : ''}
-      ${pedConditions.length ? `<div style="color:#854F0B;margin-top:2px;">PED: ${pedConditions.join(', ')}</div>` : ''}
-    </div>`;
-    showToast(`JSON imported — ${filled.length} fields filled`, 'success');
+
+    // ── STATUS PANEL ──────────────────────────────────────────────────────────
+    const catColors = {
+      'STP'      : { bg:'#e6f7ef', border:'#0f6e56', text:'#0f6e56' },
+      'Tele MER' : { bg:'#fffbeb', border:'#b45309', text:'#b45309' },
+      'CAT 1'    : { bg:'#eff6ff', border:'#1d4ed8', text:'#1d4ed8' },
+      'CAT 2'    : { bg:'#f0fdf4', border:'#15803d', text:'#15803d' },
+      'CAT 3'    : { bg:'#fef3c7', border:'#d97706', text:'#d97706' },
+      'CAT 4'    : { bg:'#fef2f2', border:'#b91c1c', text:'#b91c1c' },
+    };
+    const cc = catColors[category] || catColors['CAT 1'];
+
+    const testBadges = mandatoryTests.length
+      ? mandatoryTests.map(t =>
+          `<span style="display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:4px;padding:2px 7px;font-size:11px;margin:2px">${_CAT_LABELS[t] || t}</span>`
+        ).join('')
+      : '<span style="color:var(--text-muted);font-size:12px">No physical exam required</span>';
+
+    const filled = [
+      name      && 'Name',
+      age       && 'Age',
+      gender    && 'Gender',
+      sumAssured && 'Sum Assured',
+      height    && 'Height',
+      weight    && 'Weight',
+    ].filter(Boolean);
+
+    statusEl.innerHTML = `
+      <div style="border:1.5px solid ${cc.border};border-radius:8px;overflow:hidden;margin-top:4px">
+        <div style="background:${cc.bg};padding:8px 12px;border-bottom:1px solid ${cc.border};display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:700;color:${cc.text};font-size:13px">📋 ${category} — ${plan} Plan</div>
+          <div style="font-size:11px;color:var(--text-muted)">₹${sumLacs.toFixed(0)}L · Age ${age}</div>
+        </div>
+        <div style="padding:8px 12px;font-size:12px">
+          <div style="color:#0f6e56;font-weight:600;margin-bottom:6px">✅ Filled: ${filled.join(', ')}</div>
+          ${hasPED ? `<div style="color:#b45309;margin-bottom:4px">⚠️ PED declared → CAT override applied</div>` : ''}
+          <div style="margin-bottom:6px"><strong>Mandatory Tests (${mandatoryTests.length}):</strong><br>${testBadges}</div>
+          ${pedConditions.length ? `<div style="color:#b45309;margin-bottom:4px">🏥 PED: ${pedConditions.join(', ')}</div>` : ''}
+          ${quotationNo ? `<div style="color:var(--text-muted)">Quotation: ${quotationNo}</div>` : ''}
+        </div>
+      </div>`;
+
+    showToast(`JSON imported — ${category} | ${mandatoryTests.length} tests | ${filled.length} fields filled`, 'success');
+
   } catch(e) {
     statusEl.innerHTML = `<div style="color:var(--danger);font-size:12px;">❌ Error: ${e.message}</div>`;
     showToast('Invalid JSON: ' + e.message, 'error');
   }
 }
-
-
 // Start on appropriate page based on role
 const _startPage = window._currentUser?.role === 'Vendor User' ? 'vendors' : 'dashboard';
 showPage(_startPage);
