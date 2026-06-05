@@ -708,6 +708,43 @@ app.get('/api/vendors', requireAuth, (req, res) => {
   res.json(vendors);
 });
 app.get('/api/vendors/:id', requireAuth, (req, res) => { const v = vendorApi.getVendor(req.params.id); if (!v) return res.status(404).json({ error: 'Not found' }); res.json(v); });
+
+app.post('/api/vendors', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const { id, name, code, type, regions, sla_hours, avg_tat_hours, compliance_rate, capabilities, status, description, cat_level } = req.body;
+    if (!name || !code) return res.status(400).json({ error: 'name and code required' });
+    const vendorId = id || `VEND-${String(Date.now()).slice(-4)}`;
+    const vendor = { id: vendorId, name, code, type: type||'full_pphc', regions: regions||[], sla_hours: sla_hours||48, avg_tat_hours: avg_tat_hours||36, compliance_rate: compliance_rate||95, capabilities: capabilities||[], status: status||'active', description: description||'', cat_level: cat_level||'', created_at: new Date().toISOString() };
+    vendorApi.VENDORS[vendorId] = vendor;
+    await s3Client.saveConfig('vendors', Object.values(vendorApi.VENDORS)).catch(()=>{});
+    res.json({ success: true, ...vendor });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/vendors/:id', requireAuth, async (req, res) => {
+  try {
+    const v = vendorApi.VENDORS[req.params.id];
+    if (!v) return res.status(404).json({ error: 'Vendor not found' });
+    const { name, code, type, regions, sla_hours, avg_tat_hours, compliance_rate, capabilities, status, description, cat_level } = req.body;
+    if (name) v.name = name; if (code) v.code = code; if (type) v.type = type;
+    if (regions) v.regions = regions; if (sla_hours) v.sla_hours = sla_hours;
+    if (avg_tat_hours) v.avg_tat_hours = avg_tat_hours; if (compliance_rate) v.compliance_rate = compliance_rate;
+    if (capabilities) v.capabilities = capabilities; if (status) v.status = status;
+    if (description !== undefined) v.description = description; if (cat_level !== undefined) v.cat_level = cat_level;
+    v.updated_at = new Date().toISOString();
+    await s3Client.saveConfig('vendors', Object.values(vendorApi.VENDORS)).catch(()=>{});
+    res.json({ success: true, ...v });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/vendors/:id', requireRole('Super Admin'), async (req, res) => {
+  try {
+    if (!vendorApi.VENDORS[req.params.id]) return res.status(404).json({ error: 'Vendor not found' });
+    delete vendorApi.VENDORS[req.params.id];
+    await s3Client.saveConfig('vendors', Object.values(vendorApi.VENDORS)).catch(()=>{});
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 app.post('/api/vendor-request', requireAuth, (req, res) => {
   try { const { vendor_id, proposal_id, proposer_name, age, gender, sum_assured } = req.body; const r = vendorApi.submitPPHCRequest(vendor_id, { proposal_id, proposer_name, age, gender, sum_assured }); res.json({ success: true, request: r }); }
   catch(e) { res.status(500).json({ error: e.message }); }
@@ -2510,6 +2547,7 @@ async function loadProductPolicyConfig() {
       status:'active', created_at:new Date().toISOString(),
       description:'Employer-sponsored group mediclaim. Simplified UW for groups above 50 lives.' }
   ];
+  const SBI_VER = 'sbi-superhealth-v3';
   const isVersioned = productsConfig.some(p => p._ver === SBI_VER);
   if (!isVersioned) {
     // Completely overwrite — remove ALL old products, save only SBI lineup
@@ -2517,7 +2555,16 @@ async function loadProductPolicyConfig() {
     await s3Client.saveConfig('products', productsConfig).catch(e => console.error('Products seed error:', e.message));
     console.log('[Startup] ✅ SBI products force-seeded: Prime, Elite, Platinum, Premier, Platinum Infinite, Group Health');
   } else {
-    console.log('[Startup] ✅ SBI products already current — skipping reset');
+    // S3 has SBI products — use them as-is, remove any non-SBI products that crept in
+    const SBI_IDS = SBI_PRODUCTS.map(p => p.id);
+    const hadExtra = productsConfig.some(p => !SBI_IDS.includes(p.id));
+    if (hadExtra) {
+      productsConfig = productsConfig.filter(p => SBI_IDS.includes(p.id));
+      await s3Client.saveConfig('products', productsConfig).catch(e => console.error('Products cleanup error:', e.message));
+      console.log('[Startup] ✅ Removed non-SBI products from memory');
+    } else {
+      console.log('[Startup] ✅ SBI products already current — skipping reset');
+    }
   }
 
   // Seed default policies — always ensure the new policies exist
@@ -2762,15 +2809,33 @@ app.put('/api/products/:id', requireRole('Super Admin'), async (req, res) => {
   try {
     const product = productsConfig.find(p => p.id === req.params.id);
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    const { name, code, type, description, status } = req.body;
+    const { name, code, type, description, status, plan_var, product_code, _ver } = req.body;
     if (name) product.name = name;
     if (code) product.code = code;
     if (type) product.type = type;
     if (description !== undefined) product.description = description;
     if (status) product.status = status;
+    if (plan_var) product.plan_var = plan_var;
+    if (product_code) product.product_code = product_code;
+    if (_ver) product._ver = _ver;
     product.updated_at = new Date().toISOString();
     await s3Client.saveConfig('products', productsConfig);
     res.json({ success: true, product });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/products/:id', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const idx = productsConfig.findIndex(p => p.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Product not found' });
+    productsConfig.splice(idx, 1);
+    // Remove from policy map too
+    for (const [k, v] of Object.entries(productPolicyMap)) {
+      if (k === req.params.id) delete productPolicyMap[k];
+    }
+    await s3Client.saveConfig('products', productsConfig);
+    await s3Client.saveConfig('product-policy-map', productPolicyMap);
+    res.json({ success: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
