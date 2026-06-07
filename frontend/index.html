@@ -2939,6 +2939,7 @@ async function renderMasters() {
         {icon:'<i data-lucide="scale"></i>',title:'UW Guidelines',desc:'50+ compliance rules and thresholds',onclick:"_mastersView='uwrules';renderMasters()"},
         {icon:'<i data-lucide="bar-chart-3"></i>',title:'Loading Table',desc:'Loading percentages, age bands, loading cap, waiting periods',onclick:"_mastersView='loading';renderMasters()"},
         {icon:'<i data-lucide="hospital"></i>',title:'Medical Scoring',desc:'Component weights and metric thresholds (100-point engine)',onclick:"_mastersView='scoring';renderMasters()"},
+        {icon:'<i data-lucide="sliders-horizontal"></i>',title:'Per-CAT Scoring',desc:'Editable approve / refer / decline thresholds for CAT 1-4 and TeleMER',onclick:"_mastersView='catscoring';renderMasters()"},
         {icon:'<i data-lucide="library"></i>',title:'Historical UW Data',desc:'Upload past UW decisions to train the system for PPHC-skip intelligence',onclick:"_mastersView='historical';renderMasters()"}
       ].map(c => `<div class="card" style="cursor:pointer;transition:all 0.15s;border:1.5px solid var(--border)" onclick="${c.onclick}" onmouseover="this.style.borderColor='var(--primary)'" onmouseout="this.style.borderColor='var(--border)'"><div class="card-body" style="text-align:center;padding:28px 16px"><div style="font-size:32px;margin-bottom:10px">${c.icon}</div><div style="font-size:15px;font-weight:700;color:var(--text)">${c.title}</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">${c.desc}</div></div></div>`).join('')}
     </div>`;
@@ -3120,6 +3121,30 @@ async function renderMasters() {
       </div></div>`;
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
+  } else if (_mastersView === 'catscoring') {
+    el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      window._catScoring = await api('/api/cat-scoring');
+      window._activeCat = window._activeCat || 'CAT_1';
+      el.innerHTML = backBtn + `
+      <div class="card"><div class="card-body">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <h3 style="margin:0">Per-CAT Scoring Configuration</h3>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline btn-sm" onclick="resetCatScoring()"><i data-lucide="rotate-ccw"></i> Reset defaults</button>
+            <button class="btn btn-primary btn-sm" onclick="saveCatScoring()"><i data-lucide="save"></i> Save All</button>
+          </div>
+        </div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Fully editable scoring. Pick a CAT, set its component weights and decision thresholds, and add / edit / delete the factors inside each component. The engine uses whatever you configure here.</p>
+        <div id="catTabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px"></div>
+        <div id="catEditor"></div>
+        <div id="catScoringMsg" style="margin-top:10px;font-size:13px"></div>
+      </div></div>`;
+      renderCatTabs();
+      renderCatEditor();
+      renderIcons();
+    } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
   } else if (_mastersView === 'historical') {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
@@ -3215,6 +3240,156 @@ function addPolicyPrompt() {
     .then(r => { if (r.success) { showToast('Policy created', 'success'); renderMasters(); } else showToast(r.error, 'error'); })
     .catch(e => showToast(e.message, 'error'));
 }
+
+// ── Dynamic Per-CAT scoring editor ──
+const CAT_META_LIST = [
+  { key:'CAT_1', label:'CAT 1', color:'#185FA5' },
+  { key:'CAT_2', label:'CAT 2', color:'#E26B0A' },
+  { key:'CAT_3', label:'CAT 3', color:'#C00000' },
+  { key:'CAT_4', label:'CAT 4', color:'#5C2E91' },
+  { key:'tele_mer', label:'Tele MER', color:'#BF8F00' },
+];
+const COMP_META = {
+  medical:{label:'Medical Parameters',icon:'🩺'}, lifestyle:{label:'Lifestyle Risk',icon:'🏃'},
+  history:{label:'Medical History',icon:'📋'}, clinical:{label:'Clinical Correlation',icon:'🔬'},
+  documentation:{label:'Documentation Quality',icon:'📄'}
+};
+
+function renderCatTabs() {
+  const tabs = document.getElementById('catTabs'); if (!tabs) return;
+  tabs.innerHTML = CAT_META_LIST.map(c => {
+    const active = window._activeCat === c.key;
+    return `<button onclick="window._activeCat='${c.key}';renderCatTabs();renderCatEditor();renderIcons()"
+      style="padding:6px 16px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;border:1px solid ${c.color};
+      background:${active?c.color:'transparent'};color:${active?'#fff':c.color}">${c.label}</button>`;
+  }).join('');
+}
+
+function renderCatEditor() {
+  const ed = document.getElementById('catEditor'); if (!ed) return;
+  const cat = window._activeCat;
+  const cfg = window._catScoring[cat];
+  if (!cfg) { ed.innerHTML = '<p style="color:var(--text-muted)">No config for this CAT.</p>'; return; }
+  const meta = CAT_META_LIST.find(c=>c.key===cat);
+  const comps = cfg.components || {};
+  const weightSum = Object.values(comps).reduce((s,c)=>s+(Number(c.weight)||0),0);
+  const t = cfg.thresholds || {approve:80,refer:65,decline_below:50};
+
+  let html = `<div style="border:1px solid var(--border);border-left:4px solid ${meta.color};border-radius:10px;padding:16px">`;
+
+  // Thresholds
+  html += `<div style="font-weight:600;font-size:13px;margin-bottom:8px;color:${meta.color}">Decision Thresholds</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:18px">
+      <div><label style="font-size:11px;color:var(--success);font-weight:600;display:block;margin-bottom:4px">APPROVE if ≥</label>
+        <input type="number" id="th_approve" value="${t.approve}" class="form-control"></div>
+      <div><label style="font-size:11px;color:var(--warning);font-weight:600;display:block;margin-bottom:4px">REFER if ≥</label>
+        <input type="number" id="th_refer" value="${t.refer}" class="form-control"></div>
+      <div><label style="font-size:11px;color:var(--danger);font-weight:600;display:block;margin-bottom:4px">DECLINE if <</label>
+        <input type="number" id="th_decline" value="${t.decline_below}" class="form-control"></div>
+    </div>`;
+
+  // Weight summary
+  const wColor = weightSum===100 ? 'var(--success)' : 'var(--danger)';
+  html += `<div style="font-size:12px;margin-bottom:12px;color:${wColor}">Component weights total: <strong>${weightSum}/100</strong> ${weightSum===100?'✓':'(must equal 100)'}</div>`;
+
+  // Components
+  for (const [ckey, comp] of Object.entries(comps)) {
+    const cm = COMP_META[ckey] || {label:ckey,icon:'•'};
+    const factorRows = (comp.factors||[]).map((f,fi) => {
+      const bandsTxt = (f.bands||[]).map(b=>`${b.label}:${b.points}`).join(' · ');
+      return `<tr>
+        <td style="font-weight:500">${f.label}</td>
+        <td style="font-family:monospace;font-size:11px">${f.max}</td>
+        <td style="font-size:11px;color:var(--text-muted)">${bandsTxt}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn btn-outline btn-sm" style="padding:2px 8px" onclick="editFactor('${ckey}',${fi})"><i data-lucide="pencil"></i></button>
+          <button class="btn btn-outline btn-sm" style="padding:2px 8px;color:var(--danger)" onclick="deleteFactor('${ckey}',${fi})"><i data-lucide="trash-2"></i></button>
+        </td></tr>`;
+    }).join('');
+    html += `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-weight:600;font-size:13px">${cm.icon} ${cm.label}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:11px;color:var(--text-muted)">Weight</label>
+          <input type="number" id="w_${ckey}" value="${comp.weight}" onchange="updateWeight('${ckey}',this.value)" class="form-control" style="width:64px;padding:4px 8px;font-size:13px">
+          <button class="btn btn-primary btn-sm" style="padding:3px 10px" onclick="addFactor('${ckey}')"><i data-lucide="plus"></i> Add factor</button>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="text-align:left;color:var(--text-muted);font-size:11px">
+          <th style="padding:4px 6px">Factor</th><th style="padding:4px 6px">Max</th><th style="padding:4px 6px">Bands (label:points)</th><th></th></tr></thead>
+        <tbody>${factorRows || '<tr><td colspan="4" style="color:var(--text-muted);padding:8px">No factors. Click "Add factor".</td></tr>'}</tbody>
+      </table>
+    </div>`;
+  }
+  html += `</div>`;
+  ed.innerHTML = html;
+  renderIcons();
+}
+
+function updateWeight(ckey, val) {
+  window._catScoring[window._activeCat].components[ckey].weight = parseInt(val,10)||0;
+  renderCatEditor();
+}
+
+function addFactor(ckey) {
+  const label = prompt('Factor name (e.g. "Vision Test"):'); if (!label) return;
+  const max = parseFloat(prompt('Maximum points for this factor:', '5')); if (isNaN(max)||max<=0) { showToast('Max must be a positive number','error'); return; }
+  const bandsRaw = prompt('Scoring bands as label:points, comma-separated\nExample: normal:5, fair:2.5, poor:0.5', 'normal:'+max+', fair:'+(max/2)+', poor:0.5');
+  if (!bandsRaw) return;
+  const bands = bandsRaw.split(',').map(s=>{ const [label,pts]=s.split(':'); return {label:(label||'').trim(),value:(label||'').trim(),points:parseFloat(pts)||0}; }).filter(b=>b.label);
+  const id = label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+  window._catScoring[window._activeCat].components[ckey].factors.push({ id, label, max, bands });
+  renderCatEditor();
+}
+
+function editFactor(ckey, fi) {
+  const f = window._catScoring[window._activeCat].components[ckey].factors[fi];
+  const label = prompt('Factor name:', f.label); if (!label) return;
+  const max = parseFloat(prompt('Maximum points:', f.max)); if (isNaN(max)||max<=0) { showToast('Max must be positive','error'); return; }
+  const bandsRaw = prompt('Scoring bands (label:points, comma-separated):', (f.bands||[]).map(b=>`${b.label}:${b.points}`).join(', '));
+  if (!bandsRaw) return;
+  const bands = bandsRaw.split(',').map(s=>{ const [label,pts]=s.split(':'); return {label:(label||'').trim(),value:(label||'').trim(),points:parseFloat(pts)||0}; }).filter(b=>b.label);
+  f.label = label; f.max = max; f.bands = bands;
+  renderCatEditor();
+}
+
+function deleteFactor(ckey, fi) {
+  const f = window._catScoring[window._activeCat].components[ckey].factors[fi];
+  if (!confirm(`Delete factor "${f.label}"?`)) return;
+  window._catScoring[window._activeCat].components[ckey].factors.splice(fi,1);
+  renderCatEditor();
+}
+
+async function saveCatScoring() {
+  const cat = window._activeCat;
+  const cfg = window._catScoring[cat];
+  // Pull thresholds from inputs
+  const approve = parseInt(document.getElementById('th_approve').value,10);
+  const refer = parseInt(document.getElementById('th_refer').value,10);
+  const decline_below = parseInt(document.getElementById('th_decline').value,10);
+  const msg = document.getElementById('catScoringMsg');
+  if (!(approve>refer && refer>decline_below)) { msg.innerHTML = `<span style="color:var(--danger)">❌ Need approve > refer > decline</span>`; return; }
+  cfg.thresholds = { approve, refer, decline_below };
+  // Validate weights
+  const wsum = Object.values(cfg.components).reduce((s,c)=>s+(Number(c.weight)||0),0);
+  if (wsum !== 100) { msg.innerHTML = `<span style="color:var(--danger)">❌ ${cat.replace('_',' ')} weights total ${wsum}, must be 100</span>`; return; }
+  try {
+    const r = await api('/api/cat-scoring', { method:'POST', body: JSON.stringify({ [cat]: cfg }) });
+    if (r.success) { msg.innerHTML = `<span style="color:var(--success)">✅ ${cat.replace('_',' ')} saved. Engine now uses this config.</span>`; showToast('Scoring saved','success'); }
+    else msg.innerHTML = `<span style="color:var(--danger)">❌ ${r.error}</span>`;
+  } catch(e) { msg.innerHTML = `<span style="color:var(--danger)">❌ ${e.message}</span>`; }
+}
+
+async function resetCatScoring() {
+  if (!confirm('Reset ALL CATs to default scoring config?')) return;
+  try {
+    const r = await api('/api/cat-scoring/reset', { method:'POST', body: JSON.stringify({}) });
+    if (r.success) { showToast('Reset to defaults','success'); window._catScoring=null; renderMasters(); }
+    else showToast(r.error||'Reset failed','error');
+  } catch(e) { showToast(e.message,'error'); }
+}
+
 function editPolicy(id) {
   const policies = window._policiesData || [];
   const p = policies.find(p => p.id === id);

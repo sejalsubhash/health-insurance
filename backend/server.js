@@ -1608,6 +1608,22 @@ async function runAIAnalysis(wf) {
     };
     riskParams._mandatory_tests = catTestsMapAI[catForAI.cat] || ov.mandatory_tests || [];
     riskParams._cat_level = catForAI.cat;
+
+    // ── Dynamic per-CAT scoring: pass full component/factor config to engine ────
+    if (catScoringConfig && catScoringConfig[catForAI.cat]) {
+      const catCfg = catScoringConfig[catForAI.cat];
+      if (catCfg.thresholds) riskParams._score_thresholds = catCfg.thresholds;
+      if (catCfg.components) {
+        riskParams._scoring_components = catCfg.components;
+        // Derive component weights map for the engine
+        const w = {};
+        for (const [k, c] of Object.entries(catCfg.components)) w[k] = c.weight;
+        riskParams._component_weights = w;
+        // Medical tests = factor ids in the medical component
+        riskParams._cat_medical_tests = (catCfg.components.medical?.factors || []).map(f => f.id);
+      }
+      console.log(`[CAT Scoring] ${catForAI.cat} → weights:`, JSON.stringify(riskParams._component_weights), '| thresholds:', JSON.stringify(catCfg.thresholds));
+    }
     console.log(`[resolveCAT AI] ${wf.product_name} | Age ${wf.age} | SA ₹${wf.sum_assured} | PED: ${hasPED_ai} → ${catForAI.cat}`);
   }
 
@@ -2542,6 +2558,100 @@ For loading_overrides: only include values that differ from these defaults — s
 let productsConfig = [];
 let policiesConfig = [];
 let productPolicyMap = {};
+let catScoringConfig = {};  // Dynamic per-CAT scoring: components → factors (add/edit/delete)
+
+// ── Dynamic scoring config structure ─────────────────────────────────────────
+// Each CAT has: thresholds + 5 components. Each component has a weight + factors[].
+// Each factor: { id, label, max, bands:[{label,value,points}] }
+// The engine scores every factor, sums per component, scales to weight, sums to 100.
+const SCORING_VERSION = 'dynamic-v1';
+
+function mkFactor(id, label, max, bands) { return { id, label, max, bands }; }
+
+// Default factor sets (client can add/edit/delete any of these in Masters Config)
+function defaultComponents(catWeights) {
+  return {
+    medical: {
+      label: 'Medical Parameters', weight: catWeights.medical,
+      factors: [
+        mkFactor('bmi','BMI',5,[{label:'normal',value:'18.5-24.9',points:5},{label:'fair',value:'25-29.9',points:2.5},{label:'poor',value:'<18.5 or >=30',points:1}]),
+        mkFactor('bp','Blood Pressure',5,[{label:'normal',value:'<130/85',points:5},{label:'fair',value:'130-139/85-89',points:2.5},{label:'poor',value:'>=140/90',points:1}]),
+        mkFactor('hba1c','HbA1c',4,[{label:'normal',value:'<5.7',points:4},{label:'fair',value:'5.7-6.4',points:2},{label:'poor',value:'>=6.5',points:0.5}]),
+        mkFactor('creatinine','Serum Creatinine',3,[{label:'normal',value:'0.6-1.2',points:3},{label:'fair',value:'1.2-1.5',points:1.5},{label:'poor',value:'>1.5',points:0.5}]),
+        mkFactor('total_cholesterol','Total Cholesterol',4,[{label:'normal',value:'<200',points:4},{label:'fair',value:'200-239',points:2},{label:'poor',value:'>=240',points:0.5}]),
+        mkFactor('sgpt','SGPT',3,[{label:'normal',value:'<40',points:3},{label:'fair',value:'40-80',points:1.5},{label:'poor',value:'>80',points:0.5}]),
+        mkFactor('cbc','CBC / Haemoglobin',4,[{label:'normal',value:'13-17',points:4},{label:'fair',value:'11-13',points:2},{label:'poor',value:'<11',points:0.5}]),
+        mkFactor('esr','ESR',3,[{label:'normal',value:'<20',points:3},{label:'fair',value:'20-40',points:1.5},{label:'poor',value:'>40',points:0.5}]),
+        mkFactor('ecg','ECG',4,[{label:'normal',value:'normal',points:4},{label:'fair',value:'minor',points:2},{label:'poor',value:'ischemic',points:0.5}]),
+        mkFactor('urine_routine','Urine Routine',2,[{label:'normal',value:'nil',points:2},{label:'fair',value:'trace',points:1},{label:'poor',value:'protein/sugar',points:0.5}])
+      ]
+    },
+    lifestyle: {
+      label: 'Lifestyle Risk', weight: catWeights.lifestyle,
+      factors: [
+        mkFactor('smoking','Smoking',7,[{label:'never',value:'never',points:7},{label:'former',value:'former',points:4},{label:'current',value:'current',points:1}]),
+        mkFactor('alcohol','Alcohol',5,[{label:'never',value:'never',points:5},{label:'occasional',value:'occasional',points:4},{label:'regular',value:'regular',points:2},{label:'heavy',value:'heavy',points:0.5}]),
+        mkFactor('tobacco','Tobacco Chewing',3,[{label:'never',value:'never',points:3},{label:'former',value:'former',points:1.5},{label:'current',value:'current',points:0.5}]),
+        mkFactor('occupation','Occupation Hazard',3,[{label:'none',value:'none',points:3},{label:'low',value:'low',points:2.5},{label:'moderate',value:'moderate',points:1.5},{label:'high',value:'high',points:0.5}]),
+        mkFactor('exercise','Exercise',2,[{label:'daily',value:'daily',points:2},{label:'regular',value:'regular',points:1.5},{label:'occasional',value:'occasional',points:1},{label:'none',value:'none',points:0.5}])
+      ]
+    },
+    history: {
+      label: 'Medical History', weight: catWeights.history,
+      factors: [
+        mkFactor('pre_existing','Pre Existing',7,[{label:'none',value:'none',points:7},{label:'controlled',value:'controlled',points:5},{label:'1-2 active',value:'1-2 active',points:3},{label:'3+ active',value:'3+ active',points:1}]),
+        mkFactor('family_history','Family History',4,[{label:'none',value:'none',points:4},{label:'1 risk',value:'1 risk',points:3},{label:'2 risks',value:'2 risks',points:2},{label:'3+ risks',value:'3+ risks',points:1}]),
+        mkFactor('hospitalizations','Hospitalizations',2,[{label:'none',value:'none',points:2},{label:'1-2',value:'1-2 events',points:1},{label:'3+',value:'3+ events',points:0.5}]),
+        mkFactor('surgical_history','Surgical History',2,[{label:'none',value:'none',points:2},{label:'1',value:'1 surgery',points:1.5},{label:'2+',value:'2+ surgeries',points:1}])
+      ]
+    },
+    clinical: {
+      label: 'Clinical Correlation', weight: catWeights.clinical,
+      factors: [
+        mkFactor('drug_condition','Drug-Condition Match',5,[{label:'consistent',value:'consistent',points:5},{label:'minor gap',value:'minor gap',points:2.5},{label:'non-disclosure',value:'non-disclosure',points:0}]),
+        mkFactor('multi_system','Multi-System Findings',5,[{label:'none',value:'none',points:5},{label:'1 cluster',value:'1 cluster',points:3},{label:'2+ clusters',value:'2+ clusters',points:1}]),
+        mkFactor('cv_risk','Cardiovascular Risk',5,[{label:'low',value:'low',points:5},{label:'moderate',value:'moderate',points:3},{label:'high',value:'high',points:1}])
+      ]
+    },
+    documentation: {
+      label: 'Documentation Quality', weight: catWeights.documentation,
+      factors: [
+        mkFactor('completeness','Completeness',8,[{label:'90%+',value:'90%+',points:8},{label:'75%',value:'75%',points:6},{label:'50%',value:'50%',points:4},{label:'<50%',value:'<50%',points:2}]),
+        mkFactor('module_coverage','Module Coverage',4,[{label:'all',value:'all',points:4},{label:'most',value:'most',points:3},{label:'few',value:'few',points:2}]),
+        mkFactor('consistency','Consistency & Validity',3,[{label:'clean',value:'no conflicts',points:3},{label:'minor',value:'minor',points:2},{label:'conflicts',value:'conflicts/expired',points:0}])
+      ]
+    }
+  };
+}
+
+// Per-CAT component weights (Medical Parameters climbs, Lifestyle drops)
+const CAT_WEIGHTS = {
+  'CAT_1':    { medical:35, lifestyle:20, history:15, clinical:15, documentation:15 },
+  'CAT_2':    { medical:38, lifestyle:18, history:15, clinical:15, documentation:14 },
+  'CAT_3':    { medical:42, lifestyle:15, history:15, clinical:16, documentation:12 },
+  'CAT_4':    { medical:45, lifestyle:12, history:15, clinical:16, documentation:12 },
+  'tele_mer': { medical:0,  lifestyle:35, history:30, clinical:25, documentation:10 }
+};
+const CAT_THRESHOLDS = {
+  'CAT_1':    { approve:80, refer:65, decline_below:50 },
+  'CAT_2':    { approve:78, refer:62, decline_below:46 },
+  'CAT_3':    { approve:75, refer:58, decline_below:42 },
+  'CAT_4':    { approve:72, refer:55, decline_below:40 },
+  'tele_mer': { approve:85, refer:65, decline_below:50 }
+};
+
+function buildDefaultCatScoring() {
+  const cfg = {};
+  for (const cat of ['CAT_1','CAT_2','CAT_3','CAT_4','tele_mer']) {
+    cfg[cat] = {
+      _version: SCORING_VERSION,
+      thresholds: { ...CAT_THRESHOLDS[cat] },
+      components: defaultComponents(CAT_WEIGHTS[cat])
+    };
+  }
+  return cfg;
+}
+const DEFAULT_CAT_SCORING = buildDefaultCatScoring();
 
 // Load on startup (called below)
 async function loadProductPolicyConfig() {
@@ -2549,6 +2659,14 @@ async function loadProductPolicyConfig() {
     try { productsConfig = (await s3Client.getConfig('products')) || []; } catch(e) { productsConfig = []; }
     try { policiesConfig = (await s3Client.getConfig('policies')) || []; } catch(e) { policiesConfig = []; }
     try { productPolicyMap = (await s3Client.getConfig('product-policy-map')) || {}; } catch(e) { productPolicyMap = {}; }
+    try { catScoringConfig = (await s3Client.getConfig('cat-scoring')) || {}; } catch(e) { catScoringConfig = {}; }
+    // Seed/upgrade if empty or old version
+    const isCurrentVersion = catScoringConfig?.CAT_1?._version === SCORING_VERSION;
+    if (!catScoringConfig || Object.keys(catScoringConfig).length === 0 || !isCurrentVersion) {
+      catScoringConfig = buildDefaultCatScoring();
+      await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(e => console.error('CAT scoring seed error:', e.message));
+      console.log('[Startup] ✅ Dynamic per-CAT scoring config seeded (components + factors)');
+    }
   // ── ALWAYS force-reset to SBI Superhealth products on every startup ──────────
   // Version token forces re-seed whenever bumped — change this string to re-seed.
   const SBI_VER = 'sbi-superhealth-v3';
@@ -2918,6 +3036,65 @@ app.delete('/api/policies/:id', requireRole('Super Admin'), async (req, res) => 
 
 // Product-Policy Mapping
 app.get('/api/product-policy-map', requireAuth, (req, res) => res.json(productPolicyMap));
+
+// ── Module 2: Per-CAT scoring thresholds (editable from Masters Config) ────────
+app.get('/api/cat-scoring', requireAuth, (req, res) => {
+  const merged = (catScoringConfig && catScoringConfig.CAT_1) ? catScoringConfig : buildDefaultCatScoring();
+  res.json(merged);
+});
+
+// Save full config — validates dynamic component/factor structure
+app.post('/api/cat-scoring', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const incoming = req.body || {};
+    const VALID_CATS = ['CAT_1','CAT_2','CAT_3','CAT_4','tele_mer'];
+    for (const [cat, cfg] of Object.entries(incoming)) {
+      if (!VALID_CATS.includes(cat)) return res.status(400).json({ error: `Unknown CAT level: ${cat}` });
+      // Validate thresholds
+      if (cfg.thresholds) {
+        const { approve, refer, decline_below } = cfg.thresholds;
+        if ([approve, refer, decline_below].some(v => typeof v !== 'number' || v < 0 || v > 100))
+          return res.status(400).json({ error: `${cat}: thresholds must be numbers 0–100` });
+        if (!(approve > refer && refer > decline_below))
+          return res.status(400).json({ error: `${cat}: approve > refer > decline required (got ${approve} > ${refer} > ${decline_below})` });
+      }
+      // Validate components: weights sum to 100, each factor has valid max + bands
+      if (cfg.components) {
+        const comps = cfg.components;
+        const weightSum = Object.values(comps).reduce((s,c)=> s + (Number(c.weight)||0), 0);
+        if (weightSum !== 100) return res.status(400).json({ error: `${cat}: component weights must sum to 100 (got ${weightSum})` });
+        for (const [cKey, comp] of Object.entries(comps)) {
+          if (!Array.isArray(comp.factors)) return res.status(400).json({ error: `${cat}.${cKey}: factors must be a list` });
+          for (const f of comp.factors) {
+            if (!f.id || !f.label) return res.status(400).json({ error: `${cat}.${cKey}: each factor needs id and label` });
+            if (typeof f.max !== 'number' || f.max <= 0) return res.status(400).json({ error: `${cat}.${cKey}.${f.label}: max must be a positive number` });
+            if (!Array.isArray(f.bands) || f.bands.length === 0) return res.status(400).json({ error: `${cat}.${cKey}.${f.label}: needs at least one scoring band` });
+            for (const b of f.bands) {
+              if (typeof b.points !== 'number' || b.points < 0 || b.points > f.max)
+                return res.status(400).json({ error: `${cat}.${cKey}.${f.label}: band "${b.label}" points must be 0–${f.max}` });
+            }
+          }
+        }
+      }
+    }
+    // Merge per CAT
+    for (const [cat, cfg] of Object.entries(incoming)) {
+      catScoringConfig[cat] = { ...(catScoringConfig[cat] || {}), ...cfg, _version: SCORING_VERSION };
+    }
+    await s3Client.saveConfig('cat-scoring', catScoringConfig);
+    console.log('[CAT Scoring] Saved by', req.user?.email);
+    res.json({ success: true, cat_scoring: catScoringConfig });
+  } catch(e) { console.error('CAT scoring save error:', e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/cat-scoring/reset', requireRole('Super Admin'), async (req, res) => {
+  try {
+    catScoringConfig = buildDefaultCatScoring();
+    await s3Client.saveConfig('cat-scoring', catScoringConfig);
+    res.json({ success: true, cat_scoring: catScoringConfig });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 
 // Diagnostic: test product scoring config lookup
 app.get('/api/debug/product-config/:productName', requireAuth, (req, res) => {
