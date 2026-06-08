@@ -344,30 +344,420 @@ function scoreDocumentationQuality(extractedData) {
   return { score: Math.min(totalScore, maxTotal), max: maxTotal, breakdown: results };
 }
 
+// ─── Dynamic Factor Scoring ──────────────────────────────────────────────────
+//
+// scoreComponentFromConfig() scores an entire component using the factor
+// definitions stored in PostgreSQL (edited via Masters > Per-CAT Scoring).
+//
+// Each factor in the DB config looks like:
+//   { id, label, max, bands: [{ label, value, points }] }
+//
+// To score a factor we need to know WHICH extracted value maps to it.
+// The FACTOR_VALUE_EXTRACTORS map resolves factor id → extracted value.
+// If no extractor exists for a factor id, the factor is scored at 50% (partial).
+//
+function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
+  if (!compConfig || !Array.isArray(compConfig.factors) || compConfig.factors.length === 0) {
+    return null; // No DB config — fall back to hardcoded scorer
+  }
+
+  // ── Maps factor id → function that extracts the relevant value ─────────────
+  const FACTOR_VALUE_EXTRACTORS = {
+    // Medical parameter factors
+    bmi_bp: (ed) => {
+      const bmi = ed?.physical_exam?.bmi?.value;
+      const sys = ed?.physical_exam?.blood_pressure_systolic?.value ||
+                  ed?.physical_exam?.blood_pressure?.systolic?.value;
+      if (!bmi && !sys) return null;
+      // Return composite status string
+      const bmiOk  = bmi && bmi >= 18.5 && bmi < 25;
+      const bmiBdr = bmi && bmi >= 25 && bmi < 30;
+      const bpOk   = sys && sys < 130;
+      const bpBdr  = sys && sys >= 130 && sys < 140;
+      if ((bmiOk || !bmi) && (bpOk || !sys))   return 'both_normal';
+      if (bmiBdr || bpBdr)                       return 'one_borderline';
+      return 'both_abnormal';
+    },
+    ecg: (ed) => {
+      const v = ed?.cardiac?.ecg?.overall_interpretation;
+      if (!v) return null;
+      if (v === 'normal')     return 'normal';
+      if (v === 'borderline') return 'borderline';
+      return 'abnormal';
+    },
+    urine_routine: (ed) => {
+      const p = (ed?.urine_analysis?.protein?.value || '').toLowerCase();
+      if (!p) return null;
+      if (p === 'nil' || p === 'negative') return 'nil';
+      if (p === 'trace' || p === '1+')     return 'trace';
+      return 'abnormal';
+    },
+    cbc: (ed) => {
+      const hb = ed?.hematology?.hemoglobin?.value;
+      if (!hb) return null;
+      if (hb >= 13.5) return 'normal';
+      if (hb >= 11)   return 'one_low';
+      return 'abnormal';
+    },
+    esr: (ed) => {
+      const v = ed?.hematology?.esr?.value;
+      if (v == null) return null;
+      if (v < 20)  return 'normal';
+      if (v <= 40) return 'borderline';
+      return 'high';
+    },
+    hba1c: (ed) => {
+      const v = ed?.blood_chemistry?.hba1c?.value;
+      if (v == null) return null;
+      if (v < 5.7)  return '< 5.7';
+      if (v < 6.5)  return '5.7-6.4';
+      if (v < 8.0)  return '6.5-7.9';
+      return '>= 8';
+    },
+    sgpt: (ed) => {
+      const v = ed?.blood_chemistry?.sgpt_alt?.value;
+      if (v == null) return null;
+      if (v < 40)  return 'normal';
+      if (v <= 80) return 'mild';
+      return 'high';
+    },
+    serum_creatinine: (ed) => {
+      const v = ed?.blood_chemistry?.serum_creatinine?.value;
+      if (v == null) return null;
+      if (v < 1.3)  return 'normal';
+      if (v <= 1.7) return 'mild';
+      return 'high';
+    },
+    total_cholesterol: (ed) => {
+      const v = ed?.blood_chemistry?.total_cholesterol?.value;
+      if (v == null) return null;
+      if (v < 200) return '< 200';
+      if (v < 240) return '200-239';
+      return '>= 240';
+    },
+    triglyceride: (ed) => {
+      const v = ed?.blood_chemistry?.triglycerides?.value;
+      if (v == null) return null;
+      if (v < 150)  return '< 150';
+      if (v < 200)  return '150-199';
+      if (v < 500)  return '200-499';
+      return '>= 500';
+    },
+    urine_microalbumin: (ed) => {
+      const v = ed?.urine_analysis?.microalbumin?.value ||
+                ed?.urine_analysis?.albumin_creatinine_ratio?.value;
+      if (v == null) return null;
+      if (v < 30)  return '< 30';
+      if (v <= 300) return '30-300';
+      return '> 300';
+    },
+    lipid_profile: (ed) => {
+      const ldl   = ed?.blood_chemistry?.ldl?.value;
+      const ratio = ed?.blood_chemistry?.tc_hdl_ratio?.value;
+      if (!ldl && !ratio) return null;
+      if ((ldl && ldl >= 160) || (ratio && ratio > 5)) return 'high_risk';
+      if ((ldl && ldl >= 100) || (ratio && ratio >= 3.5)) return 'borderline';
+      return 'optimal';
+    },
+    lft: (ed) => {
+      const sgpt  = ed?.blood_chemistry?.sgpt_alt?.value;
+      const bili  = ed?.blood_chemistry?.total_bilirubin?.value;
+      const alb   = ed?.blood_chemistry?.albumin?.value;
+      if (!sgpt && !bili && !alb) return null;
+      const badCount = [sgpt > 80, bili > 2, alb && alb < 3.0].filter(Boolean).length;
+      if (badCount >= 2) return 'abnormal';
+      if (sgpt > 40 || (bili && bili > 1.2)) return 'mild';
+      return 'normal';
+    },
+    kft: (ed) => {
+      const creat = ed?.blood_chemistry?.serum_creatinine?.value;
+      const bun   = ed?.blood_chemistry?.bun?.value ||
+                    ed?.blood_chemistry?.blood_urea?.value;
+      if (!creat && !bun) return null;
+      if ((creat && creat > 1.7) || (bun && bun > 40)) return 'high';
+      if ((creat && creat > 1.3) || (bun && bun > 25)) return 'mild';
+      return 'normal';
+    },
+    echo_2d: (ed) => {
+      const lvef = ed?.cardiac?.lvef?.value ||
+                   ed?.cardiac?.echo?.lvef_percent?.value;
+      if (!lvef) return null;
+      if (lvef >= 55) return 'normal';
+      if (lvef >= 45) return 'mildly_reduced';
+      return 'significantly_reduced';
+    },
+    psa_pap: (ed) => {
+      const psa = ed?.blood_chemistry?.psa?.value;
+      const pap = ed?.pap_smear?.result?.value;
+      if (!psa && !pap) return null;
+      if (psa) {
+        if (psa < 4)  return 'normal';
+        if (psa <= 10) return 'borderline';
+        return 'high_risk';
+      }
+      if (pap) {
+        const p = (pap || '').toLowerCase();
+        if (p.includes('nilm') || p.includes('normal')) return 'normal';
+        if (p.includes('ascus') || p.includes('lsil'))   return 'borderline';
+        return 'high_risk';
+      }
+      return null;
+    },
+
+    // Lifestyle factors
+    smoking: (ed) => {
+      const v = ed?.telemer_data?.lifestyle?.smoking?.status ||
+                ed?.lifestyle?.smoking || ed?.lifestyle?.smoking_status;
+      return v || null;
+    },
+    alcohol: (ed) => {
+      const v = ed?.telemer_data?.lifestyle?.alcohol?.status ||
+                ed?.lifestyle?.alcohol || ed?.lifestyle?.alcohol_consumption;
+      return v || null;
+    },
+    tobacco: (ed) => {
+      const v = ed?.telemer_data?.lifestyle?.tobacco_chewing?.status ||
+                ed?.lifestyle?.tobacco_chewing || ed?.lifestyle?.tobacco;
+      return v || null;
+    },
+    occupation: (ed) => {
+      const v = ed?.lifestyle?.occupation_hazard || ed?.lifestyle?.occupation;
+      return v || null;
+    },
+    exercise: (ed) => {
+      const v = ed?.telemer_data?.lifestyle?.exercise?.frequency ||
+                ed?.lifestyle?.exercise || ed?.lifestyle?.exercise_frequency;
+      return v || null;
+    },
+
+    // Medical history factors
+    pre_existing: (ed) => {
+      const h = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const conds = h.pre_existing_conditions || [];
+      const active = conds.filter(c => c.current_status === 'active' || c.current_status === 'poorly_controlled');
+      if (conds.length === 0)   return 'none';
+      if (active.length === 0)  return 'controlled';
+      if (active.length <= 2)   return '1-2 active';
+      return '3+ active';
+    },
+    family_history: (ed) => {
+      const h = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const fam = h.family_history || {};
+      const risks = ['cardiac','diabetes','cancer','stroke'].filter(k => fam[k] === true);
+      if (risks.length === 0) return 'none';
+      if (risks.length === 1) return 'one_risk';
+      if (risks.length === 2) return 'two_risks';
+      return 'three_plus';
+    },
+    hospitalizations: (ed) => {
+      const h = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const n = (h.hospitalizations || []).length;
+      if (n === 0)    return 'none';
+      if (n <= 2)     return '1-2';
+      return '3+';
+    },
+    surgical_history: (ed) => {
+      const h = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const n = (h.surgical_history || []).length;
+      if (n === 0)    return 'none';
+      if (n === 1)    return 'one_minor';
+      return 'two_plus';
+    },
+
+    // Clinical correlation factors
+    drug_condition: (ed, corr) => {
+      const mismatches = corr?.drug_condition_mismatches || [];
+      const undisclosed = mismatches.filter(m => !m.disclosed);
+      if (undisclosed.length === 0 && (corr?.medications_found?.length || 0) > 0) return 'consistent';
+      if (undisclosed.length <= 1) return 'minor gap';
+      return 'non-disclosure';
+    },
+    multi_system: (ed, corr) => {
+      const ms = corr?.multi_system_correlations || [];
+      const sig = ms.filter(m => m.clinical_significance === 'high' || m.clinical_significance === 'critical');
+      if (sig.length === 0) return 'none';
+      if (sig.length === 1) return '1 cluster';
+      return '2+ clusters';
+    },
+    cv_risk: (ed, corr) => {
+      const cat = corr?.cardiovascular_risk?.framingham_risk_category || 'unknown';
+      if (cat === 'low')          return 'low';
+      if (cat === 'low_moderate') return 'moderate';
+      if (cat === 'moderate')     return 'moderate';
+      if (cat === 'high')         return 'high';
+      return 'low'; // default
+    },
+
+    // Documentation quality factors
+    completeness: (ed) => {
+      const sections = ['blood_chemistry','hematology','urine_analysis','cardiac','physical_exam','imaging'];
+      let total = 0, filled = 0;
+      for (const s of sections) {
+        const data = ed?.[s] || {};
+        for (const key in data) {
+          if (typeof data[key] === 'object' && data[key] !== null && 'value' in data[key]) {
+            total++;
+            if (data[key].value !== null && data[key].value !== '' && data[key].flag !== 'not_tested') filled++;
+          }
+        }
+      }
+      if (total === 0) return '50%';
+      const pct = filled / total;
+      if (pct >= 0.9)  return '90%+';
+      if (pct >= 0.75) return '75%';
+      if (pct >= 0.5)  return '50%';
+      return '<50%';
+    },
+    module_coverage: (ed) => {
+      const sections = ['blood_chemistry','hematology','urine_analysis','cardiac','physical_exam','imaging'];
+      const present = sections.filter(s => ed?.[s] && Object.keys(ed[s]).length > 0).length;
+      if (present >= 5) return 'all';
+      if (present >= 3) return 'most';
+      return 'few';
+    },
+    consistency: (ed) => {
+      const pe = ed?.physical_exam || {};
+      if (pe.height_cm && pe.weight_kg && pe.bmi?.value) {
+        const calc = pe.weight_kg / ((pe.height_cm / 100) ** 2);
+        if (Math.abs(calc - pe.bmi.value) > 1.5) return 'conflicts/expired';
+      }
+      return 'no conflicts';
+    }
+  };
+
+  // ── Score each factor using its bands ──────────────────────────────────────
+  const factorResults = {};
+  let totalScore = 0;
+
+  for (const factor of compConfig.factors) {
+    const extractor = FACTOR_VALUE_EXTRACTORS[factor.id];
+    const rawValue  = extractor ? extractor(extractedData, correlationData) : null;
+
+    if (!rawValue || !Array.isArray(factor.bands) || factor.bands.length === 0) {
+      // No data extracted — award 40% of max (partial, not zero)
+      const partial = Math.round(factor.max * 0.4 * 100) / 100;
+      factorResults[factor.id] = {
+        score: partial,
+        max:   factor.max,
+        label: factor.label,
+        value: rawValue,
+        matched_band: 'no data',
+        logic: `${factor.label}: no data → ${partial}/${factor.max} (40% partial)`,
+        status: 'missing'
+      };
+      totalScore += partial;
+      continue;
+    }
+
+    // Find matching band — match by value field (case-insensitive substring)
+    const val = String(rawValue).toLowerCase().trim();
+    let matched = null;
+
+    // 1st pass: exact match on band.value
+    for (const band of factor.bands) {
+      if (String(band.value || '').toLowerCase().trim() === val) { matched = band; break; }
+    }
+    // 2nd pass: substring match on band.label or band.value
+    if (!matched) {
+      for (const band of factor.bands) {
+        const bv = String(band.value || band.label || '').toLowerCase();
+        if (bv.includes(val) || val.includes(bv)) { matched = band; break; }
+      }
+    }
+    // 3rd pass: first band whose label contains a key word from value
+    if (!matched) {
+      const words = val.split(/[\s_\-]+/).filter(w => w.length > 2);
+      for (const band of factor.bands) {
+        const bl = (band.label || '').toLowerCase();
+        if (words.some(w => bl.includes(w))) { matched = band; break; }
+      }
+    }
+    // Fallback: middle band (not worst, not best) — conservative
+    if (!matched && factor.bands.length > 0) {
+      const midIdx = Math.floor(factor.bands.length / 2);
+      matched = factor.bands[midIdx];
+    }
+
+    const pts = matched ? Number(matched.points) : 0;
+    factorResults[factor.id] = {
+      score:        pts,
+      max:          factor.max,
+      label:        factor.label,
+      value:        rawValue,
+      matched_band: matched?.label || 'unknown',
+      logic:        `${factor.label}: "${rawValue}" → band "${matched?.label}" → ${pts}/${factor.max}`,
+      status:       matched?.label || 'unknown'
+    };
+    totalScore += pts;
+  }
+
+  return {
+    score:     Math.round(Math.min(totalScore, compConfig.weight || 999) * 100) / 100,
+    max:       compConfig.weight || compConfig.factors.reduce((s, f) => s + f.max, 0),
+    breakdown: factorResults,
+    source:    'dynamic_db_config'
+  };
+}
+
 // ─── Main Calculation ───
 
 function calculateAll(extractedData, correlationData, dynamicConfig) {
-  const components = {
-    medical_parameters: scoreMedicalParameters(extractedData),
-    lifestyle_risk: scoreLifestyleRisk(extractedData),
-    medical_history: scoreMedicalHistory(extractedData),
-    clinical_correlation: scoreClinicalCorrelation(correlationData, extractedData),
-    documentation_quality: scoreDocumentationQuality(extractedData)
+  // ── If full component configs are available from DB, score dynamically ──────
+  // dynamicConfig._scoring_components contains the full factor/band definitions
+  // saved by the user in Masters > Per-CAT Scoring Configuration.
+  // We score EACH component using those DB definitions.
+  // If no DB config exists for a component, fall back to the hardcoded scorer.
+  const dbComponents = dynamicConfig?.scoring_components ||
+                       dynamicConfig?._scoring_components || null;
+
+  // Component key mapping: engine key → DB config key
+  const COMP_KEY_MAP = {
+    medical_parameters:   ['medical', 'medical_parameters'],
+    lifestyle_risk:       ['lifestyle', 'lifestyle_risk'],
+    medical_history:      ['history', 'medical_history'],
+    clinical_correlation: ['clinical', 'clinical_correlation'],
+    documentation_quality:['documentation', 'documentation_quality']
   };
 
-  // ── Dynamic per-CAT weight rescaling ──────────────────────────────────────
-  // If a per-CAT config is passed (riskParams._component_weights), rescale each
-  // component's contribution to the editable weight instead of its hardcoded max.
-  // Each component already produces a score/max performance ratio (0..1); we
-  // multiply that ratio by the configured weight so edits in Masters Config
-  // actually move the computed score. Falls back to hardcoded maxes otherwise.
+  function getDbComp(engineKey) {
+    if (!dbComponents) return null;
+    for (const alias of COMP_KEY_MAP[engineKey] || []) {
+      if (dbComponents[alias]) return dbComponents[alias];
+    }
+    return null;
+  }
+
+  // Score each component — DB first, hardcoded fallback
+  const components = {};
+  const engineKeys = [
+    'medical_parameters', 'lifestyle_risk', 'medical_history',
+    'clinical_correlation', 'documentation_quality'
+  ];
+  const hardcodedScorers = {
+    medical_parameters:    () => scoreMedicalParameters(extractedData),
+    lifestyle_risk:        () => scoreLifestyleRisk(extractedData),
+    medical_history:       () => scoreMedicalHistory(extractedData),
+    clinical_correlation:  () => scoreClinicalCorrelation(correlationData, extractedData),
+    documentation_quality: () => scoreDocumentationQuality(extractedData)
+  };
+
+  for (const key of engineKeys) {
+    const dbComp = getDbComp(key);
+    if (dbComp) {
+      const dynResult = scoreComponentFromConfig(dbComp, extractedData, correlationData);
+      components[key] = dynResult || hardcodedScorers[key]();
+    } else {
+      components[key] = hardcodedScorers[key]();
+    }
+  }
+
+  // ── Apply component weights from DB config ──────────────────────────────────
   const dynWeights = dynamicConfig?.component_weights || null;
-  // Map engine component keys → config component keys (config uses short names)
   const KEY_MAP = {
-    medical_parameters: ['medical_parameters', 'medical'],
-    lifestyle_risk:     ['lifestyle_risk', 'lifestyle'],
-    medical_history:    ['medical_history', 'history'],
-    clinical_correlation:['clinical_correlation', 'clinical', 'correlation'],
+    medical_parameters:   ['medical_parameters', 'medical'],
+    lifestyle_risk:       ['lifestyle_risk', 'lifestyle'],
+    medical_history:      ['medical_history', 'history'],
+    clinical_correlation: ['clinical_correlation', 'clinical', 'correlation'],
     documentation_quality:['documentation_quality', 'documentation', 'docs']
   };
   function resolveWeight(engineKey) {
@@ -380,12 +770,10 @@ function calculateAll(extractedData, correlationData, dynamicConfig) {
 
   let totalScore, maxScore;
   if (dynWeights) {
-    // Weighted mode: each component contributes (score/max) × configuredWeight
     totalScore = 0; maxScore = 0;
     for (const [key, comp] of Object.entries(components)) {
       const w = resolveWeight(key);
       if (w == null) {
-        // No configured weight for this component — keep its raw contribution
         totalScore += comp.score; maxScore += comp.max;
         continue;
       }
@@ -398,7 +786,7 @@ function calculateAll(extractedData, correlationData, dynamicConfig) {
     }
   } else {
     totalScore = Object.values(components).reduce((sum, c) => sum + c.score, 0);
-    maxScore = Object.values(components).reduce((sum, c) => sum + c.max, 0);
+    maxScore   = Object.values(components).reduce((sum, c) => sum + c.max,   0);
   }
   const normalizedScore = maxScore > 0 ? Math.round((totalScore / maxScore) * 100 * 100) / 100 : 0;
 
