@@ -2567,67 +2567,14 @@ let catScoringConfig = {};  // Dynamic per-CAT scoring: components → factors (
 // Each CAT has: thresholds + 5 components. Each component has a weight + factors[].
 // Each factor: { id, label, max, bands:[{label,value,points}] }
 // The engine scores every factor, sums per component, scales to weight, sums to 100.
-const SCORING_VERSION = 'dynamic-v1';
+const SCORING_VERSION = 'dynamic-v2';
 
 function mkFactor(id, label, max, bands) { return { id, label, max, bands }; }
 
-// Default factor sets (client can add/edit/delete any of these in Masters Config)
-function defaultComponents(catWeights) {
-  return {
-    medical: {
-      label: 'Medical Parameters', weight: catWeights.medical,
-      factors: [
-        mkFactor('bmi','BMI',5,[{label:'normal',value:'18.5-24.9',points:5},{label:'fair',value:'25-29.9',points:2.5},{label:'poor',value:'<18.5 or >=30',points:1}]),
-        mkFactor('bp','Blood Pressure',5,[{label:'normal',value:'<130/85',points:5},{label:'fair',value:'130-139/85-89',points:2.5},{label:'poor',value:'>=140/90',points:1}]),
-        mkFactor('hba1c','HbA1c',4,[{label:'normal',value:'<5.7',points:4},{label:'fair',value:'5.7-6.4',points:2},{label:'poor',value:'>=6.5',points:0.5}]),
-        mkFactor('creatinine','Serum Creatinine',3,[{label:'normal',value:'0.6-1.2',points:3},{label:'fair',value:'1.2-1.5',points:1.5},{label:'poor',value:'>1.5',points:0.5}]),
-        mkFactor('total_cholesterol','Total Cholesterol',4,[{label:'normal',value:'<200',points:4},{label:'fair',value:'200-239',points:2},{label:'poor',value:'>=240',points:0.5}]),
-        mkFactor('sgpt','SGPT',3,[{label:'normal',value:'<40',points:3},{label:'fair',value:'40-80',points:1.5},{label:'poor',value:'>80',points:0.5}]),
-        mkFactor('cbc','CBC / Haemoglobin',4,[{label:'normal',value:'13-17',points:4},{label:'fair',value:'11-13',points:2},{label:'poor',value:'<11',points:0.5}]),
-        mkFactor('esr','ESR',3,[{label:'normal',value:'<20',points:3},{label:'fair',value:'20-40',points:1.5},{label:'poor',value:'>40',points:0.5}]),
-        mkFactor('ecg','ECG',4,[{label:'normal',value:'normal',points:4},{label:'fair',value:'minor',points:2},{label:'poor',value:'ischemic',points:0.5}]),
-        mkFactor('urine_routine','Urine Routine',2,[{label:'normal',value:'nil',points:2},{label:'fair',value:'trace',points:1},{label:'poor',value:'protein/sugar',points:0.5}])
-      ]
-    },
-    lifestyle: {
-      label: 'Lifestyle Risk', weight: catWeights.lifestyle,
-      factors: [
-        mkFactor('smoking','Smoking',7,[{label:'never',value:'never',points:7},{label:'former',value:'former',points:4},{label:'current',value:'current',points:1}]),
-        mkFactor('alcohol','Alcohol',5,[{label:'never',value:'never',points:5},{label:'occasional',value:'occasional',points:4},{label:'regular',value:'regular',points:2},{label:'heavy',value:'heavy',points:0.5}]),
-        mkFactor('tobacco','Tobacco Chewing',3,[{label:'never',value:'never',points:3},{label:'former',value:'former',points:1.5},{label:'current',value:'current',points:0.5}]),
-        mkFactor('occupation','Occupation Hazard',3,[{label:'none',value:'none',points:3},{label:'low',value:'low',points:2.5},{label:'moderate',value:'moderate',points:1.5},{label:'high',value:'high',points:0.5}]),
-        mkFactor('exercise','Exercise',2,[{label:'daily',value:'daily',points:2},{label:'regular',value:'regular',points:1.5},{label:'occasional',value:'occasional',points:1},{label:'none',value:'none',points:0.5}])
-      ]
-    },
-    history: {
-      label: 'Medical History', weight: catWeights.history,
-      factors: [
-        mkFactor('pre_existing','Pre Existing',7,[{label:'none',value:'none',points:7},{label:'controlled',value:'controlled',points:5},{label:'1-2 active',value:'1-2 active',points:3},{label:'3+ active',value:'3+ active',points:1}]),
-        mkFactor('family_history','Family History',4,[{label:'none',value:'none',points:4},{label:'1 risk',value:'1 risk',points:3},{label:'2 risks',value:'2 risks',points:2},{label:'3+ risks',value:'3+ risks',points:1}]),
-        mkFactor('hospitalizations','Hospitalizations',2,[{label:'none',value:'none',points:2},{label:'1-2',value:'1-2 events',points:1},{label:'3+',value:'3+ events',points:0.5}]),
-        mkFactor('surgical_history','Surgical History',2,[{label:'none',value:'none',points:2},{label:'1',value:'1 surgery',points:1.5},{label:'2+',value:'2+ surgeries',points:1}])
-      ]
-    },
-    clinical: {
-      label: 'Clinical Correlation', weight: catWeights.clinical,
-      factors: [
-        mkFactor('drug_condition','Drug-Condition Match',5,[{label:'consistent',value:'consistent',points:5},{label:'minor gap',value:'minor gap',points:2.5},{label:'non-disclosure',value:'non-disclosure',points:0}]),
-        mkFactor('multi_system','Multi-System Findings',5,[{label:'none',value:'none',points:5},{label:'1 cluster',value:'1 cluster',points:3},{label:'2+ clusters',value:'2+ clusters',points:1}]),
-        mkFactor('cv_risk','Cardiovascular Risk',5,[{label:'low',value:'low',points:5},{label:'moderate',value:'moderate',points:3},{label:'high',value:'high',points:1}])
-      ]
-    },
-    documentation: {
-      label: 'Documentation Quality', weight: catWeights.documentation,
-      factors: [
-        mkFactor('completeness','Completeness',8,[{label:'90%+',value:'90%+',points:8},{label:'75%',value:'75%',points:6},{label:'50%',value:'50%',points:4},{label:'<50%',value:'<50%',points:2}]),
-        mkFactor('module_coverage','Module Coverage',4,[{label:'all',value:'all',points:4},{label:'most',value:'most',points:3},{label:'few',value:'few',points:2}]),
-        mkFactor('consistency','Consistency & Validity',3,[{label:'clean',value:'no conflicts',points:3},{label:'minor',value:'minor',points:2},{label:'conflicts',value:'conflicts/expired',points:0}])
-      ]
-    }
-  };
-}
-
-// Per-CAT component weights (Medical Parameters climbs, Lifestyle drops)
+// ─── PER-CAT COMPONENT WEIGHTS ────────────────────────────────────────────────
+// Medical weight increases as CAT level rises — more lab data available.
+// Lifestyle weight decreases — physical test evidence overrides self-declaration.
+// Tele MER has NO physical tests — lifestyle+history dominate entirely.
 const CAT_WEIGHTS = {
   'CAT_1':    { medical:35, lifestyle:20, history:15, clinical:15, documentation:15 },
   'CAT_2':    { medical:38, lifestyle:18, history:15, clinical:15, documentation:14 },
@@ -2635,6 +2582,9 @@ const CAT_WEIGHTS = {
   'CAT_4':    { medical:45, lifestyle:12, history:15, clinical:16, documentation:12 },
   'tele_mer': { medical:0,  lifestyle:35, history:30, clinical:25, documentation:10 }
 };
+
+// ─── PER-CAT DECISION THRESHOLDS ─────────────────────────────────────────────
+// Higher CAT = more tests = more failure risk = lower approval bar
 const CAT_THRESHOLDS = {
   'CAT_1':    { approve:80, refer:65, decline_below:50 },
   'CAT_2':    { approve:78, refer:62, decline_below:46 },
@@ -2643,13 +2593,226 @@ const CAT_THRESHOLDS = {
   'tele_mer': { approve:85, refer:65, decline_below:50 }
 };
 
+// ─── RAW MAX POINTS PER TEST, PER CAT ────────────────────────────────────────
+// Based on SBI Superhealth UW Guidelines test table image.
+// Raw points are proportional — engine normalizes to component weight.
+const CAT_MEDICAL_MAX = {
+  CAT_1: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, sgpt:3, hba1c:5, creatinine:3, total_cholesterol:3 },
+  CAT_2: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, sgpt:3, hba1c:5, creatinine:3, total_cholesterol:2, triglyceride:3, urine_microalbumin:4 },
+  CAT_3: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, hba1c:5, urine_microalbumin:4, lipid_profile:6, lft:5, kft:5 },
+  CAT_4: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, hba1c:5, urine_microalbumin:4, lipid_profile:6, lft:5, kft:5, echo_2d:5, psa_pap:2 }
+};
+
+// ─── MEDICAL FACTOR BUILDER (per CAT — correct SBI test list) ────────────────
+// Each CAT has a DIFFERENT set of medical factors based on which tests SBI mandates.
+// CAT 1: 9 tests (standalone SGPT, Creatinine, Total Cholesterol)
+// CAT 2: 11 tests (adds Triglyceride + Urine Microalbumin)
+// CAT 3: 10 tests (upgrades to full Lipid Profile + LFT + KFT, drops standalone TC+TG+Creatinine+SGPT)
+// CAT 4: 13 tests (adds 2D Echo + PSA/PAP Smear)
+function buildMedicalFactors(cat) {
+  const w = CAT_MEDICAL_MAX[cat] || CAT_MEDICAL_MAX.CAT_1;
+
+  // ── CORE TESTS: present in ALL CAT levels ──────────────────────────────────
+  const factors = [
+    // MER — BMI + Blood Pressure (7 pts: biggest contributor, 2 linked risk factors)
+    mkFactor('bmi_bp', 'MER — BMI + Blood Pressure', w.bmi_bp, [
+      {label:'Normal BMI(18.5-24.9) + Normal BP(<130/85)',    value:'both_normal',   points:w.bmi_bp},
+      {label:'One borderline (BMI 25-29 or BP 130-139/85-89)',value:'one_borderline',points:Math.round(w.bmi_bp*0.5)},
+      {label:'BMI ≥30 or BP ≥140/90',                        value:'both_abnormal', points:Math.round(w.bmi_bp*0.15)}
+    ]),
+    // ECG — Cardiac rhythm, ST segment, LVH (4 pts: structural/ischaemic disease = high mortality)
+    mkFactor('ecg', 'ECG — Rhythm, ST, LVH', w.ecg, [
+      {label:'Normal sinus rhythm',           value:'normal',    points:w.ecg},
+      {label:'Minor variation / LVH / BBB',   value:'borderline',points:Math.round(w.ecg*0.5)},
+      {label:'Ischaemic / Abnormal / LBBB',   value:'abnormal',  points:0.5}
+    ]),
+    // Urine Routine — Protein, glucose, RBC (2 pts: pointer test, not primary risk driver)
+    mkFactor('urine_routine', 'Urine Routine — Protein, Glucose, RBC', w.urine_routine, [
+      {label:'All negative / Nil',            value:'nil',       points:w.urine_routine},
+      {label:'Trace protein or 1+ glucose',   value:'trace',     points:1},
+      {label:'Protein 2+ or Glucose 2+',      value:'abnormal',  points:0.25}
+    ]),
+    // CBC — Haemoglobin, WBC, Platelets (4 pts: anaemia + leukocytosis both raise mortality)
+    mkFactor('cbc', 'CBC — Hb, WBC, Platelets', w.cbc, [
+      {label:'All normal (Hb≥13.5M/12F, WBC 4k-11k)', value:'normal',   points:w.cbc},
+      {label:'Hb 11-13.4 or WBC borderline',           value:'one_low',  points:Math.round(w.cbc*0.55)},
+      {label:'Anaemia Hb<11 or Leukocytosis >15k',     value:'abnormal', points:Math.round(w.cbc*0.2)}
+    ]),
+    // ESR — Non-specific inflammation (2 pts: adjunct marker, must correlate with other tests)
+    mkFactor('esr', 'ESR — Inflammation Marker', w.esr, [
+      {label:'Normal M<15 F<20 mm/hr',        value:'normal',    points:w.esr},
+      {label:'Mildly elevated 20-40',         value:'borderline',points:1},
+      {label:'Significantly elevated >40',    value:'high',      points:0.25}
+    ]),
+    // HbA1C — Diabetes 3-month control (5 pts: HIGHEST single test weight — diabetes is #1 UW risk)
+    mkFactor('hba1c', 'HbA1C — Glycated Haemoglobin', w.hba1c, [
+      {label:'Normal <5.7%',                  value:'< 5.7',     points:w.hba1c},
+      {label:'Pre-diabetic 5.7-6.4%',         value:'5.7-6.4',   points:Math.round(w.hba1c*0.5)},
+      {label:'Diabetic 6.5-7.9%',             value:'6.5-7.9',   points:Math.round(w.hba1c*0.2)},
+      {label:'Poorly controlled >=8%',        value:'>= 8',      points:0.25}
+    ])
+  ];
+
+  // ── CAT 1 & CAT 2 ONLY: Standalone SGPT, Creatinine, Total Cholesterol ─────
+  // (These are REPLACED by full LFT/KFT/Lipid Profile in CAT 3+)
+  if (cat === 'CAT_1' || cat === 'CAT_2') {
+    factors.push(
+      // SGPT — Liver cell damage (3 pts: replaced by full LFT in CAT 3+)
+      mkFactor('sgpt', 'SGPT — Liver Cell Damage (ALT)', w.sgpt, [
+        {label:'Normal <40 U/L',              value:'normal',    points:w.sgpt},
+        {label:'Mildly elevated 40-80',       value:'mild',      points:Math.round(w.sgpt*0.5)},
+        {label:'Elevated >80 U/L',            value:'high',      points:0.5}
+      ]),
+      // Serum Creatinine — Kidney filtration (3 pts: replaced by full KFT in CAT 3+)
+      mkFactor('serum_creatinine', 'Serum Creatinine — Kidney Filtration', w.creatinine, [
+        {label:'Normal M<1.3 F<1.1 mg/dL',   value:'normal',    points:w.creatinine},
+        {label:'Mildly elevated 1.3-1.7',    value:'mild',      points:Math.round(w.creatinine*0.5)},
+        {label:'Elevated >1.7 mg/dL',         value:'high',      points:0.5}
+      ]),
+      // Total Cholesterol — Cardiac lipid risk (CAT1=3pts, CAT2=2pts — replaced by Lipid Profile in CAT3+)
+      mkFactor('total_cholesterol', 'Total Cholesterol', w.total_cholesterol, [
+        {label:'Desirable <200 mg/dL',        value:'< 200',     points:w.total_cholesterol},
+        {label:'Borderline 200-239',          value:'200-239',   points:Math.round(w.total_cholesterol*0.5)},
+        {label:'High >=240 mg/dL',            value:'>= 240',    points:0.5}
+      ])
+    );
+  }
+
+  // ── CAT 2 ONLY: Serum Triglyceride (NEW vs CAT 1) ─────────────────────────
+  // Fat metabolism, MetS marker. Absorbed into Lipid Profile in CAT 3+.
+  if (cat === 'CAT_2') {
+    factors.push(
+      mkFactor('triglyceride', 'Serum Triglyceride — Lipid Metabolism', w.triglyceride, [
+        {label:'Normal <150 mg/dL',           value:'< 150',     points:3},
+        {label:'Borderline 150-199',          value:'150-199',   points:1.5},
+        {label:'High 200-499',                value:'200-499',   points:0.5},
+        {label:'Very high >=500 (pancreatitis risk)', value:'>= 500', points:0.1}
+      ])
+    );
+  }
+
+  // ── CAT 2, 3 & 4: Urine Microalbumin (NEW from CAT 2) ─────────────────────
+  // Early nephropathy — 30-300 range DOUBLES CV mortality. High weight justified.
+  if (cat !== 'CAT_1') {
+    factors.push(
+      mkFactor('urine_microalbumin', 'Urine Microalbumin — Early Nephropathy', w.urine_microalbumin||4, [
+        {label:'Normal <30 mg/g Creatinine',  value:'< 30',      points:w.urine_microalbumin||4},
+        {label:'Microalbuminuria 30-300 mg/g',value:'30-300',    points:Math.round((w.urine_microalbumin||4)*0.5)},
+        {label:'Macroalbuminuria >300 mg/g',  value:'> 300',     points:0.5}
+      ])
+    );
+  }
+
+  // ── CAT 3 & 4: Upgraded panels replacing standalone tests ─────────────────
+  if (cat === 'CAT_3' || cat === 'CAT_4') {
+    factors.push(
+      // Lipid Profile Full — LDL, HDL, TC/HDL ratio, TG (6 pts: 3 independent CV risk markers)
+      mkFactor('lipid_profile', 'Lipid Profile — LDL, HDL, TC/HDL, TG', w.lipid_profile, [
+        {label:'Optimal: LDL<100, HDL>60, Ratio<3.5',    value:'optimal',    points:w.lipid_profile},
+        {label:'Borderline: LDL 100-159 or Ratio 3.5-5', value:'borderline', points:Math.round(w.lipid_profile*0.5)},
+        {label:'High Risk: LDL>=160 or Ratio>5',          value:'high_risk',  points:1}
+      ]),
+      // LFT Full — SGOT, SGPT, Bilirubin, ALP, GGT, Albumin (5 pts: Albumin reflects synthetic function)
+      mkFactor('lft', 'LFT — Full Liver Function Tests', w.lft, [
+        {label:'All normal (SGPT<40, Bili<1.2, Alb>=3.5)', value:'normal',   points:w.lft},
+        {label:'One parameter mildly elevated',            value:'mild',      points:Math.round(w.lft*0.5)},
+        {label:'Two+ elevated or Albumin <3.0',           value:'abnormal',  points:1}
+      ]),
+      // KFT Full — BUN, Uric Acid, Creatinine, eGFR (5 pts: BUN/Cr ratio shows aetiology)
+      mkFactor('kft', 'KFT — Full Kidney Function Tests', w.kft, [
+        {label:'All normal (Cr<1.3M, BUN<25, UA<7M)',  value:'normal',    points:w.kft},
+        {label:'One parameter mildly elevated',         value:'mild',      points:Math.round(w.kft*0.5)},
+        {label:'Creatinine>1.7 or BUN>40 mg/dL',       value:'high',      points:1}
+      ])
+    );
+  }
+
+  // ── CAT 4 EXCLUSIVE: 2D Echo + PSA(M) / PAP Smear(F) ─────────────────────
+  if (cat === 'CAT_4') {
+    factors.push(
+      // 2D Echo — LVEF, wall motion, valves (5 pts: LVEF<35% = absolute decline per UG006)
+      mkFactor('echo_2d', '2D Echo — LVEF + Wall Motion', w.echo_2d, [
+        {label:'LVEF >=55% + Normal wall motion',      value:'normal',               points:w.echo_2d},
+        {label:'LVEF 45-54% or mild hypokinesia',      value:'mildly_reduced',       points:Math.round(w.echo_2d*0.4)},
+        {label:'LVEF <45% or akinetic segment',        value:'significantly_reduced',points:0.5}
+      ]),
+      // PSA / PAP Smear — gender-conditional cancer screening (2 pts: screening not diagnostic)
+      mkFactor('psa_pap', 'PSA (Male) / PAP Smear (Female)', w.psa_pap, [
+        {label:'PSA <4 ng/mL or PAP NILM (normal)',      value:'normal',    points:2},
+        {label:'PSA 4-10 ng/mL or PAP ASCUS/LSIL',      value:'borderline',points:1},
+        {label:'PSA >10 ng/mL or PAP HSIL/Malignant',   value:'high_risk', points:0.1}
+      ])
+    );
+  }
+
+  return factors;
+}
+
+// ─── SHARED NON-MEDICAL FACTORS (Lifestyle, History, Clinical, Documentation) ─
+// Same factor definitions across all CATs — only the component WEIGHT changes.
+function sharedComponents(catWeights) {
+  return {
+    lifestyle: {
+      label: 'Lifestyle Risk', weight: catWeights.lifestyle,
+      factors: [
+        mkFactor('smoking',   'Smoking Status',    7, [{label:'Never',value:'never',points:7},{label:'Former smoker',value:'former',points:4},{label:'Current smoker',value:'current',points:1}]),
+        mkFactor('alcohol',   'Alcohol Use',       5, [{label:'Never',value:'never',points:5},{label:'Occasional',value:'occasional',points:4},{label:'Regular',value:'regular',points:2},{label:'Heavy',value:'heavy',points:0.5}]),
+        mkFactor('tobacco',   'Tobacco Chewing',   3, [{label:'Never',value:'never',points:3},{label:'Former',value:'former',points:1.5},{label:'Current',value:'current',points:0.5}]),
+        mkFactor('occupation','Occupation Hazard', 3, [{label:'None',value:'none',points:3},{label:'Low',value:'low',points:2.5},{label:'Moderate',value:'moderate',points:1.5},{label:'High',value:'high',points:0.5}]),
+        mkFactor('exercise',  'Exercise Frequency',2, [{label:'Daily',value:'daily',points:2},{label:'Regular (3-4/week)',value:'regular',points:1.5},{label:'Occasional',value:'occasional',points:1},{label:'None',value:'none',points:0.5}])
+      ]
+    },
+    history: {
+      label: 'Medical History', weight: catWeights.history,
+      factors: [
+        mkFactor('pre_existing',    'Pre-Existing Conditions',7,[{label:'None declared',value:'none',points:7},{label:'Controlled (1 condition)',value:'controlled',points:5},{label:'1-2 active conditions',value:'1-2 active',points:3},{label:'3+ active conditions',value:'3+ active',points:1}]),
+        mkFactor('family_history',  'Family Medical History', 4,[{label:'None known',value:'none',points:4},{label:'1 risk (cardiac/DM/Ca)',value:'one_risk',points:3},{label:'2 risk conditions',value:'two_risks',points:2},{label:'3+ risk conditions',value:'three_plus',points:1}]),
+        mkFactor('hospitalizations','Prior Hospitalizations', 2,[{label:'None',value:'none',points:2},{label:'1-2 events',value:'1-2',points:1},{label:'3+ events',value:'3+',points:0.5}]),
+        mkFactor('surgical_history','Surgical History',       2,[{label:'None',value:'none',points:2},{label:'1 surgery (minor)',value:'one_minor',points:1.5},{label:'2+ or major surgery',value:'two_plus',points:1}])
+      ]
+    },
+    clinical: {
+      label: 'Clinical Correlation', weight: catWeights.clinical,
+      factors: [
+        mkFactor('drug_condition','Drug-Condition Matching',  5,[{label:'Consistent — meds match declared PED',value:'consistent',points:5},{label:'Minor gap — partial disclosure',value:'minor gap',points:2.5},{label:'Non-disclosure likely',value:'non-disclosure',points:0}]),
+        mkFactor('multi_system', 'Multi-System Findings',    5,[{label:'No multi-system involvement',value:'none',points:5},{label:'1 organ system cluster',value:'1 cluster',points:3},{label:'2+ organ system clusters',value:'2+ clusters',points:1}]),
+        mkFactor('cv_risk',      'Cardiovascular Risk Score',5,[{label:'Low (<10% 10-yr CV event)',value:'low',points:5},{label:'Moderate (10-20%)',value:'moderate',points:3},{label:'High (>20%)',value:'high',points:1}])
+      ]
+    },
+    documentation: {
+      label: 'Documentation Quality', weight: catWeights.documentation,
+      factors: [
+        mkFactor('completeness',    'Report Completeness %',   8,[{label:'90%+ parameters filled',value:'90%+',points:8},{label:'75-89% filled',value:'75%',points:6},{label:'50-74% filled',value:'50%',points:4},{label:'<50% filled',value:'<50%',points:2}]),
+        mkFactor('module_coverage', 'Module Coverage',         4,[{label:'All required modules present',value:'all',points:4},{label:'Most modules present',value:'most',points:3},{label:'Several modules missing',value:'few',points:2}]),
+        mkFactor('consistency',     'Consistency & Validity',  3,[{label:'No conflicts, all reports current',value:'clean',points:3},{label:'Minor inconsistency',value:'minor',points:2},{label:'Conflicts or expired reports',value:'conflicts/expired',points:0}])
+      ]
+    }
+  };
+}
+
+// ─── MAIN BUILDER ────────────────────────────────────────────────────────────
+// Builds the full per-CAT scoring config. Called at startup and on reset.
+// Each CAT gets: correct medical test factors + shared non-medical factors.
 function buildDefaultCatScoring() {
   const cfg = {};
   for (const cat of ['CAT_1','CAT_2','CAT_3','CAT_4','tele_mer']) {
+    const weights = CAT_WEIGHTS[cat];
+    const shared  = sharedComponents(weights);
     cfg[cat] = {
       _version: SCORING_VERSION,
       thresholds: { ...CAT_THRESHOLDS[cat] },
-      components: defaultComponents(CAT_WEIGHTS[cat])
+      components: {
+        medical: {
+          label: 'Medical Parameters',
+          weight: weights.medical,
+          // Per-CAT correct test list — CAT 1 has 9 tests, CAT 4 has 13 tests
+          factors: cat === 'tele_mer' ? [] : buildMedicalFactors(cat)
+        },
+        lifestyle:     shared.lifestyle,
+        history:       shared.history,
+        clinical:      shared.clinical,
+        documentation: shared.documentation
+      }
     };
   }
   return cfg;
