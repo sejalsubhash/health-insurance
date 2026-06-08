@@ -3342,159 +3342,155 @@ function renderCatEditor() {
   const weightSum = Object.values(comps).reduce((s,c)=>s+(Number(c.weight)||0),0);
   const t = cfg.thresholds || {approve:80,refer:65,decline_below:50};
 
-  // ── Band colour helper ──────────────────────────────────────────────────────
+  // ── band risk colour (green / amber / red based on points ratio) ────────────
   function bandColor(pts, maxPts) {
-    const ratio = pts / (maxPts || 1);
-    if (ratio >= 0.85)  return { bg:'#ECFDF5', border:'#047857', text:'#047857', badge:'Normal'    };
-    if (ratio >= 0.45)  return { bg:'#FFFBEB', border:'#B45309', text:'#B45309', badge:'Borderline' };
-    return               { bg:'#FEF2F2', border:'#B91C1C', text:'#B91C1C', badge:'Abnormal'  };
+    const r = pts / (maxPts||1);
+    if (r >= 0.85) return {bg:'#ECFDF5',text:'#047857',border:'#D1FAE5',label:'Normal'};
+    if (r >= 0.45) return {bg:'#FFFBEB',text:'#B45309',border:'#FDE68A',label:'Borderline'};
+    return               {bg:'#FEF2F2',text:'#B91C1C',border:'#FECACA',label:'Abnormal'};
   }
 
-  let html = `<div style="border:1px solid var(--border);border-left:4px solid ${meta.color};border-radius:10px;padding:16px">`;
+  let html = '';
 
-  // ── Decision Thresholds ─────────────────────────────────────────────────────
-  html += `
-  <div style="font-weight:700;font-size:14px;margin-bottom:10px;color:${meta.color}">
-    <i data-lucide="sliders-horizontal"></i> Decision Thresholds
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
-    <div style="padding:12px;background:var(--success-bg);border-radius:8px;border:1px solid rgba(4,120,87,0.2)">
-      <label style="font-size:10px;color:var(--success);font-weight:700;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">✅ APPROVE if score ≥</label>
-      <input type="number" id="th_approve" value="${t.approve}" class="form-control" style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--success);background:transparent;border:none;border-bottom:2px solid var(--success);border-radius:0;padding:2px 0">
-    </div>
-    <div style="padding:12px;background:var(--warning-bg);border-radius:8px;border:1px solid rgba(180,83,9,0.2)">
-      <label style="font-size:10px;color:var(--warning);font-weight:700;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">⚠️ REFER if score ≥</label>
-      <input type="number" id="th_refer" value="${t.refer}" class="form-control" style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--warning);background:transparent;border:none;border-bottom:2px solid var(--warning);border-radius:0;padding:2px 0">
-    </div>
-    <div style="padding:12px;background:var(--danger-bg);border-radius:8px;border:1px solid rgba(185,28,28,0.2)">
-      <label style="font-size:10px;color:var(--danger);font-weight:700;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">❌ DECLINE if score &lt;</label>
-      <input type="number" id="th_decline" value="${t.decline_below}" class="form-control" style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--danger);background:transparent;border:none;border-bottom:2px solid var(--danger);border-radius:0;padding:2px 0">
-    </div>
-  </div>`;
-
-  // ── Weight summary bar ──────────────────────────────────────────────────────
-  const wColor = weightSum===100 ? 'var(--success)' : 'var(--danger)';
-  const compEntries = Object.entries(comps);
-  const barSegments = compEntries.map(([ck,c]) => {
-    const cm = COMP_META[ck]||{label:ck};
-    const pct = Number(c.weight)||0;
-    const segColors = {medical:'#1B2B65',lifestyle:'#047857',history:'#B45309',clinical:'#7C3AED',documentation:'#0E7490'};
-    const col = segColors[ck]||'#6B7280';
-    return `<div title="${cm.label}: ${pct}pts" style="flex:${pct};background:${col};height:100%;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:600;min-width:20px;overflow:hidden">${pct}</div>`;
-  }).join('');
-
-  html += `
-  <div style="margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-      <span style="font-size:12px;font-weight:600;color:${wColor}">Component weights total: <strong>${weightSum}/100</strong> ${weightSum===100?'✓':'— must equal 100'}</span>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        ${compEntries.map(([ck,c])=>{
-          const cm=COMP_META[ck]||{label:ck};
-          const segColors={medical:'#1B2B65',lifestyle:'#047857',history:'#B45309',clinical:'#7C3AED',documentation:'#0E7490'};
-          return `<span style="display:flex;align-items:center;gap:4px;font-size:11px"><span style="width:10px;height:10px;border-radius:2px;background:${segColors[ck]||'#6B7280'};display:inline-block"></span>${cm.label} (${c.weight})</span>`;
-        }).join('')}
+  // ── Decision Thresholds (identical layout to original) ──────────────────────
+  html += `<div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px">
+    <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+      <div>
+        <label style="font-size:10px;color:var(--success);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">APPROVE if ≥</label>
+        <input type="number" id="th_approve" value="${t.approve}" class="form-control" style="font-size:15px;font-weight:700;color:var(--success)">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--warning);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">REFER if ≥</label>
+        <input type="number" id="th_refer" value="${t.refer}" class="form-control" style="font-size:15px;font-weight:700;color:var(--warning)">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--danger);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">DECLINE if &lt;</label>
+        <input type="number" id="th_decline" value="${t.decline_below}" class="form-control" style="font-size:15px;font-weight:700;color:var(--danger)">
       </div>
     </div>
-    <div style="height:20px;border-radius:6px;overflow:hidden;display:flex;border:1px solid var(--border)">${barSegments}</div>
   </div>`;
 
-  // ── Components ──────────────────────────────────────────────────────────────
+  // ── Weight total line (same as original) ────────────────────────────────────
+  const wOk = weightSum === 100;
+  html += `<div style="font-size:12px;font-weight:600;color:${wOk?'var(--success)':'var(--danger)'};margin-bottom:14px">
+    Component weights total: ${weightSum}/100 ${wOk?'✓':'✗ must equal 100'}
+  </div>`;
+
+  // ── One component section per component ─────────────────────────────────────
   for (const [ckey, comp] of Object.entries(comps)) {
-    const cm = COMP_META[ckey] || {label:ckey,icon:'•'};
-    const factors = comp.factors || [];
-    const maxSum = factors.reduce((s,f)=>s+(Number(f.max)||0),0);
-    const compWeight = Number(comp.weight)||0;
-    const maxMatches = Math.abs(maxSum - compWeight) < 0.001;
-    const maxColor = maxMatches ? 'var(--success)' : 'var(--danger)';
-    const segColors = {medical:'#1B2B65',lifestyle:'#047857',history:'#B45309',clinical:'#7C3AED',documentation:'#0E7490'};
-    const compColor = segColors[ckey]||'#6B7280';
+    const cm       = COMP_META[ckey] || {label:ckey, icon:'•'};
+    const factors  = comp.factors || [];
+    const maxSum   = factors.reduce((s,f)=>s+(Number(f.max)||0), 0);
+    const cw       = Number(comp.weight)||0;
+    const balanced = Math.abs(maxSum - cw) < 0.001;
+    const maxColor = balanced ? 'var(--success)' : 'var(--danger)';
 
-    // Build factor cards with structured band table
-    const factorCards = factors.map((f, fi) => {
-      const bands = f.bands || [];
-      const maxBandPts = Math.max(...bands.map(b=>b.points||0), f.max||1);
+    // ── TABLE: one row per factor; bands expand into sub-rows ──────────────────
+    // Columns: Factor | Max | Normal band | Borderline band | Abnormal band | Actions
+    // Each band column shows: "result description  →  X pts"
 
-      // Band rows as a mini structured table
-      const bandRows = bands.map((b,bi) => {
-        const c = bandColor(b.points, f.max);
-        const barW = Math.round((b.points / (f.max||1)) * 100);
-        return `<tr style="border-bottom:1px solid var(--border-light)">
-          <td style="padding:6px 10px;font-size:12px;font-weight:500;white-space:nowrap;width:50%">${b.label}</td>
-          <td style="padding:6px 10px;width:20%">
-            <div style="height:6px;background:var(--border-light);border-radius:3px;overflow:hidden">
-              <div style="height:100%;width:${barW}%;background:${c.border};border-radius:3px"></div>
-            </div>
-          </td>
-          <td style="padding:6px 10px;text-align:right;width:15%">
-            <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;color:${c.text}">${b.points}</span>
-          </td>
-          <td style="padding:6px 10px;width:15%">
-            <span style="font-size:10px;padding:2px 6px;border-radius:10px;background:${c.bg};color:${c.text};border:1px solid ${c.border};font-weight:600">${c.badge}</span>
-          </td>
-        </tr>`;
-      }).join('');
+    // Build rows — each factor becomes N rows (one per band),
+    // first band row shows factor name + max spanning all band rows (rowspan).
+    let tableRows = '';
+    if (factors.length === 0) {
+      tableRows = `<tr><td colspan="6" style="padding:10px 12px;color:var(--text-muted);font-size:12px;text-align:center">No factors — click + Add factor</td></tr>`;
+    } else {
+      factors.forEach((f, fi) => {
+        const bands = f.bands || [];
+        const rowspan = Math.max(bands.length, 1);
 
-      return `<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface-alt);border-bottom:1px solid var(--border)">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:13px;font-weight:600;color:var(--text)">${f.label}</span>
-            <span style="font-size:11px;padding:2px 8px;border-radius:12px;background:${compColor};color:#fff;font-weight:700">Max: ${f.max} pts</span>
-          </div>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-outline btn-sm" style="padding:3px 10px;font-size:11px" onclick="editFactor('${ckey}',${fi})">
-              <i data-lucide="pencil"></i> Edit
-            </button>
-            <button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:var(--danger-bg);color:var(--danger);border:1px solid rgba(185,28,28,0.2)" onclick="deleteFactor('${ckey}',${fi})">
-              <i data-lucide="trash-2"></i>
-            </button>
-          </div>
-        </div>
-        <table style="width:100%;border-collapse:collapse">
-          <thead>
-            <tr style="background:var(--surface-alt)">
-              <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border)">Result Band</th>
-              <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border)">Score %</th>
-              <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text-muted);text-align:right;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border)">Points</th>
-              <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border)">Risk Level</th>
-            </tr>
-          </thead>
-          <tbody>${bandRows||'<tr><td colspan="4" style="padding:8px;color:var(--text-muted);font-size:12px">No bands defined</td></tr>'}</tbody>
-        </table>
-      </div>`;
-    }).join('');
+        bands.forEach((b, bi) => {
+          const bc = bandColor(b.points, f.max);
+          const pct = Math.round((b.points/(f.max||1))*100);
+          const isFirst = bi === 0;
+
+          tableRows += `<tr style="border-top:${isFirst ? '1px solid var(--border)' : '1px solid var(--border-light)'}">`;
+
+          // Factor name + max — only on first band row, spans all band rows
+          if (isFirst) {
+            tableRows += `
+              <td rowspan="${rowspan}" style="padding:8px 12px;font-weight:600;font-size:12.5px;vertical-align:middle;border-right:1px solid var(--border-light)">${f.label}</td>
+              <td rowspan="${rowspan}" style="padding:8px 12px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;vertical-align:middle;border-right:1px solid var(--border-light)">${f.max}</td>`;
+          }
+
+          // Band result description
+          tableRows += `<td style="padding:6px 12px;font-size:12px;color:var(--text)">${b.label}</td>`;
+
+          // Points with colour badge
+          tableRows += `<td style="padding:6px 12px;text-align:center">
+            <span style="display:inline-block;min-width:36px;padding:2px 8px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;background:${bc.bg};color:${bc.text};border:1px solid ${bc.border}">${b.points}</span>
+          </td>`;
+
+          // Risk level pill
+          tableRows += `<td style="padding:6px 12px;text-align:center">
+            <span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;background:${bc.bg};color:${bc.text};border:1px solid ${bc.border}">${bc.label}</span>
+          </td>`;
+
+          // Actions — only on first band row, spans all band rows
+          if (isFirst) {
+            tableRows += `
+              <td rowspan="${rowspan}" style="padding:8px 10px;text-align:right;vertical-align:middle;white-space:nowrap;border-left:1px solid var(--border-light)">
+                <button class="btn btn-outline btn-sm" style="padding:2px 8px;margin-right:4px" onclick="editFactor('${ckey}',${fi})"><i data-lucide="pencil"></i></button>
+                <button class="btn btn-outline btn-sm" style="padding:2px 8px;color:var(--danger)" onclick="deleteFactor('${ckey}',${fi})"><i data-lucide="trash-2"></i></button>
+              </td>`;
+          }
+
+          tableRows += `</tr>`;
+        });
+
+        // If factor has no bands at all
+        if (bands.length === 0) {
+          tableRows += `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:8px 12px;font-weight:600;font-size:12.5px">${f.label}</td>
+            <td style="padding:8px 12px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700">${f.max}</td>
+            <td colspan="3" style="padding:8px 12px;color:var(--text-muted);font-size:12px;font-style:italic">No bands defined</td>
+            <td style="padding:8px 10px;text-align:right;white-space:nowrap;border-left:1px solid var(--border-light)">
+              <button class="btn btn-outline btn-sm" style="padding:2px 8px;margin-right:4px" onclick="editFactor('${ckey}',${fi})"><i data-lucide="pencil"></i></button>
+              <button class="btn btn-outline btn-sm" style="padding:2px 8px;color:var(--danger)" onclick="deleteFactor('${ckey}',${fi})"><i data-lucide="trash-2"></i></button>
+            </td>
+          </tr>`;
+        }
+      });
+    }
 
     html += `
-    <div style="border:1px solid ${compColor}33;border-left:4px solid ${compColor};border-radius:10px;margin-bottom:14px;overflow:hidden">
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:linear-gradient(90deg,${compColor}11,transparent)">
-        <div>
-          <div style="font-weight:700;font-size:14px;color:${compColor}">${cm.icon} ${cm.label}</div>
-          <div style="font-size:11px;margin-top:3px;color:${maxColor}">
-            Factor maxes: <strong>${maxSum}</strong> / Component weight: <strong>${compWeight}</strong>
-            ${maxMatches
-              ? '<span style="color:var(--success)"> ✓ Balanced</span>'
-              : '<span style="color:var(--danger)"> ✗ Must equal component weight</span>'}
-          </div>
+    <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:12px;overflow:hidden">
+
+      <!-- Component header (identical look to original screenshot) -->
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--surface-alt);border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:13px;font-weight:700">${cm.icon} ${cm.label}</span>
+          <span style="font-size:11px;color:${maxColor}">factor maxes: ${maxSum} / ${cw} ${balanced?'✓':'✗ must equal weight'}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          <div>
-            <label style="font-size:10px;font-weight:600;color:${compColor};display:block;margin-bottom:2px;text-transform:uppercase">Weight</label>
-            <input type="number" id="w_${ckey}" value="${comp.weight}"
-              onchange="updateWeight('${ckey}',this.value)"
-              style="width:70px;padding:4px 8px;font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${compColor};border:2px solid ${compColor};border-radius:6px;text-align:center;background:var(--surface)">
-          </div>
-          <button class="btn btn-sm" onclick="addFactor('${ckey}')"
-            style="padding:8px 14px;background:${compColor};color:#fff;font-size:12px;font-weight:600;border:none;border-radius:6px">
-            <i data-lucide="plus"></i> Add Factor
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:11px;color:var(--text-muted)">Weight</label>
+          <input type="number" id="w_${ckey}" value="${comp.weight}"
+            onchange="updateWeight('${ckey}',this.value)"
+            class="form-control" style="width:64px;padding:4px 8px;font-size:13px;font-weight:700;text-align:center">
+          <button class="btn btn-primary btn-sm" onclick="addFactor('${ckey}')">
+            <i data-lucide="plus"></i> Add factor
           </button>
         </div>
       </div>
-      <div style="padding:12px 16px">
-        ${factorCards || `<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;border:2px dashed var(--border);border-radius:8px">No factors defined. Click "Add Factor" to add the first scoring criterion.</div>`}
-      </div>
+
+      <!-- Factors table with structured band rows -->
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead>
+          <tr style="background:var(--surface-alt);border-bottom:2px solid var(--border)">
+            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;width:26%">Factor</th>
+            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:7%">Max pts</th>
+            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;width:36%">Result / Band description</th>
+            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:10%">Score</th>
+            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:11%">Risk</th>
+            <th style="padding:7px 12px;width:10%"></th>
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
     </div>`;
   }
 
-  html += `</div>`;
   ed.innerHTML = html;
   renderIcons();
 }
