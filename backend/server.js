@@ -2827,11 +2827,31 @@ async function loadProductPolicyConfig() {
     try { productPolicyMap = (await s3Client.getConfig('product-policy-map')) || {}; } catch(e) { productPolicyMap = {}; }
     try { catScoringConfig = (await s3Client.getConfig('cat-scoring')) || {}; } catch(e) { catScoringConfig = {}; }
     // Seed/upgrade if empty or old version
-    const isCurrentVersion = catScoringConfig?.CAT_1?._version === SCORING_VERSION;
-    if (!catScoringConfig || Object.keys(catScoringConfig).length === 0 || !isCurrentVersion) {
+    // Only seed defaults if NO config exists at all in DB.
+    // Do NOT overwrite if user has saved custom config — version mismatch is handled
+    // by merging missing keys, not by full reset.
+    const hasConfig = catScoringConfig && Object.keys(catScoringConfig).length > 0;
+    if (!hasConfig) {
       catScoringConfig = buildDefaultCatScoring();
       await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(e => console.error('CAT scoring seed error:', e.message));
-      console.log('[Startup] ✅ Dynamic per-CAT scoring config seeded (components + factors)');
+      console.log('[Startup] CAT scoring config seeded with defaults (first run)');
+    } else {
+      // Merge: add any NEW CAT keys from defaults that don't exist in saved config
+      // (e.g. if tele_mer was added in a new version but user already had CAT_1-4 saved)
+      let merged = false;
+      const defaults = buildDefaultCatScoring();
+      for (const cat of Object.keys(defaults)) {
+        if (!catScoringConfig[cat]) {
+          catScoringConfig[cat] = defaults[cat];
+          merged = true;
+        }
+      }
+      if (merged) {
+        await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(() => {});
+        console.log('[Startup] CAT scoring config: merged missing CAT keys from defaults');
+      } else {
+        console.log('[Startup] CAT scoring config: loaded from DB (' + Object.keys(catScoringConfig).length + ' CATs)');
+      }
     }
   // ── ALWAYS force-reset to SBI Superhealth products on every startup ──────────
   // Version token forces re-seed whenever bumped — change this string to re-seed.
