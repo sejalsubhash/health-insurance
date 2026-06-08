@@ -2567,7 +2567,7 @@ let catScoringConfig = {};  // Dynamic per-CAT scoring: components → factors (
 // Each CAT has: thresholds + 5 components. Each component has a weight + factors[].
 // Each factor: { id, label, max, bands:[{label,value,points}] }
 // The engine scores every factor, sums per component, scales to weight, sums to 100.
-const SCORING_VERSION = 'dynamic-v3';
+const SCORING_VERSION = 'dynamic-v2';
 
 function mkFactor(id, label, max, bands) { return { id, label, max, bands }; }
 
@@ -2595,17 +2595,12 @@ const CAT_THRESHOLDS = {
 
 // ─── RAW MAX POINTS PER TEST, PER CAT ────────────────────────────────────────
 // Based on SBI Superhealth UW Guidelines test table image.
-// Each CAT's factor maxes sum EXACTLY to that CAT's medical component weight (35/38/42/45).
-// bmi_bp is ONE combined factor (BMI + Blood Pressure from MER form).
+// Raw points are proportional — engine normalizes to component weight.
 const CAT_MEDICAL_MAX = {
-  CAT_1: { bmi_bp:10, ecg:4, urine_routine:2, cbc:4, esr:3, hba1c:4, sgpt:3, creatinine:3, total_cholesterol:2 },
-  // 10+4+2+4+3+4+3+3+2 = 35 ✓
-  CAT_2: { bmi_bp:10, ecg:4, urine_routine:2, cbc:4, esr:3, hba1c:4, sgpt:2, creatinine:2, total_cholesterol:2, triglyceride:2, urine_microalbumin:3 },
-  // 10+4+2+4+3+4+2+2+2+2+3 = 38 ✓
-  CAT_3: { bmi_bp:9, ecg:4, urine_routine:2, cbc:4, esr:3, hba1c:4, urine_microalbumin:3, lipid_profile:5, lft:4, kft:4 },
-  // 9+4+2+4+3+4+3+5+4+4 = 42 ✓
-  CAT_4: { bmi_bp:9, ecg:4, urine_routine:2, cbc:3, esr:2, hba1c:4, urine_microalbumin:3, lipid_profile:4, lft:4, kft:4, echo_2d:4, psa_pap:2 }
-  // 9+4+2+3+2+4+3+4+4+4+4+2 = 45 ✓
+  CAT_1: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, sgpt:3, hba1c:5, creatinine:3, total_cholesterol:3 },
+  CAT_2: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, sgpt:3, hba1c:5, creatinine:3, total_cholesterol:2, triglyceride:3, urine_microalbumin:4 },
+  CAT_3: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, hba1c:5, urine_microalbumin:4, lipid_profile:6, lft:5, kft:5 },
+  CAT_4: { bmi_bp:7, ecg:4, urine_routine:2, cbc:4, esr:2, hba1c:5, urine_microalbumin:4, lipid_profile:6, lft:5, kft:5, echo_2d:5, psa_pap:2 }
 };
 
 // ─── MEDICAL FACTOR BUILDER (per CAT — correct SBI test list) ────────────────
@@ -2754,75 +2749,42 @@ function buildMedicalFactors(cat) {
 }
 
 // ─── SHARED NON-MEDICAL FACTORS (Lifestyle, History, Clinical, Documentation) ─
-// Factor maxes are scaled per CAT so they sum exactly to that component's weight.
-// CAT1: lifestyle=20, history=15, clinical=15, documentation=15
-// CAT2: lifestyle=18, history=15, clinical=15, documentation=14
-// CAT3: lifestyle=15, history=15, clinical=16, documentation=12
-// CAT4: lifestyle=12, history=15, clinical=16, documentation=12
+// Same factor definitions across all CATs — only the component WEIGHT changes.
 function sharedComponents(catWeights) {
-  const lw = catWeights.lifestyle; // 20/18/15/12
-  const hw = catWeights.history;   // 15 all CATs
-  const cw = catWeights.clinical;  // 15/15/16/16
-  const dw = catWeights.documentation; // 15/14/12/12
-
-  // Lifestyle factors scaled to lw — smoking always gets most (35%), exercise least (10%)
-  // Proportions: smoking 35%, alcohol 25%, tobacco 15%, occupation 15%, exercise 10%
-  const ls_smoking  = Math.round(lw * 0.35);   // 7/6/5/4
-  const ls_alcohol  = Math.round(lw * 0.25);   // 5/5/4/3
-  const ls_tobacco  = Math.round(lw * 0.15);   // 3/3/2/2
-  const ls_occup    = Math.round(lw * 0.15);   // 3/3/2/2
-  const ls_exercise = lw - ls_smoking - ls_alcohol - ls_tobacco - ls_occup; // remainder
-
-  // History factors scaled to hw — PED always dominant (47%)
-  const hi_ped      = Math.round(hw * 0.47);   // 7 all CATs
-  const hi_family   = Math.round(hw * 0.27);   // 4 all CATs
-  const hi_hosp     = Math.round(hw * 0.13);   // 2 all CATs
-  const hi_surgical = hw - hi_ped - hi_family - hi_hosp; // remainder = 2
-
-  // Clinical factors scaled to cw — drug-condition match most important (33%)
-  const cl_drug  = Math.round(cw * 0.33);      // 5/5/5/5
-  const cl_multi = Math.round(cw * 0.33);      // 5/5/5/5
-  const cl_cv    = cw - cl_drug - cl_multi;    // remainder = 5/5/6/6
-
-  // Documentation factors scaled to dw
-  const doc_complete = Math.round(dw * 0.53);  // 8/7/6/6
-  const doc_modules  = Math.round(dw * 0.27);  // 4/4/3/3
-  const doc_consist  = dw - doc_complete - doc_modules; // remainder = 3/3/3/3
-
   return {
     lifestyle: {
-      label: 'Lifestyle Risk', weight: lw,
+      label: 'Lifestyle Risk', weight: catWeights.lifestyle,
       factors: [
-        mkFactor('smoking',   'Smoking Status',    ls_smoking,  [{label:'Never',value:'never',points:ls_smoking},{label:'Former smoker',value:'former',points:Math.round(ls_smoking*0.57)},{label:'Current smoker',value:'current',points:1}]),
-        mkFactor('alcohol',   'Alcohol Use',        ls_alcohol,  [{label:'Never',value:'never',points:ls_alcohol},{label:'Occasional',value:'occasional',points:Math.round(ls_alcohol*0.8)},{label:'Regular',value:'regular',points:Math.round(ls_alcohol*0.4)},{label:'Heavy',value:'heavy',points:0.5}]),
-        mkFactor('tobacco',   'Tobacco Chewing',    ls_tobacco,  [{label:'Never',value:'never',points:ls_tobacco},{label:'Former',value:'former',points:Math.round(ls_tobacco*0.5)},{label:'Current',value:'current',points:0.5}]),
-        mkFactor('occupation','Occupation Hazard',  ls_occup,    [{label:'None',value:'none',points:ls_occup},{label:'Low',value:'low',points:Math.round(ls_occup*0.83)},{label:'Moderate',value:'moderate',points:Math.round(ls_occup*0.5)},{label:'High',value:'high',points:0.5}]),
-        mkFactor('exercise',  'Exercise Frequency', ls_exercise, [{label:'Daily',value:'daily',points:ls_exercise},{label:'Regular (3-4/week)',value:'regular',points:Math.max(1,Math.round(ls_exercise*0.75))},{label:'Occasional',value:'occasional',points:Math.max(1,Math.round(ls_exercise*0.5))},{label:'None',value:'none',points:0.5}])
+        mkFactor('smoking',   'Smoking Status',    7, [{label:'Never',value:'never',points:7},{label:'Former smoker',value:'former',points:4},{label:'Current smoker',value:'current',points:1}]),
+        mkFactor('alcohol',   'Alcohol Use',       5, [{label:'Never',value:'never',points:5},{label:'Occasional',value:'occasional',points:4},{label:'Regular',value:'regular',points:2},{label:'Heavy',value:'heavy',points:0.5}]),
+        mkFactor('tobacco',   'Tobacco Chewing',   3, [{label:'Never',value:'never',points:3},{label:'Former',value:'former',points:1.5},{label:'Current',value:'current',points:0.5}]),
+        mkFactor('occupation','Occupation Hazard', 3, [{label:'None',value:'none',points:3},{label:'Low',value:'low',points:2.5},{label:'Moderate',value:'moderate',points:1.5},{label:'High',value:'high',points:0.5}]),
+        mkFactor('exercise',  'Exercise Frequency',2, [{label:'Daily',value:'daily',points:2},{label:'Regular (3-4/week)',value:'regular',points:1.5},{label:'Occasional',value:'occasional',points:1},{label:'None',value:'none',points:0.5}])
       ]
     },
-    medical_history: {
-      label: 'Medical History', weight: hw,
+    history: {
+      label: 'Medical History', weight: catWeights.history,
       factors: [
-        mkFactor('pre_existing',    'Pre-Existing Conditions', hi_ped,      [{label:'None declared',value:'none',points:hi_ped},{label:'1 controlled condition',value:'1_controlled',points:Math.round(hi_ped*0.71)},{label:'2 active conditions',value:'2_active',points:Math.round(hi_ped*0.43)},{label:'3+ active conditions',value:'3+_active',points:Math.round(hi_ped*0.14)}]),
-        mkFactor('family_history',  'Family History',          hi_family,   [{label:'None',value:'none',points:hi_family},{label:'1 risk (parent/sibling)',value:'1_risk',points:Math.round(hi_family*0.75)},{label:'2 risks',value:'2_risks',points:Math.round(hi_family*0.5)},{label:'3+ risks',value:'3+_risks',points:Math.round(hi_family*0.25)}]),
-        mkFactor('hospitalizations','Hospitalizations',        hi_hosp,     [{label:'None in 5 years',value:'none',points:hi_hosp},{label:'1-2 events',value:'1_2',points:Math.round(hi_hosp*0.5)},{label:'3+ events',value:'3+',points:0.5}]),
-        mkFactor('surgical_history','Surgical History',        hi_surgical, [{label:'None',value:'none',points:hi_surgical},{label:'1 surgery',value:'1',points:Math.round(hi_surgical*0.75)},{label:'2+ surgeries',value:'2+',points:Math.round(hi_surgical*0.5)}])
+        mkFactor('pre_existing',    'Pre-Existing Conditions',7,[{label:'None declared',value:'none',points:7},{label:'Controlled (1 condition)',value:'controlled',points:5},{label:'1-2 active conditions',value:'1-2 active',points:3},{label:'3+ active conditions',value:'3+ active',points:1}]),
+        mkFactor('family_history',  'Family Medical History', 4,[{label:'None known',value:'none',points:4},{label:'1 risk (cardiac/DM/Ca)',value:'one_risk',points:3},{label:'2 risk conditions',value:'two_risks',points:2},{label:'3+ risk conditions',value:'three_plus',points:1}]),
+        mkFactor('hospitalizations','Prior Hospitalizations', 2,[{label:'None',value:'none',points:2},{label:'1-2 events',value:'1-2',points:1},{label:'3+ events',value:'3+',points:0.5}]),
+        mkFactor('surgical_history','Surgical History',       2,[{label:'None',value:'none',points:2},{label:'1 surgery (minor)',value:'one_minor',points:1.5},{label:'2+ or major surgery',value:'two_plus',points:1}])
       ]
     },
-    clinical_correlation: {
-      label: 'Clinical Correlation', weight: cw,
+    clinical: {
+      label: 'Clinical Correlation', weight: catWeights.clinical,
       factors: [
-        mkFactor('drug_condition',  'Drug–Condition Match',  cl_drug,  [{label:'All drugs match declared conditions',value:'full_match',points:cl_drug},{label:'Minor gap / probable OTC',value:'minor_gap',points:Math.round(cl_drug*0.4)},{label:'Significant non-disclosure implied',value:'non_disclosure',points:0.5}]),
-        mkFactor('multi_system',    'Multi-System Findings', cl_multi, [{label:'No cross-system flags',value:'none',points:cl_multi},{label:'1 cross-system flag',value:'1_flag',points:Math.round(cl_multi*0.6)},{label:'2+ flags (e.g. HTN + DM + CKD)',value:'2+_flags',points:1}]),
-        mkFactor('cv_risk',         'Cardiovascular Risk',   cl_cv,    [{label:'Low (<10% 10yr Framingham)',value:'low',points:cl_cv},{label:'Moderate (10-20%)',value:'moderate',points:Math.round(cl_cv*0.6)},{label:'High (>20%)',value:'high',points:1}])
+        mkFactor('drug_condition','Drug-Condition Matching',  5,[{label:'Consistent — meds match declared PED',value:'consistent',points:5},{label:'Minor gap — partial disclosure',value:'minor gap',points:2.5},{label:'Non-disclosure likely',value:'non-disclosure',points:0}]),
+        mkFactor('multi_system', 'Multi-System Findings',    5,[{label:'No multi-system involvement',value:'none',points:5},{label:'1 organ system cluster',value:'1 cluster',points:3},{label:'2+ organ system clusters',value:'2+ clusters',points:1}]),
+        mkFactor('cv_risk',      'Cardiovascular Risk Score',5,[{label:'Low (<10% 10-yr CV event)',value:'low',points:5},{label:'Moderate (10-20%)',value:'moderate',points:3},{label:'High (>20%)',value:'high',points:1}])
       ]
     },
-    documentation_quality: {
-      label: 'Documentation Quality', weight: dw,
+    documentation: {
+      label: 'Documentation Quality', weight: catWeights.documentation,
       factors: [
-        mkFactor('completeness',  'Report Completeness',    doc_complete, [{label:'≥90% parameters tested',value:'>= 90',points:doc_complete},{label:'75-89% tested',value:'75-89',points:Math.round(doc_complete*0.75)},{label:'50-74% tested',value:'50-74',points:Math.round(doc_complete*0.5)},{label:'<50% tested',value:'< 50',points:Math.round(doc_complete*0.25)}]),
-        mkFactor('module_coverage','Module Coverage',        doc_modules,  [{label:'5+ report modules uploaded',value:'5+',points:doc_modules},{label:'3-4 modules',value:'3-4',points:Math.round(doc_modules*0.75)},{label:'2 modules',value:'2',points:Math.round(doc_modules*0.5)},{label:'1 module only',value:'1',points:Math.round(doc_modules*0.25)}]),
-        mkFactor('consistency',   'Consistency & Validity', doc_consist,  [{label:'No contradictions, reports dated within 60 days',value:'clean',points:doc_consist},{label:'Minor inconsistency (e.g. BMI mismatch)',value:'minor',points:Math.round(doc_consist*0.67)},{label:'Major contradiction or expired reports',value:'major',points:0.5}])
+        mkFactor('completeness',    'Report Completeness %',   8,[{label:'90%+ parameters filled',value:'90%+',points:8},{label:'75-89% filled',value:'75%',points:6},{label:'50-74% filled',value:'50%',points:4},{label:'<50% filled',value:'<50%',points:2}]),
+        mkFactor('module_coverage', 'Module Coverage',         4,[{label:'All required modules present',value:'all',points:4},{label:'Most modules present',value:'most',points:3},{label:'Several modules missing',value:'few',points:2}]),
+        mkFactor('consistency',     'Consistency & Validity',  3,[{label:'No conflicts, all reports current',value:'clean',points:3},{label:'Minor inconsistency',value:'minor',points:2},{label:'Conflicts or expired reports',value:'conflicts/expired',points:0}])
       ]
     }
   };
@@ -2866,27 +2828,10 @@ async function loadProductPolicyConfig() {
     try { catScoringConfig = (await s3Client.getConfig('cat-scoring')) || {}; } catch(e) { catScoringConfig = {}; }
     // Seed/upgrade if empty or old version
     const isCurrentVersion = catScoringConfig?.CAT_1?._version === SCORING_VERSION;
-    const isEmpty = !catScoringConfig || Object.keys(catScoringConfig).length === 0;
-    if (isEmpty) {
-      // S3 is empty — seed defaults for first-time setup only
+    if (!catScoringConfig || Object.keys(catScoringConfig).length === 0 || !isCurrentVersion) {
       catScoringConfig = buildDefaultCatScoring();
       await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(e => console.error('CAT scoring seed error:', e.message));
-      console.log('[Startup] ✅ Dynamic per-CAT scoring config seeded for first time (components + factors)');
-    } else if (!isCurrentVersion) {
-      // Data exists but was built with older version — merge new cats/fields without overwriting edited ones
-      const fresh = buildDefaultCatScoring();
-      for (const cat of Object.keys(fresh)) {
-        if (!catScoringConfig[cat]) {
-          // New CAT entry not in DB yet — add it
-          catScoringConfig[cat] = fresh[cat];
-          console.log('[Startup] ✅ Added new CAT entry: ' + cat);
-        }
-        // Never overwrite existing CAT data — user edits take priority
-      }
-      await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(e => console.error('CAT scoring merge error:', e.message));
-      console.log('[Startup] ✅ CAT scoring config merged — existing edits preserved');
-    } else {
-      console.log('[Startup] ✅ CAT scoring config loaded from database (' + Object.keys(catScoringConfig).length + ' CATs)');
+      console.log('[Startup] ✅ Dynamic per-CAT scoring config seeded (components + factors)');
     }
   // ── ALWAYS force-reset to SBI Superhealth products on every startup ──────────
   // Version token forces re-seed whenever bumped — change this string to re-seed.
@@ -3303,20 +3248,13 @@ app.post('/api/cat-scoring', requireRole('Super Admin'), async (req, res) => {
         }
       }
     }
-    // Merge per CAT — user edits always win
+    // Merge per CAT
     for (const [cat, cfg] of Object.entries(incoming)) {
       catScoringConfig[cat] = { ...(catScoringConfig[cat] || {}), ...cfg, _version: SCORING_VERSION };
     }
     await s3Client.saveConfig('cat-scoring', catScoringConfig);
-    // Log exactly what was saved for each CAT
-    for (const [cat, cfg] of Object.entries(incoming)) {
-      const comps = cfg.components || {};
-      const med = comps.medical_parameters || {};
-      const msum = (med.factors||[]).reduce((s,f)=>s+(f.max||0),0);
-      const wsum = Object.values(comps).reduce((s,c)=>s+(c.weight||0),0);
-      console.log(`[CAT Scoring] ✅ ${cat} saved by ${req.user?.email} | thresholds: approve=${cfg.thresholds?.approve} refer=${cfg.thresholds?.refer} decline=${cfg.thresholds?.decline_below} | weights total=${wsum} | medical factors=${med.factors?.length} sum=${msum}/${med.weight}`);
-    }
-    res.json({ success: true, saved_cats: Object.keys(incoming), cat_scoring: catScoringConfig });
+    console.log('[CAT Scoring] Saved by', req.user?.email);
+    res.json({ success: true, cat_scoring: catScoringConfig });
   } catch(e) { console.error('CAT scoring save error:', e); res.status(500).json({ error: e.message }); }
 });
 
