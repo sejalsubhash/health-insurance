@@ -3203,7 +3203,6 @@ async function renderMasters() {
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
           <h3 style="margin:0">Per-CAT Scoring Configuration</h3>
           <div style="display:flex;gap:8px">
-            <button class="btn btn-outline btn-sm" onclick="resetCatScoring()"><i data-lucide="rotate-ccw"></i> Reset defaults</button>
             <button class="btn btn-primary btn-sm" onclick="saveCatScoring()"><i data-lucide="save"></i> Save All</button>
           </div>
         </div>
@@ -3503,26 +3502,36 @@ function renderCatEditor() {
 
   let html = '';
 
-  // ── Decision Thresholds (identical layout to original) ──────────────────────
-  html += `<div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px">
-    <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
-      <div>
-        <label style="font-size:10px;color:var(--success);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">APPROVE if ≥</label>
-        <input type="number" id="th_approve" value="${t.approve}" class="form-control" style="font-size:15px;font-weight:700;color:var(--success)">
-      </div>
-      <div>
-        <label style="font-size:10px;color:var(--warning);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">REFER if ≥</label>
-        <input type="number" id="th_refer" value="${t.refer}" class="form-control" style="font-size:15px;font-weight:700;color:var(--warning)">
-      </div>
-      <div>
-        <label style="font-size:10px;color:var(--danger);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">DECLINE if &lt;</label>
-        <input type="number" id="th_decline" value="${t.decline_below}" class="form-control" style="font-size:15px;font-weight:700;color:var(--danger)">
+  // ── Decision Thresholds — shown as a summary card with Edit button ───────────
+  // Full editing happens in openCatThresholdModal() which shows the same
+  // styled modal as Edit UW Policy for consistency.
+  html += `
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+    <div>
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
+      <div style="display:flex;gap:24px;align-items:center">
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--success)">${t.approve}</div>
+          <div style="font-size:10px;color:var(--success);font-weight:600;text-transform:uppercase;margin-top:2px">Approve if ≥</div>
+        </div>
+        <div style="width:1px;height:36px;background:var(--border)"></div>
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--warning)">${t.refer}</div>
+          <div style="font-size:10px;color:var(--warning);font-weight:600;text-transform:uppercase;margin-top:2px">Refer if ≥</div>
+        </div>
+        <div style="width:1px;height:36px;background:var(--border)"></div>
+        <div style="text-align:center">
+          <div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--danger)">${t.decline_below}</div>
+          <div style="font-size:10px;color:var(--danger);font-weight:600;text-transform:uppercase;margin-top:2px">Decline if &lt;</div>
+        </div>
       </div>
     </div>
+    <button class="btn btn-outline btn-sm" onclick="openCatThresholdModal('${cat}')">
+      <i data-lucide="pencil"></i> Edit Thresholds
+    </button>
   </div>`;
 
-  // ── Weight total line (same as original) ────────────────────────────────────
+  // ── Weight total line ────────────────────────────────────────────────────────
   const wOk = weightSum === 100;
   html += `<div style="font-size:12px;font-weight:600;color:${wOk?'var(--success)':'var(--danger)'};margin-bottom:14px">
     Component weights total: ${weightSum}/100 ${wOk?'✓':'✗ must equal 100'}
@@ -3684,16 +3693,15 @@ async function saveCatScoring() {
   const cat = window._activeCat;
   const cfg = window._catScoring[cat];
   const catName = cat.replace('_',' ').toUpperCase();
-  // Pull thresholds from inputs
-  const approve = parseInt(document.getElementById('th_approve').value,10);
-  const refer = parseInt(document.getElementById('th_refer').value,10);
-  const decline_below = parseInt(document.getElementById('th_decline').value,10);
+  // Thresholds are read from window._catScoring (updated by openCatThresholdModal)
+  const approve      = cfg.thresholds?.approve       || 80;
+  const refer        = cfg.thresholds?.refer         || 65;
+  const decline_below= cfg.thresholds?.decline_below || 50;
   const msg = document.getElementById('catScoringMsg');
   if (!(approve>refer && refer>decline_below)) {
-    alert(`❌ Threshold error for ${catName}\n\nNeed: approve > refer > decline\nYou entered: approve ${approve}, refer ${refer}, decline ${decline_below}`);
-    msg.innerHTML = `<span style="color:var(--danger)">❌ Need approve > refer > decline</span>`; return;
+    alert('Threshold error for ' + catName + ' — Need: approve > refer > decline. Current: approve=' + approve + ', refer=' + refer + ', decline=' + decline_below + '. Click Edit Thresholds to fix.');
+    msg.innerHTML = '<span style="color:var(--danger)">Need approve > refer > decline — click Edit Thresholds</span>'; return;
   }
-  cfg.thresholds = { approve, refer, decline_below };
 
   // CHECK 1 — component weights must total exactly 100
   const wsum = Object.values(cfg.components).reduce((s,c)=>s+(Number(c.weight)||0),0);
@@ -3732,6 +3740,180 @@ async function resetCatScoring() {
     if (r.success) { showToast('Reset to defaults','success'); window._catScoring=null; renderMasters(); }
     else showToast(r.error||'Reset failed','error');
   } catch(e) { showToast(e.message,'error'); }
+}
+
+// ── CAT Threshold Edit Modal ──────────────────────────────────────────────────
+// Opens a modal styled exactly like "Edit UW Policy" for editing thresholds
+// of a specific CAT level without leaving the page.
+function openCatThresholdModal(cat) {
+  const cfg  = window._catScoring?.[cat];
+  if (!cfg) return;
+  const t    = cfg.thresholds || { approve:80, refer:65, decline_below:50 };
+  const meta = CAT_META_LIST.find(c => c.key === cat);
+  const catLabel = meta?.label || cat.replace('_',' ').toUpperCase();
+
+  // Remove existing if any
+  const ex = document.getElementById('catThresholdModal'); if (ex) ex.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'catThresholdModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+
+      <!-- Header -->
+      <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:18px;font-weight:700;color:var(--text)">Edit Decision Thresholds</div>
+          <div style="font-size:13px;color:var(--text-muted);margin-top:3px">${catLabel} — Per-CAT Scoring Configuration</div>
+        </div>
+        <button onclick="document.getElementById('catThresholdModal').remove()"
+          style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text-muted);line-height:1;padding:0 4px">×</button>
+      </div>
+
+      <!-- Body -->
+      <div style="padding:22px">
+
+        <!-- DECISION THRESHOLDS section heading -->
+        <div style="font-size:11px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid var(--border)">
+          DECISION THRESHOLDS
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:6px">
+
+          <!-- Approve -->
+          <div>
+            <label style="font-size:12px;color:var(--success);font-weight:600;display:block;margin-bottom:6px">
+              Approve if score ≥
+            </label>
+            <input class="form-control" id="ctm_approve" type="number"
+              value="${t.approve}" min="0" max="100"
+              style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--success);text-align:center;padding:10px"
+              oninput="validateCatThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:5px">Auto-approve, no UW review</div>
+          </div>
+
+          <!-- Refer -->
+          <div>
+            <label style="font-size:12px;color:var(--warning);font-weight:600;display:block;margin-bottom:6px">
+              Refer if score ≥
+            </label>
+            <input class="form-control" id="ctm_refer" type="number"
+              value="${t.refer}" min="0" max="100"
+              style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--warning);text-align:center;padding:10px"
+              oninput="validateCatThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:5px">Send to UW queue for review</div>
+          </div>
+
+          <!-- Decline -->
+          <div>
+            <label style="font-size:12px;color:var(--danger);font-weight:600;display:block;margin-bottom:6px">
+              Decline if score &lt;
+            </label>
+            <input class="form-control" id="ctm_decline" type="number"
+              value="${t.decline_below}" min="0" max="100"
+              style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--danger);text-align:center;padding:10px"
+              oninput="validateCatThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:5px">Auto-decline below this</div>
+          </div>
+
+        </div>
+
+        <!-- Validation warning -->
+        <div id="ctm_warn" style="display:none;font-size:11px;color:var(--danger);margin-top:8px;padding:8px 12px;background:var(--danger-bg);border-radius:6px;border:1px solid rgba(185,28,28,0.2)"></div>
+
+        <!-- Visual guide -->
+        <div style="margin-top:16px;padding:12px 14px;background:var(--surface-alt);border-radius:8px;border:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:8px">Score zones preview</div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:11px">
+            <span style="padding:3px 10px;border-radius:4px;background:var(--danger-bg);color:var(--danger);font-weight:600">0 – &lt;${t.decline_below}</span>
+            <span style="color:var(--text-muted)">Auto-decline</span>
+            <span style="color:var(--border)">→</span>
+            <span style="padding:3px 10px;border-radius:4px;background:var(--warning-bg);color:var(--warning);font-weight:600">${t.decline_below} – ${t.refer-1}</span>
+            <span style="color:var(--text-muted)">Counter-offer</span>
+            <span style="color:var(--border)">→</span>
+            <span style="padding:3px 10px;border-radius:4px;background:var(--info-bg);color:var(--info);font-weight:600">${t.refer} – ${t.approve-1}</span>
+            <span style="color:var(--text-muted)">Refer to UW</span>
+            <span style="color:var(--border)">→</span>
+            <span style="padding:3px 10px;border-radius:4px;background:var(--success-bg);color:var(--success);font-weight:600">≥ ${t.approve}</span>
+            <span style="color:var(--text-muted)">Auto-approve</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">
+        <button class="btn btn-outline"
+          onclick="document.getElementById('catThresholdModal').remove()">Cancel</button>
+        <button class="btn btn-accent"
+          onclick="saveCatThresholds('${cat}')"
+          style="display:flex;align-items:center;gap:6px">
+          <i data-lucide="save"></i> Save Changes
+        </button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(modal);
+  setTimeout(renderIcons, 0);
+
+  // Live preview update as user types
+  ['ctm_approve','ctm_refer','ctm_decline'].forEach(id => {
+    document.getElementById(id).addEventListener('input', function() {
+      const a = parseInt(document.getElementById('ctm_approve').value)||80;
+      const r = parseInt(document.getElementById('ctm_refer').value)||65;
+      const d = parseInt(document.getElementById('ctm_decline').value)||50;
+      // Update preview spans
+      const spans = modal.querySelectorAll('[data-preview]');
+      // Simpler — just re-render the preview row
+      const prev = modal.querySelector('#ctm_preview_row');
+      if (prev) prev.innerHTML = `
+        <span style="padding:3px 10px;border-radius:4px;background:var(--danger-bg);color:var(--danger);font-weight:600">0 – &lt;${d}</span>
+        <span style="color:var(--text-muted)">Auto-decline</span>
+        <span style="color:var(--border)">→</span>
+        <span style="padding:3px 10px;border-radius:4px;background:var(--warning-bg);color:var(--warning);font-weight:600">${d} – ${r-1}</span>
+        <span style="color:var(--text-muted)">Counter-offer</span>
+        <span style="color:var(--border)">→</span>
+        <span style="padding:3px 10px;border-radius:4px;background:var(--info-bg);color:var(--info);font-weight:600">${r} – ${a-1}</span>
+        <span style="color:var(--text-muted)">Refer to UW</span>
+        <span style="color:var(--border)">→</span>
+        <span style="padding:3px 10px;border-radius:4px;background:var(--success-bg);color:var(--success);font-weight:600">≥ ${a}</span>
+        <span style="color:var(--text-muted)">Auto-approve</span>`;
+    });
+  });
+}
+
+function validateCatThresholds() {
+  const a = parseInt(document.getElementById('ctm_approve')?.value)||0;
+  const r = parseInt(document.getElementById('ctm_refer')?.value)||0;
+  const d = parseInt(document.getElementById('ctm_decline')?.value)||0;
+  const w = document.getElementById('ctm_warn');
+  if (!w) return true;
+  const errs = [];
+  if (a <= r) errs.push('Approve must be greater than Refer');
+  if (r <= d) errs.push('Refer must be greater than Decline');
+  if (a > 100 || r > 100 || d > 100) errs.push('Values cannot exceed 100');
+  if (errs.length) {
+    w.style.display = 'block';
+    w.innerHTML = errs.map(e => `• ${e}`).join('<br>');
+    return false;
+  }
+  w.style.display = 'none';
+  return true;
+}
+
+function saveCatThresholds(cat) {
+  if (!validateCatThresholds()) return;
+  const a = parseInt(document.getElementById('ctm_approve').value);
+  const r = parseInt(document.getElementById('ctm_refer').value);
+  const d = parseInt(document.getElementById('ctm_decline').value);
+  if (!window._catScoring[cat]) return;
+  // Update in-memory config — user still needs to hit "Save All" to persist
+  window._catScoring[cat].thresholds = { approve: a, refer: r, decline_below: d };
+  document.getElementById('catThresholdModal').remove();
+  // Re-render editor so the summary card shows updated values
+  renderCatEditor();
+  showToast('Thresholds updated — click Save All to persist', 'info');
 }
 
 function editPolicy(id) {
