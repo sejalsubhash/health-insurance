@@ -4022,26 +4022,35 @@ function renderCatTabs() {
 
 function renderCatEditor() {
   const ed = document.getElementById('catEditor'); if (!ed) return;
-  const cat = window._activeCat;
-  const cfg = window._catScoring[cat];
+  const cat  = window._activeCat;
+  const cfg  = window._catScoring[cat];
   if (!cfg) { ed.innerHTML = '<p style="color:var(--text-muted)">No config for this CAT.</p>'; return; }
-  const meta = CAT_META_LIST.find(c=>c.key===cat);
+  const meta  = CAT_META_LIST.find(c => c.key === cat);
   const comps = cfg.components || {};
-  const weightSum = Object.values(comps).reduce((s,c)=>s+(Number(c.weight)||0),0);
-  const t = cfg.thresholds || {approve:80,refer:65,decline_below:50};
+  const weightSum = Object.values(comps).reduce((s,c) => s + (Number(c.weight)||0), 0);
+  const t     = cfg.thresholds || { approve:80, refer:65, decline_below:50 };
 
-  // ── band risk colour (green / amber / red based on points ratio) ────────────
+  // Track which component is open — default none (collapsed)
+  if (!window._openComp) window._openComp = null;
+
+  // ── Band risk colour ──────────────────────────────────────────────────────
   function bandColor(pts, maxPts) {
-    const r = pts / (maxPts||1);
-    if (r >= 0.85) return {bg:'#ECFDF5',text:'#047857',border:'#D1FAE5',label:'Normal'};
-    if (r >= 0.45) return {bg:'#FFFBEB',text:'#B45309',border:'#FDE68A',label:'Borderline'};
-    return               {bg:'#FEF2F2',text:'#B91C1C',border:'#FECACA',label:'Abnormal'};
+    const r = pts / (maxPts || 1);
+    if (r >= 0.85) return { bg:'#ECFDF5', text:'#047857', border:'#D1FAE5', label:'Normal'     };
+    if (r >= 0.45) return { bg:'#FFFBEB', text:'#B45309', border:'#FDE68A', label:'Borderline' };
+    return               { bg:'#FEF2F2', text:'#B91C1C', border:'#FECACA', label:'Abnormal'   };
   }
+
+  // ── Segment colours per component ────────────────────────────────────────
+  const compColors = {
+    medical:'#1B2B65', lifestyle:'#047857', history:'#B45309',
+    clinical:'#7C3AED', documentation:'#0E7490'
+  };
 
   let html = '';
 
-  // ── Decision Thresholds — inline editable inputs ─────────────────────────────
-  html += `<div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px">
+  // ── Decision Thresholds — inline ─────────────────────────────────────────
+  html += `<div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
     <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
       <div>
@@ -4062,328 +4071,152 @@ function renderCatEditor() {
     </div>
   </div>`;
 
-  // ── Weight total line ────────────────────────────────────────────────────────
+  // ── Weight total ──────────────────────────────────────────────────────────
   const wOk = weightSum === 100;
   html += `<div style="font-size:12px;font-weight:600;color:${wOk?'var(--success)':'var(--danger)'};margin-bottom:14px">
-    Component weights total: ${weightSum}/100 ${wOk?'✓':'✗ must equal 100'}
+    Component weights total: ${weightSum}/100 ${wOk ? '✓' : '✗ must equal 100'}
   </div>`;
 
-  // ── One component section per component ─────────────────────────────────────
+  // ── Accordion: one card per component ─────────────────────────────────────
   for (const [ckey, comp] of Object.entries(comps)) {
-    const cm       = COMP_META[ckey] || {label:ckey, icon:'•'};
+    const cm       = COMP_META[ckey] || { label:ckey, icon:'•' };
     const factors  = comp.factors || [];
-    const maxSum   = factors.reduce((s,f)=>s+(Number(f.max)||0), 0);
-    const cw       = Number(comp.weight)||0;
+    const maxSum   = factors.reduce((s,f) => s + (Number(f.max)||0), 0);
+    const cw       = Number(comp.weight) || 0;
     const balanced = Math.abs(maxSum - cw) < 0.001;
-    const maxColor = balanced ? 'var(--success)' : 'var(--danger)';
+    const compColor = compColors[ckey] || '#6B7280';
+    const isOpen   = window._openComp === ckey;
 
-    // ── TABLE: one row per factor; bands expand into sub-rows ──────────────────
-    // Columns: Factor | Max | Normal band | Borderline band | Abnormal band | Actions
-    // Each band column shows: "result description  →  X pts"
+    // ── Collapsed header (always visible) ──────────────────────────────────
+    html += `
+    <div style="border:1px solid ${isOpen ? compColor : 'var(--border)'};border-radius:10px;margin-bottom:10px;overflow:hidden;transition:border-color 0.2s">
 
-    // Build rows — each factor becomes N rows (one per band),
-    // first band row shows factor name + max spanning all band rows (rowspan).
-    let tableRows = '';
-    if (factors.length === 0) {
-      tableRows = `<tr><td colspan="6" style="padding:10px 12px;color:var(--text-muted);font-size:12px;text-align:center">No factors — click + Add factor</td></tr>`;
-    } else {
-      factors.forEach((f, fi) => {
-        const bands = f.bands || [];
-        const rowspan = Math.max(bands.length, 1);
+      <!-- Component header row — click to expand/collapse -->
+      <div onclick="toggleCompAccordion('${ckey}')" style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;cursor:pointer;background:${isOpen ? compColor + '0D' : 'var(--surface)'};user-select:none;transition:background 0.2s">
 
-        bands.forEach((b, bi) => {
-          const bc = bandColor(b.points, f.max);
-          const pct = Math.round((b.points/(f.max||1))*100);
-          const isFirst = bi === 0;
+        <div style="display:flex;align-items:center;gap:14px">
+          <!-- Colour dot -->
+          <div style="width:10px;height:10px;border-radius:50%;background:${compColor};flex-shrink:0"></div>
 
-          tableRows += `<tr style="border-top:${isFirst ? '1px solid var(--border)' : '1px solid var(--border-light)'}">`;
+          <!-- Name + factor count -->
+          <div>
+            <div style="font-size:14px;font-weight:700;color:${isOpen ? compColor : 'var(--text)'}">${cm.icon} ${cm.label}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${factors.length} factor${factors.length !== 1 ? 's' : ''} &nbsp;·&nbsp; Max pts: ${maxSum} &nbsp;·&nbsp; Weight: ${cw}</div>
+          </div>
+        </div>
 
-          // Factor name + max — only on first band row, spans all band rows
-          if (isFirst) {
+        <div style="display:flex;align-items:center;gap:12px">
+          <!-- Balance badge -->
+          <span style="font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;background:${balanced ? '#ECFDF5' : '#FEF2F2'};color:${balanced ? '#047857' : '#B91C1C'};border:1px solid ${balanced ? '#D1FAE5' : '#FECACA'}">
+            ${balanced ? '✓ Balanced' : '✗ Unbalanced'}
+          </span>
+          <!-- Weight input — stopPropagation so click doesn't toggle accordion -->
+          <div onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:6px">
+            <label style="font-size:11px;color:var(--text-muted)">Weight</label>
+            <input type="number" id="w_${ckey}" value="${comp.weight}"
+              onchange="updateWeight('${ckey}',this.value)"
+              onclick="event.stopPropagation()"
+              class="form-control" style="width:60px;padding:4px 8px;font-size:13px;font-weight:700;text-align:center">
+          </div>
+          <!-- Chevron -->
+          <i data-lucide="${isOpen ? 'chevron-up' : 'chevron-down'}" style="width:16px;height:16px;color:var(--text-muted);transition:transform 0.2s"></i>
+        </div>
+      </div>`;
+
+    // ── Expanded body (only when isOpen) ────────────────────────────────────
+    if (isOpen) {
+      // Factor table rows
+      let tableRows = '';
+      if (factors.length === 0) {
+        tableRows = `<tr><td colspan="6" style="padding:14px 12px;color:var(--text-muted);font-size:12px;text-align:center">
+          No factors yet — click + Add Factor to add the first scoring criterion.
+        </td></tr>`;
+      } else {
+        factors.forEach((f, fi) => {
+          const bands   = f.bands || [];
+          const rowspan = Math.max(bands.length, 1);
+
+          bands.forEach((b, bi) => {
+            const bc   = bandColor(b.points, f.max);
+            const barW = Math.round((b.points / (f.max || 1)) * 100);
+            const isFirst = bi === 0;
+            tableRows += `<tr style="border-top:${isFirst ? '1px solid var(--border)' : '1px solid var(--border-light)'}">`;
+            if (isFirst) {
+              tableRows += `
+                <td rowspan="${rowspan}" style="padding:8px 12px;font-weight:600;font-size:12.5px;vertical-align:middle;border-right:1px solid var(--border-light)">${f.label}</td>
+                <td rowspan="${rowspan}" style="padding:8px 12px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;vertical-align:middle;border-right:1px solid var(--border-light)">${f.max}</td>`;
+            }
             tableRows += `
-              <td rowspan="${rowspan}" style="padding:8px 12px;font-weight:600;font-size:12.5px;vertical-align:middle;border-right:1px solid var(--border-light)">${f.label}</td>
-              <td rowspan="${rowspan}" style="padding:8px 12px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;vertical-align:middle;border-right:1px solid var(--border-light)">${f.max}</td>`;
-          }
+              <td style="padding:6px 12px;font-size:12px">${b.label}</td>
+              <td style="padding:6px 12px;text-align:center">
+                <span style="display:inline-block;min-width:36px;padding:2px 8px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;background:${bc.bg};color:${bc.text};border:1px solid ${bc.border}">${b.points}</span>
+              </td>
+              <td style="padding:6px 12px;text-align:center">
+                <span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;background:${bc.bg};color:${bc.text};border:1px solid ${bc.border}">${bc.label}</span>
+              </td>`;
+            if (isFirst) {
+              tableRows += `
+                <td rowspan="${rowspan}" style="padding:8px 10px;text-align:right;vertical-align:middle;border-left:1px solid var(--border-light);white-space:nowrap">
+                  <button class="btn btn-outline btn-sm" style="padding:2px 8px;margin-right:4px" onclick="editFactor('${ckey}',${fi})"><i data-lucide="pencil"></i></button>
+                  <button class="btn btn-outline btn-sm" style="padding:2px 8px;color:var(--danger)" onclick="deleteFactor('${ckey}',${fi})"><i data-lucide="trash-2"></i></button>
+                </td>`;
+            }
+            tableRows += `</tr>`;
+          });
 
-          // Band result description
-          tableRows += `<td style="padding:6px 12px;font-size:12px;color:var(--text)">${b.label}</td>`;
-
-          // Points with colour badge
-          tableRows += `<td style="padding:6px 12px;text-align:center">
-            <span style="display:inline-block;min-width:36px;padding:2px 8px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;background:${bc.bg};color:${bc.text};border:1px solid ${bc.border}">${b.points}</span>
-          </td>`;
-
-          // Risk level pill
-          tableRows += `<td style="padding:6px 12px;text-align:center">
-            <span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;background:${bc.bg};color:${bc.text};border:1px solid ${bc.border}">${bc.label}</span>
-          </td>`;
-
-          // Actions — only on first band row, spans all band rows
-          if (isFirst) {
-            tableRows += `
-              <td rowspan="${rowspan}" style="padding:8px 10px;text-align:right;vertical-align:middle;white-space:nowrap;border-left:1px solid var(--border-light)">
+          if (bands.length === 0) {
+            tableRows += `<tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 12px;font-weight:600;font-size:12.5px">${f.label}</td>
+              <td style="padding:8px 12px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700">${f.max}</td>
+              <td colspan="3" style="padding:8px 12px;color:var(--text-muted);font-style:italic;font-size:12px">No bands — click edit to add</td>
+              <td style="padding:8px 10px;text-align:right;border-left:1px solid var(--border-light);white-space:nowrap">
                 <button class="btn btn-outline btn-sm" style="padding:2px 8px;margin-right:4px" onclick="editFactor('${ckey}',${fi})"><i data-lucide="pencil"></i></button>
                 <button class="btn btn-outline btn-sm" style="padding:2px 8px;color:var(--danger)" onclick="deleteFactor('${ckey}',${fi})"><i data-lucide="trash-2"></i></button>
-              </td>`;
+              </td>
+            </tr>`;
           }
-
-          tableRows += `</tr>`;
         });
+      }
 
-        // If factor has no bands at all
-        if (bands.length === 0) {
-          tableRows += `<tr style="border-top:1px solid var(--border)">
-            <td style="padding:8px 12px;font-weight:600;font-size:12.5px">${f.label}</td>
-            <td style="padding:8px 12px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700">${f.max}</td>
-            <td colspan="3" style="padding:8px 12px;color:var(--text-muted);font-size:12px;font-style:italic">No bands defined</td>
-            <td style="padding:8px 10px;text-align:right;white-space:nowrap;border-left:1px solid var(--border-light)">
-              <button class="btn btn-outline btn-sm" style="padding:2px 8px;margin-right:4px" onclick="editFactor('${ckey}',${fi})"><i data-lucide="pencil"></i></button>
-              <button class="btn btn-outline btn-sm" style="padding:2px 8px;color:var(--danger)" onclick="deleteFactor('${ckey}',${fi})"><i data-lucide="trash-2"></i></button>
-            </td>
-          </tr>`;
-        }
-      });
-    }
-
-    html += `
-    <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:12px;overflow:hidden">
-
-      <!-- Component header (identical look to original screenshot) -->
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--surface-alt);border-bottom:1px solid var(--border)">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:13px;font-weight:700">${cm.icon} ${cm.label}</span>
-          <span style="font-size:11px;color:${maxColor}">factor maxes: ${maxSum} / ${cw} ${balanced?'✓':'✗ must equal weight'}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <label style="font-size:11px;color:var(--text-muted)">Weight</label>
-          <input type="number" id="w_${ckey}" value="${comp.weight}"
-            onchange="updateWeight('${ckey}',this.value)"
-            class="form-control" style="width:64px;padding:4px 8px;font-size:13px;font-weight:700;text-align:center">
-          <button class="btn btn-primary btn-sm" onclick="addFactor('${ckey}')">
-            <i data-lucide="plus"></i> Add factor
+      html += `
+      <div style="border-top:1px solid ${compColor}33;padding:0 0 12px 0">
+        <!-- Table -->
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:${compColor}0D;border-bottom:2px solid ${compColor}33">
+              <th style="padding:8px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;width:28%">Factor</th>
+              <th style="padding:8px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:8%">Max pts</th>
+              <th style="padding:8px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;width:34%">Result / Band</th>
+              <th style="padding:8px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:10%">Score</th>
+              <th style="padding:8px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:10%">Risk</th>
+              <th style="width:10%"></th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+        <!-- Add factor button at bottom of expanded section -->
+        <div style="padding:10px 16px 0">
+          <button class="btn btn-sm" onclick="addFactor('${ckey}')"
+            style="background:${compColor};color:#fff;font-size:12px;font-weight:600;border:none;border-radius:6px;padding:6px 14px">
+            <i data-lucide="plus"></i> Add Factor
           </button>
         </div>
-      </div>
+      </div>`;
+    }
 
-      <!-- Factors table with structured band rows -->
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead>
-          <tr style="background:var(--surface-alt);border-bottom:2px solid var(--border)">
-            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;width:26%">Factor</th>
-            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:7%">Max pts</th>
-            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase;letter-spacing:0.5px;width:36%">Result / Band description</th>
-            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:10%">Score</th>
-            <th style="padding:7px 12px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;letter-spacing:0.5px;width:11%">Risk</th>
-            <th style="padding:7px 12px;width:10%"></th>
-          </tr>
-        </thead>
-        <tbody>${tableRows}</tbody>
-      </table>
-    </div>`;
+    html += `</div>`; // close accordion card
   }
 
   ed.innerHTML = html;
   renderIcons();
 }
 
-function updateWeight(ckey, val) {
-  window._catScoring[window._activeCat].components[ckey].weight = parseInt(val,10)||0;
+// Toggle accordion — only one component open at a time
+function toggleCompAccordion(ckey) {
+  window._openComp = (window._openComp === ckey) ? null : ckey;
   renderCatEditor();
 }
 
-// ── Factor Edit / Add Modal ───────────────────────────────────────────────────
-// Opens a styled modal for adding or editing a scoring factor.
-// Replaces the old chained prompt() dialogs.
-// Bands are entered one row at a time — no comma-split parsing issues.
-function openFactorModal(ckey, fi) {
-  const isEdit = (fi !== null && fi !== undefined && fi !== -1);
-  const cat    = window._activeCat;
-  const comp   = window._catScoring[cat]?.components?.[ckey];
-  if (!comp) return;
-  const f      = isEdit ? comp.factors[fi] : null;
-  const compMeta = COMP_META[ckey] || { label: ckey };
-
-  const ex = document.getElementById('factorModal'); if (ex) ex.remove();
-  const modal = document.createElement('div');
-  modal.id = 'factorModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center';
-
-  // Pre-populate existing bands as rows
-  const existingBands = (f?.bands || [
-    { label: 'Normal', points: f?.max || 5 },
-    { label: 'Borderline', points: (f?.max || 5) * 0.5 },
-    { label: 'Abnormal', points: 0.5 }
-  ]).map((b, i) => `
-    <tr id="band_row_${i}" style="border-bottom:1px solid var(--border-light)">
-      <td style="padding:6px 8px">
-        <input class="form-control band-label" type="text" value="${b.label}"
-          placeholder="e.g. Normal <5.7%" style="font-size:12px;padding:5px 8px">
-      </td>
-      <td style="padding:6px 8px;width:100px">
-        <input class="form-control band-points" type="number" value="${b.points}" min="0" step="0.1"
-          style="font-size:12px;padding:5px 8px;text-align:center;font-weight:700">
-      </td>
-      <td style="padding:6px 8px;width:40px;text-align:center">
-        <button onclick="removeBandRow(this)" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:16px;line-height:1">×</button>
-      </td>
-    </tr>`).join('');
-
-  modal.innerHTML = `
-    <div style="background:var(--surface);border-radius:12px;width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
-
-      <!-- Header -->
-      <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start">
-        <div>
-          <div style="font-size:18px;font-weight:700">${isEdit ? 'Edit Factor' : 'Add Factor'}</div>
-          <div style="font-size:12px;color:var(--text-muted);margin-top:3px">${compMeta.label}</div>
-        </div>
-        <button onclick="document.getElementById('factorModal').remove()"
-          style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text-muted);line-height:1;padding:0 4px">×</button>
-      </div>
-
-      <!-- Body -->
-      <div style="padding:20px 22px">
-
-        <div style="display:grid;grid-template-columns:1fr 120px;gap:14px;margin-bottom:20px">
-          <div class="form-group" style="margin:0">
-            <label>Factor Name <span style="color:var(--danger)">*</span></label>
-            <input class="form-control" id="fm_label" type="text"
-              value="${f?.label || ''}" placeholder="e.g. HbA1C — Glycated Haemoglobin">
-          </div>
-          <div class="form-group" style="margin:0">
-            <label>Max Points <span style="color:var(--danger)">*</span></label>
-            <input class="form-control" id="fm_max" type="number"
-              value="${f?.max || 5}" min="0.1" step="0.5"
-              style="font-weight:700;text-align:center;font-size:15px">
-          </div>
-        </div>
-
-        <!-- Bands -->
-        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;padding-top:12px;border-top:1px solid var(--border-light)">
-          Scoring Bands
-          <span style="font-size:10px;font-weight:400;color:var(--text-muted);text-transform:none;margin-left:8px">Each band = one result range and its score. Points must be ≤ Max.</span>
-        </div>
-
-        <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
-          <thead>
-            <tr style="background:var(--surface-alt);border-bottom:1px solid var(--border)">
-              <th style="padding:7px 8px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase">Result / Band Description</th>
-              <th style="padding:7px 8px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;width:100px">Points</th>
-              <th style="width:40px"></th>
-            </tr>
-          </thead>
-          <tbody id="fm_bands_body">${existingBands}</tbody>
-        </table>
-
-        <button class="btn btn-outline btn-sm" onclick="addBandRow()" style="margin-bottom:4px">
-          <i data-lucide="plus"></i> Add Band
-        </button>
-        <div id="fm_warn" style="display:none;font-size:11px;color:var(--danger);margin-top:8px;padding:7px 10px;background:var(--danger-bg);border-radius:6px"></div>
-
-      </div>
-
-      <!-- Footer -->
-      <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">
-        <button class="btn btn-outline" onclick="document.getElementById('factorModal').remove()">Cancel</button>
-        <button class="btn btn-accent" onclick="submitFactorModal('${ckey}', ${isEdit ? fi : -1})">
-          <i data-lucide="save"></i> ${isEdit ? 'Save Changes' : 'Add Factor'}
-        </button>
-      </div>
-    </div>`;
-
-  document.body.appendChild(modal);
-  setTimeout(renderIcons, 0);
-}
-
-function addBandRow() {
-  const tbody = document.getElementById('fm_bands_body');
-  if (!tbody) return;
-  const idx = tbody.rows.length;
-  const tr = document.createElement('tr');
-  tr.style.borderBottom = '1px solid var(--border-light)';
-  tr.innerHTML = `
-    <td style="padding:6px 8px">
-      <input class="form-control band-label" type="text" placeholder="e.g. Borderline 6.5-7.9%"
-        style="font-size:12px;padding:5px 8px">
-    </td>
-    <td style="padding:6px 8px;width:100px">
-      <input class="form-control band-points" type="number" value="1" min="0" step="0.1"
-        style="font-size:12px;padding:5px 8px;text-align:center;font-weight:700">
-    </td>
-    <td style="padding:6px 8px;width:40px;text-align:center">
-      <button onclick="removeBandRow(this)" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:16px;line-height:1">×</button>
-    </td>`;
-  tbody.appendChild(tr);
-}
-
-function removeBandRow(btn) {
-  const row = btn.closest('tr');
-  if (row) row.remove();
-}
-
-function submitFactorModal(ckey, fi) {
-  const label = document.getElementById('fm_label')?.value?.trim();
-  const max   = parseFloat(document.getElementById('fm_max')?.value);
-  const warn  = document.getElementById('fm_warn');
-
-  const errs = [];
-  if (!label) errs.push('Factor name is required');
-  if (isNaN(max) || max <= 0) errs.push('Max points must be a positive number');
-
-  // Collect bands from table rows
-  const tbody  = document.getElementById('fm_bands_body');
-  const labels = Array.from(tbody.querySelectorAll('.band-label')).map(i => i.value.trim());
-  const pts    = Array.from(tbody.querySelectorAll('.band-points')).map(i => parseFloat(i.value));
-
-  if (labels.length === 0 || labels.every(l => !l)) errs.push('At least one band is required');
-  pts.forEach((p, i) => {
-    if (isNaN(p) || p < 0)    errs.push('Band ' + (i+1) + ': points must be ≥ 0');
-    if (!isNaN(max) && p > max) errs.push('Band ' + (i+1) + ' (' + labels[i] + '): points ' + p + ' exceed Max ' + max);
-  });
-
-  if (errs.length) {
-    warn.style.display = 'block';
-    warn.innerHTML = errs.map(e => '• ' + e).join('<br>');
-    return;
-  }
-  warn.style.display = 'none';
-
-  const bands = labels.map((l, i) => ({
-    label:  l || ('Band ' + (i+1)),
-    value:  (l || '').toLowerCase().replace(/[^a-z0-9.]+/g, '_').replace(/^_|_$/g, ''),
-    points: pts[i]
-  })).filter(b => b.label);
-
-  const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-  const cat = window._activeCat;
-
-  const isEdit = (fi !== null && fi >= 0);
-  if (isEdit) {
-    const f = window._catScoring[cat].components[ckey].factors[fi];
-    f.label = label; f.max = max; f.bands = bands;
-  } else {
-    window._catScoring[cat].components[ckey].factors.push({ id, label, max, bands });
-  }
-
-  document.getElementById('factorModal').remove();
-  renderCatEditor();
-  showToast(isEdit ? 'Factor updated' : 'Factor added', 'success');
-}
-
-function addFactor(ckey) {
-  openFactorModal(ckey, null);
-}
-
-function editFactor(ckey, fi) {
-  openFactorModal(ckey, fi);
-}
-
-function deleteFactor(ckey, fi) {
-  const f = window._catScoring[window._activeCat].components[ckey].factors[fi];
-  if (!confirm(`Delete factor "${f.label}"?`)) return;
-  window._catScoring[window._activeCat].components[ckey].factors.splice(fi,1);
-  renderCatEditor();
-}
 
 async function saveCatScoring() {
   const cat = window._activeCat;
