@@ -1699,7 +1699,10 @@ async function runAIAnalysis(wf) {
     // Inject proposer demographics for CV risk calculation in clinical correlation
     extractedData._proposer_age = wf.age;
     extractedData._proposer_gender = wf.gender;
-    const riskResult = riskEngine.calculateAll(extractedData, correlationData);
+    const riskResult = riskEngine.calculateAll(extractedData, correlationData, {
+      component_weights: riskParams._component_weights || null,
+      scoring_components: riskParams._scoring_components || null
+    });
 
     // EM-based scoring — scores ALL extracted parameters
     let emResult = null;

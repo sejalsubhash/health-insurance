@@ -346,7 +346,7 @@ function scoreDocumentationQuality(extractedData) {
 
 // ─── Main Calculation ───
 
-function calculateAll(extractedData, correlationData) {
+function calculateAll(extractedData, correlationData, dynamicConfig) {
   const components = {
     medical_parameters: scoreMedicalParameters(extractedData),
     lifestyle_risk: scoreLifestyleRisk(extractedData),
@@ -355,9 +355,52 @@ function calculateAll(extractedData, correlationData) {
     documentation_quality: scoreDocumentationQuality(extractedData)
   };
 
-  const totalScore = Object.values(components).reduce((sum, c) => sum + c.score, 0);
-  const maxScore = Object.values(components).reduce((sum, c) => sum + c.max, 0);
-  const normalizedScore = Math.round((totalScore / maxScore) * 100 * 100) / 100;
+  // ── Dynamic per-CAT weight rescaling ──────────────────────────────────────
+  // If a per-CAT config is passed (riskParams._component_weights), rescale each
+  // component's contribution to the editable weight instead of its hardcoded max.
+  // Each component already produces a score/max performance ratio (0..1); we
+  // multiply that ratio by the configured weight so edits in Masters Config
+  // actually move the computed score. Falls back to hardcoded maxes otherwise.
+  const dynWeights = dynamicConfig?.component_weights || null;
+  // Map engine component keys → config component keys (config uses short names)
+  const KEY_MAP = {
+    medical_parameters: ['medical_parameters', 'medical'],
+    lifestyle_risk:     ['lifestyle_risk', 'lifestyle'],
+    medical_history:    ['medical_history', 'history'],
+    clinical_correlation:['clinical_correlation', 'clinical', 'correlation'],
+    documentation_quality:['documentation_quality', 'documentation', 'docs']
+  };
+  function resolveWeight(engineKey) {
+    if (!dynWeights) return null;
+    for (const alias of KEY_MAP[engineKey]) {
+      if (dynWeights[alias] != null) return Number(dynWeights[alias]);
+    }
+    return null;
+  }
+
+  let totalScore, maxScore;
+  if (dynWeights) {
+    // Weighted mode: each component contributes (score/max) × configuredWeight
+    totalScore = 0; maxScore = 0;
+    for (const [key, comp] of Object.entries(components)) {
+      const w = resolveWeight(key);
+      if (w == null) {
+        // No configured weight for this component — keep its raw contribution
+        totalScore += comp.score; maxScore += comp.max;
+        continue;
+      }
+      const ratio = comp.max > 0 ? (comp.score / comp.max) : 0;
+      const weightedScore = Math.round(ratio * w * 100) / 100;
+      totalScore += weightedScore;
+      maxScore += w;
+      comp.weighted_score = weightedScore;
+      comp.weight = w;
+    }
+  } else {
+    totalScore = Object.values(components).reduce((sum, c) => sum + c.score, 0);
+    maxScore = Object.values(components).reduce((sum, c) => sum + c.max, 0);
+  }
+  const normalizedScore = maxScore > 0 ? Math.round((totalScore / maxScore) * 100 * 100) / 100 : 0;
 
   // Grade mapping
   let grade;
