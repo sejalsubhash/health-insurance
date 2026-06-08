@@ -3502,33 +3502,26 @@ function renderCatEditor() {
 
   let html = '';
 
-  // ── Decision Thresholds — shown as a summary card with Edit button ───────────
-  // Full editing happens in openCatThresholdModal() which shows the same
-  // styled modal as Edit UW Policy for consistency.
-  html += `
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
-    <div>
-      <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
-      <div style="display:flex;gap:24px;align-items:center">
-        <div style="text-align:center">
-          <div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--success)">${t.approve}</div>
-          <div style="font-size:10px;color:var(--success);font-weight:600;text-transform:uppercase;margin-top:2px">Approve if ≥</div>
-        </div>
-        <div style="width:1px;height:36px;background:var(--border)"></div>
-        <div style="text-align:center">
-          <div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--warning)">${t.refer}</div>
-          <div style="font-size:10px;color:var(--warning);font-weight:600;text-transform:uppercase;margin-top:2px">Refer if ≥</div>
-        </div>
-        <div style="width:1px;height:36px;background:var(--border)"></div>
-        <div style="text-align:center">
-          <div style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--danger)">${t.decline_below}</div>
-          <div style="font-size:10px;color:var(--danger);font-weight:600;text-transform:uppercase;margin-top:2px">Decline if &lt;</div>
-        </div>
+  // ── Decision Thresholds — inline editable inputs ─────────────────────────────
+  html += `<div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px">
+    <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+      <div>
+        <label style="font-size:10px;color:var(--success);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">APPROVE if ≥</label>
+        <input type="number" id="th_approve" value="${t.approve}" class="form-control" style="font-size:15px;font-weight:700;color:var(--success)">
+        <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Auto-approve, no UW review</div>
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--warning);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">REFER if ≥</label>
+        <input type="number" id="th_refer" value="${t.refer}" class="form-control" style="font-size:15px;font-weight:700;color:var(--warning)">
+        <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Send to UW queue for review</div>
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--danger);font-weight:600;display:block;margin-bottom:4px;text-transform:uppercase">DECLINE if &lt;</label>
+        <input type="number" id="th_decline" value="${t.decline_below}" class="form-control" style="font-size:15px;font-weight:700;color:var(--danger)">
+        <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Auto-decline below this</div>
       </div>
     </div>
-    <button class="btn btn-outline btn-sm" onclick="openCatThresholdModal('${cat}')">
-      <i data-lucide="pencil"></i> Edit Thresholds
-    </button>
   </div>`;
 
   // ── Weight total line ────────────────────────────────────────────────────────
@@ -3660,26 +3653,191 @@ function updateWeight(ckey, val) {
   renderCatEditor();
 }
 
-function addFactor(ckey) {
-  const label = prompt('Factor name (e.g. "Vision Test"):'); if (!label) return;
-  const max = parseFloat(prompt('Maximum points for this factor:', '5')); if (isNaN(max)||max<=0) { showToast('Max must be a positive number','error'); return; }
-  const bandsRaw = prompt('Scoring bands as label:points, comma-separated\nExample: normal:5, fair:2.5, poor:0.5', 'normal:'+max+', fair:'+(max/2)+', poor:0.5');
-  if (!bandsRaw) return;
-  const bands = bandsRaw.split(',').map(s=>{ const [label,pts]=s.split(':'); return {label:(label||'').trim(),value:(label||'').trim(),points:parseFloat(pts)||0}; }).filter(b=>b.label);
-  const id = label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
-  window._catScoring[window._activeCat].components[ckey].factors.push({ id, label, max, bands });
+// ── Factor Edit / Add Modal ───────────────────────────────────────────────────
+// Opens a styled modal for adding or editing a scoring factor.
+// Replaces the old chained prompt() dialogs.
+// Bands are entered one row at a time — no comma-split parsing issues.
+function openFactorModal(ckey, fi) {
+  const isEdit = (fi !== null && fi !== undefined && fi !== -1);
+  const cat    = window._activeCat;
+  const comp   = window._catScoring[cat]?.components?.[ckey];
+  if (!comp) return;
+  const f      = isEdit ? comp.factors[fi] : null;
+  const compMeta = COMP_META[ckey] || { label: ckey };
+
+  const ex = document.getElementById('factorModal'); if (ex) ex.remove();
+  const modal = document.createElement('div');
+  modal.id = 'factorModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center';
+
+  // Pre-populate existing bands as rows
+  const existingBands = (f?.bands || [
+    { label: 'Normal', points: f?.max || 5 },
+    { label: 'Borderline', points: (f?.max || 5) * 0.5 },
+    { label: 'Abnormal', points: 0.5 }
+  ]).map((b, i) => `
+    <tr id="band_row_${i}" style="border-bottom:1px solid var(--border-light)">
+      <td style="padding:6px 8px">
+        <input class="form-control band-label" type="text" value="${b.label}"
+          placeholder="e.g. Normal <5.7%" style="font-size:12px;padding:5px 8px">
+      </td>
+      <td style="padding:6px 8px;width:100px">
+        <input class="form-control band-points" type="number" value="${b.points}" min="0" step="0.1"
+          style="font-size:12px;padding:5px 8px;text-align:center;font-weight:700">
+      </td>
+      <td style="padding:6px 8px;width:40px;text-align:center">
+        <button onclick="removeBandRow(this)" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:16px;line-height:1">×</button>
+      </td>
+    </tr>`).join('');
+
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+
+      <!-- Header -->
+      <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:18px;font-weight:700">${isEdit ? 'Edit Factor' : 'Add Factor'}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:3px">${compMeta.label}</div>
+        </div>
+        <button onclick="document.getElementById('factorModal').remove()"
+          style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text-muted);line-height:1;padding:0 4px">×</button>
+      </div>
+
+      <!-- Body -->
+      <div style="padding:20px 22px">
+
+        <div style="display:grid;grid-template-columns:1fr 120px;gap:14px;margin-bottom:20px">
+          <div class="form-group" style="margin:0">
+            <label>Factor Name <span style="color:var(--danger)">*</span></label>
+            <input class="form-control" id="fm_label" type="text"
+              value="${f?.label || ''}" placeholder="e.g. HbA1C — Glycated Haemoglobin">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Max Points <span style="color:var(--danger)">*</span></label>
+            <input class="form-control" id="fm_max" type="number"
+              value="${f?.max || 5}" min="0.1" step="0.5"
+              style="font-weight:700;text-align:center;font-size:15px">
+          </div>
+        </div>
+
+        <!-- Bands -->
+        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;padding-top:12px;border-top:1px solid var(--border-light)">
+          Scoring Bands
+          <span style="font-size:10px;font-weight:400;color:var(--text-muted);text-transform:none;margin-left:8px">Each band = one result range and its score. Points must be ≤ Max.</span>
+        </div>
+
+        <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
+          <thead>
+            <tr style="background:var(--surface-alt);border-bottom:1px solid var(--border)">
+              <th style="padding:7px 8px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:left;text-transform:uppercase">Result / Band Description</th>
+              <th style="padding:7px 8px;font-size:10.5px;font-weight:700;color:var(--text-muted);text-align:center;text-transform:uppercase;width:100px">Points</th>
+              <th style="width:40px"></th>
+            </tr>
+          </thead>
+          <tbody id="fm_bands_body">${existingBands}</tbody>
+        </table>
+
+        <button class="btn btn-outline btn-sm" onclick="addBandRow()" style="margin-bottom:4px">
+          <i data-lucide="plus"></i> Add Band
+        </button>
+        <div id="fm_warn" style="display:none;font-size:11px;color:var(--danger);margin-top:8px;padding:7px 10px;background:var(--danger-bg);border-radius:6px"></div>
+
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">
+        <button class="btn btn-outline" onclick="document.getElementById('factorModal').remove()">Cancel</button>
+        <button class="btn btn-accent" onclick="submitFactorModal('${ckey}', ${isEdit ? fi : -1})">
+          <i data-lucide="save"></i> ${isEdit ? 'Save Changes' : 'Add Factor'}
+        </button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(modal);
+  setTimeout(renderIcons, 0);
+}
+
+function addBandRow() {
+  const tbody = document.getElementById('fm_bands_body');
+  if (!tbody) return;
+  const idx = tbody.rows.length;
+  const tr = document.createElement('tr');
+  tr.style.borderBottom = '1px solid var(--border-light)';
+  tr.innerHTML = `
+    <td style="padding:6px 8px">
+      <input class="form-control band-label" type="text" placeholder="e.g. Borderline 6.5-7.9%"
+        style="font-size:12px;padding:5px 8px">
+    </td>
+    <td style="padding:6px 8px;width:100px">
+      <input class="form-control band-points" type="number" value="1" min="0" step="0.1"
+        style="font-size:12px;padding:5px 8px;text-align:center;font-weight:700">
+    </td>
+    <td style="padding:6px 8px;width:40px;text-align:center">
+      <button onclick="removeBandRow(this)" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:16px;line-height:1">×</button>
+    </td>`;
+  tbody.appendChild(tr);
+}
+
+function removeBandRow(btn) {
+  const row = btn.closest('tr');
+  if (row) row.remove();
+}
+
+function submitFactorModal(ckey, fi) {
+  const label = document.getElementById('fm_label')?.value?.trim();
+  const max   = parseFloat(document.getElementById('fm_max')?.value);
+  const warn  = document.getElementById('fm_warn');
+
+  const errs = [];
+  if (!label) errs.push('Factor name is required');
+  if (isNaN(max) || max <= 0) errs.push('Max points must be a positive number');
+
+  // Collect bands from table rows
+  const tbody  = document.getElementById('fm_bands_body');
+  const labels = Array.from(tbody.querySelectorAll('.band-label')).map(i => i.value.trim());
+  const pts    = Array.from(tbody.querySelectorAll('.band-points')).map(i => parseFloat(i.value));
+
+  if (labels.length === 0 || labels.every(l => !l)) errs.push('At least one band is required');
+  pts.forEach((p, i) => {
+    if (isNaN(p) || p < 0)    errs.push('Band ' + (i+1) + ': points must be ≥ 0');
+    if (!isNaN(max) && p > max) errs.push('Band ' + (i+1) + ' (' + labels[i] + '): points ' + p + ' exceed Max ' + max);
+  });
+
+  if (errs.length) {
+    warn.style.display = 'block';
+    warn.innerHTML = errs.map(e => '• ' + e).join('<br>');
+    return;
+  }
+  warn.style.display = 'none';
+
+  const bands = labels.map((l, i) => ({
+    label:  l || ('Band ' + (i+1)),
+    value:  (l || '').toLowerCase().replace(/[^a-z0-9.]+/g, '_').replace(/^_|_$/g, ''),
+    points: pts[i]
+  })).filter(b => b.label);
+
+  const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  const cat = window._activeCat;
+
+  const isEdit = (fi !== null && fi >= 0);
+  if (isEdit) {
+    const f = window._catScoring[cat].components[ckey].factors[fi];
+    f.label = label; f.max = max; f.bands = bands;
+  } else {
+    window._catScoring[cat].components[ckey].factors.push({ id, label, max, bands });
+  }
+
+  document.getElementById('factorModal').remove();
   renderCatEditor();
+  showToast(isEdit ? 'Factor updated' : 'Factor added', 'success');
+}
+
+function addFactor(ckey) {
+  openFactorModal(ckey, null);
 }
 
 function editFactor(ckey, fi) {
-  const f = window._catScoring[window._activeCat].components[ckey].factors[fi];
-  const label = prompt('Factor name:', f.label); if (!label) return;
-  const max = parseFloat(prompt('Maximum points:', f.max)); if (isNaN(max)||max<=0) { showToast('Max must be positive','error'); return; }
-  const bandsRaw = prompt('Scoring bands (label:points, comma-separated):', (f.bands||[]).map(b=>`${b.label}:${b.points}`).join(', '));
-  if (!bandsRaw) return;
-  const bands = bandsRaw.split(',').map(s=>{ const [label,pts]=s.split(':'); return {label:(label||'').trim(),value:(label||'').trim(),points:parseFloat(pts)||0}; }).filter(b=>b.label);
-  f.label = label; f.max = max; f.bands = bands;
-  renderCatEditor();
+  openFactorModal(ckey, fi);
 }
 
 function deleteFactor(ckey, fi) {
@@ -3693,15 +3851,16 @@ async function saveCatScoring() {
   const cat = window._activeCat;
   const cfg = window._catScoring[cat];
   const catName = cat.replace('_',' ').toUpperCase();
-  // Thresholds are read from window._catScoring (updated by openCatThresholdModal)
-  const approve      = cfg.thresholds?.approve       || 80;
-  const refer        = cfg.thresholds?.refer         || 65;
-  const decline_below= cfg.thresholds?.decline_below || 50;
+  // Pull thresholds from inline inputs
+  const approve = parseInt(document.getElementById('th_approve').value, 10);
+  const refer = parseInt(document.getElementById('th_refer').value, 10);
+  const decline_below = parseInt(document.getElementById('th_decline').value, 10);
   const msg = document.getElementById('catScoringMsg');
-  if (!(approve>refer && refer>decline_below)) {
-    alert('Threshold error for ' + catName + ' — Need: approve > refer > decline. Current: approve=' + approve + ', refer=' + refer + ', decline=' + decline_below + '. Click Edit Thresholds to fix.');
-    msg.innerHTML = '<span style="color:var(--danger)">Need approve > refer > decline — click Edit Thresholds</span>'; return;
+  if (!(approve > refer && refer > decline_below)) {
+    alert('Threshold error for ' + catName + '. Need: approve > refer > decline. Got: ' + approve + ' / ' + refer + ' / ' + decline_below);
+    msg.innerHTML = '<span style="color:var(--danger)">Need approve > refer > decline</span>'; return;
   }
+  cfg.thresholds = { approve, refer, decline_below };
 
   // CHECK 1 — component weights must total exactly 100
   const wsum = Object.values(cfg.components).reduce((s,c)=>s+(Number(c.weight)||0),0);
