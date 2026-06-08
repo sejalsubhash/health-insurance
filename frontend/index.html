@@ -3089,7 +3089,12 @@ async function renderMasters() {
             <div style="padding:10px;background:var(--surface-alt);border-radius:6px;text-align:center"><div style="font-size:11px;color:var(--text-muted)">Refer ≥</div><div style="font-size:18px;font-weight:700;color:var(--warning)">${st.refer||65}</div></div>
             <div style="padding:10px;background:var(--surface-alt);border-radius:6px;text-align:center"><div style="font-size:11px;color:var(--text-muted)">Max Age</div><div style="font-size:18px;font-weight:700;color:var(--info)">${al.max||65}</div></div>
           </div>
-          <div style="font-size:12px;color:var(--text-muted)">${Object.keys(ov.loading_overrides||{}).length} loading override(s) | ${Object.keys(ov.rule_overrides||{}).length} rule override(s) | ${(ov.mandatory_tests||[]).length} mandatory test(s)</div>
+          <div style="font-size:12px;color:var(--text-muted)">
+            ${ov.sa_limits?.min||ov.sa_limits?.max ? `<span style="margin-right:10px">SA: ${ov.sa_limits.min?'₹'+(ov.sa_limits.min/100000).toFixed(0)+'L':''} – ${ov.sa_limits.max?'₹'+(ov.sa_limits.max/100000).toFixed(0)+'L':''}</span>` : ''}
+            Age: ${ov.age_limits?.min||18}–${ov.age_limits?.max||65} yrs
+            &nbsp;|&nbsp; ${Object.keys(ov.loading_overrides||{}).length} loading override(s)
+            &nbsp;|&nbsp; ${(ov.mandatory_tests||[]).length} mandatory test(s)
+          </div>
           ${p.document?`<div style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="badge badge-success"><i data-lucide="file-text"></i> ${p.document.name}</span><span style="font-size:11px;color:var(--text-muted)">${formatSize(p.document.size)}</span>${p.overrides_extracted_from?'<span class="badge badge-info">AI Extracted</span>':''}</div>${p.ai_extraction_summary?`<div style="margin-top:6px;padding:8px 10px;background:var(--info-bg);border-radius:6px;font-size:11px;color:var(--text-muted);line-height:1.5"><strong style="color:var(--info)">AI Summary:</strong> ${p.ai_extraction_summary}</div>`:''}`:''}
           ${p.extracted_rules?.length?`<div style="margin-top:6px;font-size:11px;color:var(--text-muted)">${p.extracted_rules.length} rule(s) extracted from document</div>`:''}
         </div></div>`;
@@ -3298,14 +3303,160 @@ function editProduct(id) {
     .catch(e => showToast(e.message, 'error'));
 }
 function addPolicyPrompt() {
-  const name = prompt('Policy Name:');
-  if (!name) return;
-  const approve = parseInt(prompt('Approve threshold (default 80):','80')) || 80;
-  const refer = parseInt(prompt('Refer threshold (default 65):','65')) || 65;
-  const maxAge = parseInt(prompt('Max entry age (default 65):','65')) || 65;
-  api('/api/policies', { method: 'POST', body: JSON.stringify({ name, overrides: { score_thresholds: { approve, refer, decline_below: 50 }, loading_overrides: {}, rule_overrides: {}, age_limits: { min: 18, max: maxAge }, sa_limits: {}, mandatory_tests: [] } }) })
-    .then(r => { if (r.success) { showToast('Policy created', 'success'); renderMasters(); } else showToast(r.error, 'error'); })
-    .catch(e => showToast(e.message, 'error'));
+  // Remove existing modal if any
+  const ex = document.getElementById('policyFormModal'); if (ex) ex.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'policyFormModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:16px;font-weight:700">Create New UW Policy</div>
+        <button onclick="document.getElementById('policyFormModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-muted)">×</button>
+      </div>
+      <div style="padding:20px">
+
+        <div class="form-group">
+          <label>Policy Name <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" id="pf_name" placeholder="e.g. Prime Plan UW Policy">
+        </div>
+
+        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--border-light)">
+          Decision Thresholds
+        </div>
+        <div class="grid-3" style="gap:10px">
+          <div class="form-group" style="margin:0">
+            <label style="color:var(--success)">Approve if score ≥</label>
+            <input class="form-control" id="pf_approve" type="number" value="80"
+              style="font-weight:700;color:var(--success)"
+              oninput="validateThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Auto-approve, no UW review</div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label style="color:var(--warning)">Refer if score ≥</label>
+            <input class="form-control" id="pf_refer" type="number" value="65"
+              style="font-weight:700;color:var(--warning)"
+              oninput="validateThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Send to UW queue for review</div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label style="color:var(--danger)">Decline if score &lt;</label>
+            <input class="form-control" id="pf_decline" type="number" value="50"
+              style="font-weight:700;color:var(--danger)"
+              oninput="validateThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Auto-decline below this</div>
+          </div>
+        </div>
+        <div id="pf_threshold_warn" style="display:none;font-size:11px;color:var(--danger);margin-top:6px;padding:6px 10px;background:var(--danger-bg);border-radius:6px"></div>
+
+        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--border-light)">
+          Age Limits
+        </div>
+        <div class="grid-2" style="gap:10px">
+          <div class="form-group" style="margin:0">
+            <label>Minimum Entry Age (years)</label>
+            <input class="form-control" id="pf_age_min" type="number" value="18" min="1" max="99">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Maximum Entry Age (years)</label>
+            <input class="form-control" id="pf_age_max" type="number" value="65" min="1" max="99">
+          </div>
+        </div>
+
+        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--border-light)">
+          Sum Assured Limits
+        </div>
+        <div class="grid-2" style="gap:10px">
+          <div class="form-group" style="margin:0">
+            <label>Minimum Sum Assured (₹)</label>
+            <input class="form-control" id="pf_sa_min" type="number" placeholder="e.g. 300000" min="0">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Leave blank for no minimum</div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Maximum Sum Assured (₹)</label>
+            <input class="form-control" id="pf_sa_max" type="number" placeholder="e.g. 2500000" min="0">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Leave blank for no maximum</div>
+          </div>
+        </div>
+        <div id="pf_sa_display" style="font-size:11px;color:var(--accent);margin-top:6px"></div>
+
+      </div>
+      <div style="padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn btn-outline" onclick="document.getElementById('policyFormModal').remove()">Cancel</button>
+        <button class="btn btn-accent" onclick="submitNewPolicy()"><i data-lucide="plus"></i> Create Policy</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(renderIcons, 0);
+
+  // Live SA display
+  ['pf_sa_min','pf_sa_max'].forEach(id => {
+    document.getElementById(id).addEventListener('input', function() {
+      const min = parseInt(document.getElementById('pf_sa_min').value)||0;
+      const max = parseInt(document.getElementById('pf_sa_max').value)||0;
+      const el  = document.getElementById('pf_sa_display');
+      if (min || max) {
+        const fmtMin = min ? '₹' + (min/100000).toFixed(0) + 'L' : 'No min';
+        const fmtMax = max ? '₹' + (max/100000).toFixed(0) + 'L' : 'No max';
+        el.textContent = `SA range: ${fmtMin} – ${fmtMax}`;
+      } else { el.textContent = ''; }
+    });
+  });
+}
+
+function validateThresholds() {
+  const approve  = parseInt(document.getElementById('pf_approve')?.value||document.getElementById('pfe_approve')?.value)||0;
+  const refer    = parseInt(document.getElementById('pf_refer')?.value||document.getElementById('pfe_refer')?.value)||0;
+  const decline  = parseInt(document.getElementById('pf_decline')?.value||document.getElementById('pfe_decline')?.value)||0;
+  const warnEl   = document.getElementById('pf_threshold_warn')||document.getElementById('pfe_threshold_warn');
+  if (!warnEl) return true;
+  const errors = [];
+  if (approve <= refer)  errors.push('Approve must be greater than Refer');
+  if (refer   <= decline) errors.push('Refer must be greater than Decline');
+  if (approve > 100 || refer > 100 || decline > 100) errors.push('Thresholds cannot exceed 100');
+  if (errors.length) {
+    warnEl.style.display = 'block';
+    warnEl.innerHTML = errors.map(e=>`• ${e}`).join('<br>');
+    return false;
+  }
+  warnEl.style.display = 'none';
+  return true;
+}
+
+async function submitNewPolicy() {
+  if (!validateThresholds()) return;
+  const name    = document.getElementById('pf_name').value.trim();
+  if (!name) { showToast('Policy name is required', 'error'); return; }
+  const approve  = parseInt(document.getElementById('pf_approve').value)||80;
+  const refer    = parseInt(document.getElementById('pf_refer').value)||65;
+  const decline  = parseInt(document.getElementById('pf_decline').value)||50;
+  const ageMin   = parseInt(document.getElementById('pf_age_min').value)||18;
+  const ageMax   = parseInt(document.getElementById('pf_age_max').value)||65;
+  const saMinVal = document.getElementById('pf_sa_min').value.trim();
+  const saMaxVal = document.getElementById('pf_sa_max').value.trim();
+  const saLimits = {};
+  if (saMinVal) saLimits.min = parseInt(saMinVal);
+  if (saMaxVal) saLimits.max = parseInt(saMaxVal);
+
+  try {
+    const r = await api('/api/policies', { method:'POST', body: JSON.stringify({
+      name,
+      overrides: {
+        score_thresholds: { approve, refer, decline_below: decline },
+        loading_overrides: {},
+        rule_overrides:    {},
+        age_limits:        { min: ageMin, max: ageMax },
+        sa_limits:         saLimits,
+        mandatory_tests:   []
+      }
+    })});
+    if (r.success) {
+      document.getElementById('policyFormModal').remove();
+      showToast('Policy created successfully', 'success');
+      renderMasters();
+    } else { showToast(r.error || 'Failed to create policy', 'error'); }
+  } catch(e) { showToast(e.message, 'error'); }
 }
 
 // ── Dynamic Per-CAT scoring editor ──
@@ -3585,18 +3736,165 @@ async function resetCatScoring() {
 
 function editPolicy(id) {
   const policies = window._policiesData || [];
-  const p = policies.find(p => p.id === id);
+  const p = policies.find(pol => pol.id === id);
   if (!p) return;
-  const ov = p.overrides||{}; const st = ov.score_thresholds||{};
-  const approve = parseInt(prompt('Approve threshold:', st.approve||80)) || st.approve||80;
-  const refer = parseInt(prompt('Refer threshold:', st.refer||65)) || st.refer||65;
-  const maxAge = parseInt(prompt('Max entry age:', ov.age_limits?.max||65)) || ov.age_limits?.max||65;
-  const smokerPct = prompt('Smoker loading % (blank=default):',ov.loading_overrides?.smoker_current||'');
-  const lo = { ...ov.loading_overrides };
-  if (smokerPct && parseInt(smokerPct)) lo.smoker_current = parseInt(smokerPct);
-  api(`/api/policies/${id}`, { method: 'PUT', body: JSON.stringify({ overrides: { ...ov, score_thresholds: { ...st, approve, refer }, age_limits: { min:18, max:maxAge }, loading_overrides: lo } }) })
-    .then(r => { if (r.success) { showToast('Policy updated', 'success'); renderMasters(); } else showToast(r.error, 'error'); })
-    .catch(e => showToast(e.message, 'error'));
+  const ov = p.overrides || {};
+  const st = ov.score_thresholds || {};
+  const al = ov.age_limits || {};
+  const sl = ov.sa_limits || {};
+
+  const ex = document.getElementById('policyEditModal'); if (ex) ex.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'policyEditModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border-radius:12px;width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-size:16px;font-weight:700">Edit UW Policy</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px">${p.name}</div>
+        </div>
+        <button onclick="document.getElementById('policyEditModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-muted)">×</button>
+      </div>
+      <div style="padding:20px">
+
+        <div class="form-group">
+          <label>Policy Name <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" id="pfe_name" value="${p.name}">
+        </div>
+
+        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--border-light)">
+          Decision Thresholds
+        </div>
+        <div class="grid-3" style="gap:10px">
+          <div class="form-group" style="margin:0">
+            <label style="color:var(--success)">Approve if score ≥</label>
+            <input class="form-control" id="pfe_approve" type="number" value="${st.approve||80}"
+              style="font-weight:700;color:var(--success)" oninput="validateThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Auto-approve, no UW review</div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label style="color:var(--warning)">Refer if score ≥</label>
+            <input class="form-control" id="pfe_refer" type="number" value="${st.refer||65}"
+              style="font-weight:700;color:var(--warning)" oninput="validateThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Send to UW queue for review</div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label style="color:var(--danger)">Decline if score &lt;</label>
+            <input class="form-control" id="pfe_decline" type="number" value="${st.decline_below||50}"
+              style="font-weight:700;color:var(--danger)" oninput="validateThresholds()">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Auto-decline below this</div>
+          </div>
+        </div>
+        <div id="pfe_threshold_warn" style="display:none;font-size:11px;color:var(--danger);margin-top:6px;padding:6px 10px;background:var(--danger-bg);border-radius:6px"></div>
+
+        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--border-light)">
+          Age Limits
+        </div>
+        <div class="grid-2" style="gap:10px">
+          <div class="form-group" style="margin:0">
+            <label>Minimum Entry Age (years)</label>
+            <input class="form-control" id="pfe_age_min" type="number" value="${al.min||18}" min="1" max="99">
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Maximum Entry Age (years)</label>
+            <input class="form-control" id="pfe_age_max" type="number" value="${al.max||65}" min="1" max="99">
+          </div>
+        </div>
+
+        <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--border-light)">
+          Sum Assured Limits
+        </div>
+        <div class="grid-2" style="gap:10px">
+          <div class="form-group" style="margin:0">
+            <label>Minimum Sum Assured (₹)</label>
+            <input class="form-control" id="pfe_sa_min" type="number"
+              value="${sl.min||''}" placeholder="e.g. 300000" min="0">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Leave blank for no minimum</div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Maximum Sum Assured (₹)</label>
+            <input class="form-control" id="pfe_sa_max" type="number"
+              value="${sl.max||''}" placeholder="e.g. 2500000" min="0">
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Leave blank for no maximum</div>
+          </div>
+        </div>
+        <div id="pfe_sa_display" style="font-size:11px;color:var(--accent);margin-top:6px">
+          ${sl.min||sl.max ? 'SA range: ' + (sl.min?'₹'+(sl.min/100000).toFixed(0)+'L':'No min') + ' – ' + (sl.max?'₹'+(sl.max/100000).toFixed(0)+'L':'No max') : ''}
+        </div>
+
+      </div>
+      <div style="padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn btn-outline" onclick="document.getElementById('policyEditModal').remove()">Cancel</button>
+        <button class="btn btn-accent" onclick="submitEditPolicy('${id}')"><i data-lucide="save"></i> Save Changes</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(renderIcons, 0);
+
+  // Live SA display
+  ['pfe_sa_min','pfe_sa_max'].forEach(fid => {
+    document.getElementById(fid).addEventListener('input', function() {
+      const min = parseInt(document.getElementById('pfe_sa_min').value)||0;
+      const max = parseInt(document.getElementById('pfe_sa_max').value)||0;
+      const el  = document.getElementById('pfe_sa_display');
+      if (min || max) {
+        const fmtMin = min ? '₹'+(min/100000).toFixed(0)+'L' : 'No min';
+        const fmtMax = max ? '₹'+(max/100000).toFixed(0)+'L' : 'No max';
+        el.textContent = `SA range: ${fmtMin} – ${fmtMax}`;
+      } else { el.textContent = ''; }
+    });
+  });
+}
+
+async function submitEditPolicy(id) {
+  const policies = window._policiesData || [];
+  const p = policies.find(pol => pol.id === id);
+  if (!p) return;
+  const ov = p.overrides || {};
+
+  // Validate thresholds
+  const approveEl = document.getElementById('pfe_approve');
+  const referEl   = document.getElementById('pfe_refer');
+  const declineEl = document.getElementById('pfe_decline');
+  if (!approveEl) return;
+
+  const approve  = parseInt(approveEl.value)||80;
+  const refer    = parseInt(referEl.value)||65;
+  const decline  = parseInt(declineEl.value)||50;
+
+  if (approve <= refer || refer <= decline) {
+    showToast('Thresholds invalid: Approve > Refer > Decline required', 'error');
+    return;
+  }
+
+  const name    = document.getElementById('pfe_name').value.trim();
+  if (!name) { showToast('Policy name is required', 'error'); return; }
+  const ageMin   = parseInt(document.getElementById('pfe_age_min').value)||18;
+  const ageMax   = parseInt(document.getElementById('pfe_age_max').value)||65;
+  const saMinVal = document.getElementById('pfe_sa_min').value.trim();
+  const saMaxVal = document.getElementById('pfe_sa_max').value.trim();
+  const saLimits = { ...ov.sa_limits };
+  if (saMinVal) saLimits.min = parseInt(saMinVal); else delete saLimits.min;
+  if (saMaxVal) saLimits.max = parseInt(saMaxVal); else delete saLimits.max;
+
+  try {
+    const r = await api(`/api/policies/${id}`, { method:'PUT', body: JSON.stringify({
+      name,
+      overrides: {
+        ...ov,
+        score_thresholds: { ...ov.score_thresholds, approve, refer, decline_below: decline },
+        age_limits:  { min: ageMin, max: ageMax },
+        sa_limits:   saLimits
+      }
+    })});
+    if (r.success) {
+      document.getElementById('policyEditModal').remove();
+      showToast('Policy updated successfully', 'success');
+      renderMasters();
+    } else { showToast(r.error || 'Update failed', 'error'); }
+  } catch(e) { showToast(e.message, 'error'); }
 }
 function manageTests(policyId) {
   const policies = window._policiesData || [];
