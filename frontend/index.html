@@ -3295,6 +3295,10 @@ function renderCatEditor() {
   // Components
   for (const [ckey, comp] of Object.entries(comps)) {
     const cm = COMP_META[ckey] || {label:ckey,icon:'•'};
+    const maxSum = (comp.factors||[]).reduce((s,f)=>s+(Number(f.max)||0),0);
+    const compWeight = Number(comp.weight)||0;
+    const maxMatches = Math.abs(maxSum - compWeight) < 0.001;
+    const maxColor = maxMatches ? 'var(--success)' : 'var(--danger)';
     const factorRows = (comp.factors||[]).map((f,fi) => {
       const bandsTxt = (f.bands||[]).map(b=>`${b.label}:${b.points}`).join(' · ');
       return `<tr>
@@ -3308,7 +3312,9 @@ function renderCatEditor() {
     }).join('');
     html += `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div style="font-weight:600;font-size:13px">${cm.icon} ${cm.label}</div>
+        <div style="font-weight:600;font-size:13px">${cm.icon} ${cm.label}
+          <span style="font-weight:500;font-size:11px;color:${maxColor};margin-left:8px">factor maxes: ${maxSum} / ${compWeight} ${maxMatches?'✓':'✗ must equal weight'}</span>
+        </div>
         <div style="display:flex;align-items:center;gap:8px">
           <label style="font-size:11px;color:var(--text-muted)">Weight</label>
           <input type="number" id="w_${ckey}" value="${comp.weight}" onchange="updateWeight('${ckey}',this.value)" class="form-control" style="width:64px;padding:4px 8px;font-size:13px">
@@ -3364,21 +3370,46 @@ function deleteFactor(ckey, fi) {
 async function saveCatScoring() {
   const cat = window._activeCat;
   const cfg = window._catScoring[cat];
+  const catName = cat.replace('_',' ').toUpperCase();
   // Pull thresholds from inputs
   const approve = parseInt(document.getElementById('th_approve').value,10);
   const refer = parseInt(document.getElementById('th_refer').value,10);
   const decline_below = parseInt(document.getElementById('th_decline').value,10);
   const msg = document.getElementById('catScoringMsg');
-  if (!(approve>refer && refer>decline_below)) { msg.innerHTML = `<span style="color:var(--danger)">❌ Need approve > refer > decline</span>`; return; }
+  if (!(approve>refer && refer>decline_below)) {
+    alert(`❌ Threshold error for ${catName}\n\nNeed: approve > refer > decline\nYou entered: approve ${approve}, refer ${refer}, decline ${decline_below}`);
+    msg.innerHTML = `<span style="color:var(--danger)">❌ Need approve > refer > decline</span>`; return;
+  }
   cfg.thresholds = { approve, refer, decline_below };
-  // Validate weights
+
+  // CHECK 1 — component weights must total exactly 100
   const wsum = Object.values(cfg.components).reduce((s,c)=>s+(Number(c.weight)||0),0);
-  if (wsum !== 100) { msg.innerHTML = `<span style="color:var(--danger)">❌ ${cat.replace('_',' ')} weights total ${wsum}, must be 100</span>`; return; }
+  if (wsum !== 100) {
+    const direction = wsum > 100 ? `exceeding by ${wsum-100}` : `below by ${100-wsum}`;
+    alert(`❌ Component weights total ${wsum}/100 (${direction})\n\nThe five component weights for ${catName} must add up to exactly 100 before you can save.\n\nAdjust the Weight fields so they total 100.`);
+    msg.innerHTML = `<span style="color:var(--danger)">❌ Component weights total ${wsum}, must equal 100</span>`; return;
+  }
+
+  // CHECK 2 — inside each component, factor maxes must equal that component's weight
+  const mismatches = [];
+  for (const [ckey, comp] of Object.entries(cfg.components)) {
+    const maxSum = (comp.factors||[]).reduce((s,f)=>s+(Number(f.max)||0),0);
+    const w = Number(comp.weight)||0;
+    if (Math.abs(maxSum - w) >= 0.001) {
+      const label = (COMP_META[ckey]||{}).label || ckey;
+      mismatches.push(`• ${label}: factor maxes total ${maxSum}, but weight is ${w}`);
+    }
+  }
+  if (mismatches.length) {
+    alert(`❌ Factor totals don't match component weights for ${catName}\n\n${mismatches.join('\n')}\n\nInside each component, the sum of all factor "Max" values must equal that component's Weight. Fix the factor maxes or the weight, then save.`);
+    msg.innerHTML = `<span style="color:var(--danger)">❌ ${mismatches.length} component(s): factor maxes don't equal weight</span>`; return;
+  }
+
   try {
     const r = await api('/api/cat-scoring', { method:'POST', body: JSON.stringify({ [cat]: cfg }) });
-    if (r.success) { msg.innerHTML = `<span style="color:var(--success)">✅ ${cat.replace('_',' ')} saved. Engine now uses this config.</span>`; showToast('Scoring saved','success'); }
-    else msg.innerHTML = `<span style="color:var(--danger)">❌ ${r.error}</span>`;
-  } catch(e) { msg.innerHTML = `<span style="color:var(--danger)">❌ ${e.message}</span>`; }
+    if (r.success) { msg.innerHTML = `<span style="color:var(--success)">✅ ${catName} saved. Engine now uses this config.</span>`; showToast('Scoring saved','success'); }
+    else { alert(`❌ Server rejected save\n\n${r.error}`); msg.innerHTML = `<span style="color:var(--danger)">❌ ${r.error}</span>`; }
+  } catch(e) { alert(`❌ Save failed\n\n${e.message}`); msg.innerHTML = `<span style="color:var(--danger)">❌ ${e.message}</span>`; }
 }
 
 async function resetCatScoring() {

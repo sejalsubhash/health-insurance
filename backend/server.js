@@ -3077,6 +3077,11 @@ app.post('/api/cat-scoring', requireRole('Super Admin'), async (req, res) => {
                 return res.status(400).json({ error: `${cat}.${cKey}.${f.label}: band "${b.label}" points must be 0–${f.max}` });
             }
           }
+          // Factor maxes inside a component must total that component's weight
+          const factorMaxSum = comp.factors.reduce((s,f)=> s + (Number(f.max)||0), 0);
+          const compWeight = Number(comp.weight)||0;
+          if (Math.abs(factorMaxSum - compWeight) >= 0.001)
+            return res.status(400).json({ error: `${cat}.${cKey}: factor maxes total ${factorMaxSum} but component weight is ${compWeight} — they must be equal` });
         }
       }
     }
