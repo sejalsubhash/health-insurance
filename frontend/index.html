@@ -493,7 +493,31 @@ function toggleSidebar() {
     if (collapsed) document.getElementById('sidebar').classList.add('collapsed');
   } catch(e) { document.getElementById('sidebar').classList.add('collapsed'); }
 })();
-function showPage(page) { currentPage = page; document.querySelectorAll('.nav-item').forEach(n => { n.classList.toggle('active', n.dataset.page === page); }); const titles = { dashboard:'Dashboard', stp:'STP Intake — Smart Routing', myqueue:'My Underwriting Queue', vendors:'Vendor Management', inforequests:'Information Requests', communications:'Communications', masters:'Masters Configuration', users:'User Management', analytics:'Analytics', integrations:'Integrations & Webhooks' }; document.getElementById('pageTitle').textContent = titles[page] || page; const renders = { dashboard:renderDashboard, stp:renderSTP, myqueue:renderMyQueue, vendors:renderVendors, inforequests:renderInfoRequests, communications:renderComms, masters:renderMasters, users:renderUsers, analytics:renderAnalytics, integrations:renderIntegrations }; if (renders[page]) renders[page](); setTimeout(renderIcons, 0); }
+function toggleNewAssessmentMenu() {
+  const menu = document.getElementById('newAssessmentMenu');
+  if (!menu) return;
+  const isOpen = menu.style.display !== 'none';
+  menu.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) {
+    const close = (e) => {
+      if (!document.getElementById('newAssessmentDropdown')?.contains(e.target)) {
+        menu.style.display = 'none';
+        document.removeEventListener('click', close);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', close), 0);
+  }
+}
+
+function showPage(page) {
+  currentPage = page;
+  document.querySelectorAll('.nav-item').forEach(n => { n.classList.toggle('active', n.dataset.page === page); });
+  const titles = { dashboard:'Dashboard', stp:'STP Intake — Smart Routing', myqueue:'My Underwriting Queue', vendors:'Vendor Management', inforequests:'Information Requests', communications:'Communications', masters:'Masters Configuration', users:'User Management', analytics:'Analytics', integrations:'Integrations & Webhooks', bulkupload:'Bulk JSON Upload' };
+  document.getElementById('pageTitle').textContent = titles[page] || page;
+  const renders = { dashboard:renderDashboard, stp:renderSTP, myqueue:renderMyQueue, vendors:renderVendors, inforequests:renderInfoRequests, communications:renderComms, masters:renderMasters, users:renderUsers, analytics:renderAnalytics, integrations:renderIntegrations, bulkupload:renderBulkUpload };
+  if (renders[page]) renders[page]();
+  setTimeout(renderIcons, 0);
+}
 function openModal(id) { document.getElementById(id).classList.add('active'); if (id === 'newWorkflowModal') loadProductDropdown(); setTimeout(renderIcons, 0); }
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 async function loadProductDropdown() {
@@ -585,6 +609,422 @@ function handleDragOver(e) { e.preventDefault(); e.currentTarget.classList.add('
 function handleDragLeave(e) { e.currentTarget.classList.remove('dragover'); }
 
 // ─── Dashboard ───
+// ─── Bulk JSON Upload Page ────────────────────────────────────────────────────
+//
+// Flow:
+//   1. UW selects up to 100 .json files
+//   2. Browser parses each file using the same getSBICategory logic as single upload
+//   3. Full-page preview table shown — one row per case with:
+//      - Checkbox (deselect to skip), Proposer, Age, SA, Plan, CAT, Vendor, Quotation No, Status
+//      - Status = Ready | STP (skip) | Duplicate (warning) | Parse Error
+//   4. UW clicks "Create Selected" — cases submitted sequentially with live progress bar
+//   5. Summary: X created, Y skipped (STP), Z duplicates skipped, N errors
+//
+// ─── CAT → Vendor mapping (same as single upload) ────────────────────────────
+const BULK_CAT_VENDOR = {
+  'STP':      { id:'VEND-001', name:'MedCheck India'            },
+  'Tele MER': { id:'VEND-003', name:'DigiMedic'                 },
+  'CAT 1':    { id:'VEND-001', name:'MedCheck India'            },
+  'CAT 2':    { id:'VEND-002', name:'HealthAssure'              },
+  'CAT 3':    { id:'VEND-004', name:'ClinAssure Diagnostics'    },
+  'CAT 4':    { id:'VEND-005', name:'MedElite Advanced Diagnostics' }
+};
+
+// ─── Parse one SBI JSON file → structured proposal object ────────────────────
+function parseSBIJson(text, fileName) {
+  try {
+    let json = JSON.parse(text);
+    if (json.Response?.body)           json = JSON.parse(json.Response.body);
+    if (!json.PolicyObject && json.body) json = JSON.parse(json.body);
+
+    const po   = json.PolicyObject || {};
+    const lob  = po.PolicyLobList?.[0]  || {};
+    const risk = lob.PolicyRiskList?.[0] || {};
+    const cust = po.PolicyCustomerList?.[0] || {};
+
+    const name = risk.InsuredName || cust.CustomerName || '';
+    const dob  = risk.DateOfBirth || cust.DateOfBirth || '';
+    const age  = dob ? Math.floor((Date.now() - new Date(dob)) / (365.25*24*60*60*1000)) : null;
+    const genderCode = (risk.GenderCode || cust.GenderCode || 'M');
+    const gender = genderCode === 'F' ? 'female' : 'male';
+    const sumAssured = po.SumInsured || lob.SumInsured || 0;
+    const sumLacs    = sumAssured / 100000;
+    const height = risk.Height || null;
+    const weight = risk.Weight || null;
+    const quotationNo = po.QuotationNo || '';
+
+    const planVarMap = { '1':'Elite','2':'Platinum','3':'Platinum Infinite','4':'Premier','5':'Prime' };
+    const plan = planVarMap[po.SUHEPlanVar] || po.ProductName || 'Prime';
+
+    const pedRawText = risk.OtherPEDReason || '';
+    const pedLower   = pedRawText.toLowerCase();
+    const hasPED     = (risk.DetailsPED == 1) || pedLower.length > 0;
+
+    // Use same CAT matrix as single upload
+    const category = getSBICategory(plan, sumLacs, age || 35, hasPED);
+    const vendor   = BULK_CAT_VENDOR[category] || BULK_CAT_VENDOR['CAT 1'];
+
+    const nstpRaw  = (risk.NSTPReason || '').toLowerCase();
+    let nstpReason = 'age_threshold';
+    if (hasPED || nstpRaw.includes('pre-exist') || nstpRaw.includes('ped')) nstpReason = 'medical_history';
+    else if (nstpRaw.includes('sum') || nstpRaw.includes('sa '))             nstpReason = 'sum_assured_threshold';
+    else if (nstpRaw.includes('age'))                                         nstpReason = 'age_threshold';
+
+    const pedConditions = [];
+    if (pedLower.includes('diabet'))                                    pedConditions.push('diabetes');
+    if (pedLower.includes('hypertens') || pedLower.includes('blood pressure')) pedConditions.push('hypertension');
+    if (pedLower.includes('cardiac') || pedLower.includes('heart'))    pedConditions.push('cardiac');
+    if (pedLower.includes('asthma'))                                    pedConditions.push('asthma');
+    if (pedLower.includes('thyroid'))                                   pedConditions.push('thyroid');
+    if (pedLower.includes('kidney') || pedLower.includes('renal'))     pedConditions.push('kidney');
+    if (pedLower.includes('liver'))                                     pedConditions.push('liver');
+    if (pedLower.includes('cancer'))                                    pedConditions.push('cancer');
+
+    if (!name) throw new Error('Proposer name not found in JSON');
+    if (!age || age < 1 || age > 120) throw new Error('Invalid or missing Date of Birth');
+
+    return {
+      _file: fileName,
+      _status: category === 'STP' ? 'stp' : 'ready',
+      _selected: category !== 'STP',
+      name, age, gender, sumAssured, sumLacs, plan, category,
+      vendor, quotationNo, nstpReason, hasPED, pedConditions,
+      observations: pedRawText,
+      height_cm: height ? parseFloat(height) : null,
+      weight_kg: weight ? parseFloat(weight) : null,
+    };
+  } catch(e) {
+    return { _file: fileName, _status: 'error', _error: e.message, _selected: false };
+  }
+}
+
+// ─── Main render ──────────────────────────────────────────────────────────────
+function renderBulkUpload() {
+  const el = document.getElementById('mainContent');
+  el.innerHTML = `
+  <div style="max-width:1300px">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <button class="btn btn-outline btn-sm" onclick="showPage('dashboard')">← Back to Dashboard</button>
+      <div>
+        <h2 style="font-size:18px;font-weight:700;margin:0">Bulk JSON Upload</h2>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Upload up to 100 SBI PAS JSON files — cases are auto-classified and assigned to vendors</div>
+      </div>
+    </div>
+
+    <!-- Upload Zone -->
+    <div id="bulkDropZone"
+      style="border:2px dashed var(--border);border-radius:12px;padding:40px;text-align:center;background:var(--surface-alt);cursor:pointer;transition:all 0.2s;margin-bottom:20px"
+      onclick="document.getElementById('bulkFileInput').click()"
+      ondragover="event.preventDefault();this.style.borderColor='var(--accent)';this.style.background='var(--info-bg)'"
+      ondragleave="this.style.borderColor='var(--border)';this.style.background='var(--surface-alt)'"
+      ondrop="handleBulkDrop(event)">
+      <input type="file" id="bulkFileInput" accept=".json,application/json" multiple style="display:none"
+        onchange="handleBulkFiles(this.files)">
+      <div style="font-size:40px;margin-bottom:12px;color:var(--text-muted)"><i data-lucide="files" class="i-2xl i-muted"></i></div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop JSON files here or click to browse</div>
+      <div style="font-size:12px;color:var(--text-muted)">SBI PAS API JSON format — up to 100 files at once</div>
+      <div style="margin-top:14px;display:flex;justify-content:center;gap:20px;font-size:11px;color:var(--text-muted)">
+        <span><strong>STP cases</strong> are skipped automatically (no PPHC needed)</span>
+        <span><strong>Duplicates</strong> are flagged — you decide</span>
+        <span><strong>Errors</strong> shown inline — fix and re-upload</span>
+      </div>
+    </div>
+
+    <!-- Preview table container -->
+    <div id="bulkPreviewArea"></div>
+  </div>`;
+  setTimeout(renderIcons, 0);
+}
+
+// ─── File input / drop handlers ───────────────────────────────────────────────
+function handleBulkDrop(e) {
+  e.preventDefault();
+  const zone = document.getElementById('bulkDropZone');
+  zone.style.borderColor = 'var(--border)';
+  zone.style.background  = 'var(--surface-alt)';
+  handleBulkFiles(e.dataTransfer.files);
+}
+
+async function handleBulkFiles(files) {
+  const arr = Array.from(files).filter(f => f.name.endsWith('.json'));
+  if (!arr.length) { showToast('No .json files found', 'error'); return; }
+  if (arr.length > 100) { showToast('Maximum 100 files at once. Only first 100 will be processed.', 'warning'); arr.splice(100); }
+
+  const area = document.getElementById('bulkPreviewArea');
+  area.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-muted)">
+    <div class="spinner" style="display:inline-block;width:24px;height:24px;margin-right:8px;vertical-align:middle"></div>
+    Parsing ${arr.length} file(s)...</div>`;
+
+  // Parse all files
+  const parsed = [];
+  for (const file of arr) {
+    const text = await file.text();
+    parsed.push(parseSBIJson(text, file.name));
+  }
+
+  // Check duplicates against existing workflows
+  const existingQuotations = new Set();
+  try {
+    const existing = await api('/api/workflows');
+    existing.forEach(w => {
+      if (w.quotation_no) existingQuotations.add(w.quotation_no);
+      // Also check from data field
+      if (w.data?.quotation_no) existingQuotations.add(w.data.quotation_no);
+    });
+  } catch(e) { /* non-critical */ }
+
+  // Mark duplicates
+  const seenInBatch = new Set();
+  parsed.forEach(p => {
+    if (p._status === 'error') return;
+    if (p.quotationNo && existingQuotations.has(p.quotationNo)) {
+      p._status = 'duplicate';
+      p._selected = false;
+      p._dupReason = 'Already exists in DB';
+    } else if (p.quotationNo && seenInBatch.has(p.quotationNo)) {
+      p._status = 'duplicate';
+      p._selected = false;
+      p._dupReason = 'Duplicate in this batch';
+    } else if (p.quotationNo) {
+      seenInBatch.add(p.quotationNo);
+    }
+  });
+
+  window._bulkParsed = parsed;
+  renderBulkPreview(parsed);
+}
+
+// ─── Render preview table ─────────────────────────────────────────────────────
+function renderBulkPreview(parsed) {
+  const area = document.getElementById('bulkPreviewArea');
+
+  const total     = parsed.length;
+  const ready     = parsed.filter(p => p._status === 'ready').length;
+  const stp       = parsed.filter(p => p._status === 'stp').length;
+  const dups      = parsed.filter(p => p._status === 'duplicate').length;
+  const errors    = parsed.filter(p => p._status === 'error').length;
+  const selected  = parsed.filter(p => p._selected).length;
+
+  const statusBadge = (p) => {
+    if (p._status === 'ready')     return '<span class="badge badge-success">Ready</span>';
+    if (p._status === 'stp')       return '<span class="badge badge-neutral" title="STP — no PPHC needed, skipped">STP — Skip</span>';
+    if (p._status === 'duplicate') return `<span class="badge badge-warning" title="${p._dupReason||'Duplicate'}">⚠ Duplicate</span>`;
+    if (p._status === 'error')     return `<span class="badge badge-danger" title="${p._error||'Parse error'}">Error</span>`;
+    return '';
+  };
+
+  const catBadgeColor = { 'STP':'var(--text-muted)', 'Tele MER':'#b45309', 'CAT 1':'#1d4ed8', 'CAT 2':'#15803d', 'CAT 3':'#d97706', 'CAT 4':'#b91c1c' };
+
+  const rows = parsed.map((p, i) => {
+    const disabled  = p._status === 'stp' || p._status === 'error';
+    const rowBg     = p._status === 'error'     ? 'background:var(--danger-bg)'
+                    : p._status === 'duplicate'  ? 'background:var(--warning-bg)'
+                    : p._status === 'stp'        ? 'background:var(--surface-alt)'
+                    : '';
+    const catColor  = catBadgeColor[p.category] || 'var(--text-muted)';
+
+    if (p._status === 'error') {
+      return `<tr style="${rowBg}">
+        <td style="padding:8px 12px"><input type="checkbox" disabled></td>
+        <td style="padding:8px 12px;font-size:11px;color:var(--text-muted)">${p._file}</td>
+        <td colspan="7" style="padding:8px 12px;color:var(--danger);font-size:12px">❌ ${p._error}</td>
+        <td style="padding:8px 12px">${statusBadge(p)}</td>
+      </tr>`;
+    }
+
+    return `<tr style="${rowBg}" id="bulk_row_${i}">
+      <td style="padding:8px 12px;text-align:center">
+        <input type="checkbox" id="bulk_chk_${i}" ${p._selected?'checked':''} ${disabled?'disabled':''}
+          onchange="window._bulkParsed[${i}]._selected=this.checked;updateBulkSummary()">
+      </td>
+      <td style="padding:8px 12px;font-weight:600;font-size:13px">${p.name}</td>
+      <td style="padding:8px 12px;font-size:12px">${p.age}y / ${p.gender==='female'?'F':'M'}</td>
+      <td style="padding:8px 12px;font-size:12px;font-family:'JetBrains Mono',monospace">₹${(p.sumAssured/100000).toFixed(0)}L</td>
+      <td style="padding:8px 12px;font-size:12px">${p.plan}</td>
+      <td style="padding:8px 12px">
+        <span style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;background:${catColor}20;color:${catColor};border:1px solid ${catColor}40">${p.category}</span>
+      </td>
+      <td style="padding:8px 12px;font-size:12px">${p.vendor?.name || '—'}</td>
+      <td style="padding:8px 12px;font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace">${p.quotationNo || '—'}</td>
+      <td style="padding:8px 12px">${statusBadge(p)}</td>
+    </tr>`;
+  }).join('');
+
+  area.innerHTML = `
+  <!-- Summary bar -->
+  <div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+    <div style="display:flex;gap:8px">
+      <span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--success-bg);color:var(--success)">${ready} Ready</span>
+      <span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--surface-alt);color:var(--text-muted)">${stp} STP (skip)</span>
+      ${dups  ? `<span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--warning-bg);color:var(--warning)">${dups} Duplicate</span>` : ''}
+      ${errors? `<span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--danger-bg);color:var(--danger)">${errors} Error</span>` : ''}
+    </div>
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="checkbox" id="bulk_select_all" ${selected===ready?'checked':''} onchange="bulkSelectAll(this.checked)">
+        Select all ready
+      </label>
+      <button class="btn btn-outline btn-sm" onclick="renderBulkUpload()">← Upload Different Files</button>
+      <button class="btn btn-accent" id="bulkCreateBtn" onclick="executeBulkCreate()" ${selected===0?'disabled':''}>
+        <i data-lucide="zap"></i> Create <span id="bulkSelectedCount">${selected}</span> Cases
+      </button>
+    </div>
+  </div>
+
+  <!-- Preview table -->
+  <div class="card" style="overflow:hidden">
+    <table class="data-table" style="font-size:12px">
+      <thead>
+        <tr>
+          <th style="width:40px;text-align:center">✓</th>
+          <th>Proposer Name</th>
+          <th>Age / Gender</th>
+          <th>Sum Assured</th>
+          <th>Plan</th>
+          <th>CAT Level</th>
+          <th>Assigned Vendor</th>
+          <th>Quotation No</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+
+  <!-- Progress section (hidden until create starts) -->
+  <div id="bulkProgressArea" style="display:none;margin-top:20px"></div>`;
+
+  setTimeout(renderIcons, 0);
+}
+
+function bulkSelectAll(checked) {
+  const parsed = window._bulkParsed || [];
+  parsed.forEach((p, i) => {
+    if (p._status === 'ready') {
+      p._selected = checked;
+      const chk = document.getElementById('bulk_chk_' + i);
+      if (chk) chk.checked = checked;
+    }
+  });
+  updateBulkSummary();
+}
+
+function updateBulkSummary() {
+  const parsed   = window._bulkParsed || [];
+  const selected = parsed.filter(p => p._selected).length;
+  const countEl  = document.getElementById('bulkSelectedCount');
+  const btn      = document.getElementById('bulkCreateBtn');
+  if (countEl) countEl.textContent = selected;
+  if (btn)     btn.disabled = selected === 0;
+  const allChk = document.getElementById('bulk_select_all');
+  const ready  = parsed.filter(p => p._status === 'ready').length;
+  if (allChk)  allChk.checked = selected === ready && ready > 0;
+}
+
+// ─── Execute bulk create ──────────────────────────────────────────────────────
+async function executeBulkCreate() {
+  const parsed   = window._bulkParsed || [];
+  const toCreate = parsed.filter(p => p._selected);
+  if (!toCreate.length) { showToast('No cases selected', 'error'); return; }
+
+  const btn = document.getElementById('bulkCreateBtn');
+  if (btn) btn.disabled = true;
+
+  const progressArea = document.getElementById('bulkProgressArea');
+  progressArea.style.display = 'block';
+  progressArea.innerHTML = `
+  <div class="card"><div class="card-body">
+    <div style="font-size:13px;font-weight:600;margin-bottom:10px">Creating ${toCreate.length} cases...</div>
+    <div style="height:10px;background:var(--border-light);border-radius:5px;overflow:hidden;margin-bottom:10px">
+      <div id="bulkProgressBar" style="height:100%;width:0%;background:var(--accent);border-radius:5px;transition:width 0.3s"></div>
+    </div>
+    <div id="bulkProgressText" style="font-size:12px;color:var(--text-muted)">Starting...</div>
+    <div id="bulkResultList" style="margin-top:12px;max-height:300px;overflow-y:auto"></div>
+  </div></div>`;
+
+  const results = { created:[], failed:[], skipped_dup:[] };
+  const resultList = document.getElementById('bulkResultList');
+
+  for (let i = 0; i < toCreate.length; i++) {
+    const p = toCreate[i];
+    const pct = Math.round(((i) / toCreate.length) * 100);
+
+    document.getElementById('bulkProgressBar').style.width = pct + '%';
+    document.getElementById('bulkProgressText').textContent =
+      `Processing ${i+1} of ${toCreate.length}: ${p.name}`;
+
+    try {
+      const payload = {
+        proposer_name: p.name,
+        age:           p.age,
+        gender:        p.gender,
+        sum_assured:   p.sumAssured,
+        product_name:  p.plan,
+        nstp_reason:   p.nstpReason,
+        observations:  p.observations || '',
+        vendor_id:     p.vendor?.id || 'VEND-001',
+        height_cm:     p.height_cm,
+        weight_kg:     p.weight_kg,
+        medical_history: {
+          pre_existing_conditions: p.pedConditions || []
+        },
+        lifestyle: {}
+      };
+
+      const res = await api('/api/workflow/create', { method:'POST', body: JSON.stringify(payload) });
+
+      if (res.success) {
+        results.created.push({ name: p.name, proposal_id: res.workflow?.proposal_id, vendor: res.vendor_assigned });
+        resultList.innerHTML += `<div style="font-size:12px;padding:4px 0;color:var(--success)">
+          ✅ ${p.name} → ${res.workflow?.proposal_id} → ${res.vendor_assigned}</div>`;
+      } else {
+        results.failed.push({ name: p.name, error: res.error });
+        resultList.innerHTML += `<div style="font-size:12px;padding:4px 0;color:var(--danger)">
+          ❌ ${p.name} — ${res.error}</div>`;
+      }
+    } catch(e) {
+      results.failed.push({ name: p.name, error: e.message });
+      resultList.innerHTML += `<div style="font-size:12px;padding:4px 0;color:var(--danger)">
+        ❌ ${p.name} — ${e.message}</div>`;
+    }
+
+    // Scroll result list to bottom
+    resultList.scrollTop = resultList.scrollHeight;
+    await new Promise(r => setTimeout(r, 120)); // small delay between calls
+  }
+
+  // Final state
+  document.getElementById('bulkProgressBar').style.width = '100%';
+  document.getElementById('bulkProgressBar').style.background = 'var(--success)';
+  document.getElementById('bulkProgressText').textContent = 'Done!';
+
+  // Summary
+  const summaryHtml = `
+  <div style="display:flex;gap:12px;margin-top:14px;flex-wrap:wrap">
+    <div style="padding:12px 20px;border-radius:8px;background:var(--success-bg);border:1px solid rgba(4,120,87,0.2);text-align:center">
+      <div style="font-size:28px;font-weight:800;color:var(--success)">${results.created.length}</div>
+      <div style="font-size:11px;color:var(--success);font-weight:600;text-transform:uppercase">Created</div>
+    </div>
+    ${results.failed.length ? `<div style="padding:12px 20px;border-radius:8px;background:var(--danger-bg);border:1px solid rgba(185,28,28,0.2);text-align:center">
+      <div style="font-size:28px;font-weight:800;color:var(--danger)">${results.failed.length}</div>
+      <div style="font-size:11px;color:var(--danger);font-weight:600;text-transform:uppercase">Failed</div>
+    </div>` : ''}
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <button class="btn btn-outline" onclick="renderBulkUpload()">Upload More</button>
+      <button class="btn btn-accent" onclick="showPage('dashboard')">Go to Dashboard</button>
+    </div>
+  </div>`;
+
+  progressArea.innerHTML += summaryHtml;
+
+  if (results.created.length)
+    showToast(`${results.created.length} case(s) created and assigned to vendors`, 'success');
+  if (results.failed.length)
+    showToast(`${results.failed.length} case(s) failed — see details`, 'error');
+}
+
 async function renderDashboard() {
   const el = document.getElementById('mainContent'); el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
   try {
@@ -600,7 +1040,24 @@ async function renderDashboard() {
     el.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
       <div><h2 style="font-size:18px;font-weight:700;margin:0;letter-spacing:-0.02em">NSTP Case Queue</h2><div style="font-size:12.5px;color:var(--text-muted);margin-top:2px">Manage and review underwriting assessments</div></div>
-      <button class="btn btn-accent" onclick="openModal('newWorkflowModal')"><i data-lucide="plus"></i> New Assessment</button>
+      <div style="position:relative;display:inline-block" id="newAssessmentDropdown">
+        <button class="btn btn-accent" onclick="toggleNewAssessmentMenu()" style="display:flex;align-items:center;gap:6px">
+          <i data-lucide="plus"></i> New Assessment <i data-lucide="chevron-down" style="width:12px;height:12px"></i>
+        </button>
+        <div id="newAssessmentMenu" style="display:none;position:absolute;right:0;top:calc(100% + 6px);background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-md);z-index:200;min-width:200px;overflow:hidden">
+          <button onclick="toggleNewAssessmentMenu();openModal('newWorkflowModal')" style="width:100%;padding:10px 14px;background:none;border:none;text-align:left;font-size:13px;font-family:inherit;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--text)" onmouseover="this.style.background='var(--surface-alt)'" onmouseout="this.style.background='none'">
+            <i data-lucide="file-plus" style="width:14px;height:14px;color:var(--accent)"></i>
+            Single Assessment
+            <span style="font-size:11px;color:var(--text-muted);margin-left:auto">1 JSON</span>
+          </button>
+          <div style="height:1px;background:var(--border-light);margin:0 10px"></div>
+          <button onclick="toggleNewAssessmentMenu();showPage('bulkupload')" style="width:100%;padding:10px 14px;background:none;border:none;text-align:left;font-size:13px;font-family:inherit;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--text)" onmouseover="this.style.background='var(--surface-alt)'" onmouseout="this.style.background='none'">
+            <i data-lucide="files" style="width:14px;height:14px;color:var(--primary)"></i>
+            Bulk Upload
+            <span style="font-size:11px;color:var(--text-muted);margin-left:auto">Up to 100 JSON</span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px">
