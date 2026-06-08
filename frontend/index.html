@@ -10,6 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--primary:#1B2B65;--primary-light:#2A3F8F;--primary-dark:#0F1B42;--accent:#4B9CD3;--accent-dark:#3A7FB5;--bg:#F4F6FA;--surface:#FFFFFF;--surface-alt:#F7F8FB;--text:#0D1733;--text-muted:#5B6478;--text-light:#8A94A6;--border:#E5E8EF;--border-light:#EEF1F6;--success:#047857;--success-bg:#ECFDF5;--warning:#B45309;--warning-bg:#FFFBEB;--danger:#B91C1C;--danger-bg:#FEF2F2;--info:#1B2B65;--info-bg:#EEF0F6;--radius:8px;--radius-sm:6px;--shadow:0 1px 2px rgba(15,23,42,0.04),0 1px 3px rgba(15,23,42,0.06);--shadow-md:0 2px 4px rgba(15,23,42,0.05),0 4px 12px rgba(15,23,42,0.06);--shadow-lg:0 10px 30px rgba(15,23,42,0.08);--sidebar-w:232px;--sidebar-w-collapsed:60px;--topbar-h:52px}
@@ -609,6 +610,55 @@ function handleDragOver(e) { e.preventDefault(); e.currentTarget.classList.add('
 function handleDragLeave(e) { e.currentTarget.classList.remove('dragover'); }
 
 // ─── Dashboard ───
+// ─── getSBICategory — Global CAT Classification Matrix ──────────────────────
+// Moved to global scope so both single upload (handleSBIJsonUpload)
+// and bulk upload (parseSBIJson) can call it.
+function getSBICategory(plan, sumInsuredLacs, age, hasPED) {
+  function applyPED(cat) {
+    if (!hasPED) return cat;
+    if (cat === 'STP' || cat === 'Tele MER') return 'CAT 1';
+    return cat;
+  }
+  const p = (plan || '').toLowerCase();
+
+  if (p.includes('prime') || p.includes('elite')) {
+    if (sumInsuredLacs <= 10) {
+      return applyPED(age <= 55 ? 'STP' : 'CAT 1');
+    } else {
+      if (age <= 45) return applyPED('STP');
+      if (age <= 55) return applyPED('Tele MER');
+      if (age <= 60) return applyPED('CAT 1');
+      return applyPED('CAT 2');
+    }
+  }
+  if (p.includes('premier')) {
+    return applyPED(age <= 55 ? 'STP' : 'CAT 1');
+  }
+  if (p.includes('infinite')) {
+    if (sumInsuredLacs <= 50) {
+      if (age <= 15) return applyPED('STP');
+      if (age <= 17) return applyPED('Tele MER');
+      return applyPED('CAT 3');
+    } else {
+      if (age <= 15) return applyPED('STP');
+      if (age <= 17) return applyPED('Tele MER');
+      if (age <= 45) return applyPED('CAT 3');
+      return applyPED('CAT 4');
+    }
+  }
+  if (p.includes('platinum')) {
+    if (sumInsuredLacs <= 25) {
+      if (age <= 45) return applyPED('STP');
+      if (age <= 55) return applyPED('Tele MER');
+      if (age <= 60) return applyPED('CAT 1');
+      return applyPED('CAT 2');
+    } else {
+      return applyPED(age <= 45 ? 'CAT 1' : 'CAT 2');
+    }
+  }
+  return applyPED('STP');
+}
+
 // ─── Bulk JSON Upload Page ────────────────────────────────────────────────────
 //
 // Flow:
@@ -720,11 +770,11 @@ function renderBulkUpload() {
       ondragover="event.preventDefault();this.style.borderColor='var(--accent)';this.style.background='var(--info-bg)'"
       ondragleave="this.style.borderColor='var(--border)';this.style.background='var(--surface-alt)'"
       ondrop="handleBulkDrop(event)">
-      <input type="file" id="bulkFileInput" accept=".json,application/json" multiple style="display:none"
+      <input type="file" id="bulkFileInput" accept=".json,application/json,.zip" multiple style="display:none"
         onchange="handleBulkFiles(this.files)">
       <div style="font-size:40px;margin-bottom:12px;color:var(--text-muted)"><i data-lucide="files" class="i-2xl i-muted"></i></div>
-      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop JSON files here or click to browse</div>
-      <div style="font-size:12px;color:var(--text-muted)">SBI PAS API JSON format — up to 100 files at once</div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop JSON or ZIP files here or click to browse</div>
+      <div style="font-size:12px;color:var(--text-muted)">SBI PAS API JSON format — up to 100 JSON files or one ZIP containing multiple JSONs</div>
       <div style="margin-top:14px;display:flex;justify-content:center;gap:20px;font-size:11px;color:var(--text-muted)">
         <span><strong>STP cases</strong> are skipped automatically (no PPHC needed)</span>
         <span><strong>Duplicates</strong> are flagged — you decide</span>
@@ -748,20 +798,51 @@ function handleBulkDrop(e) {
 }
 
 async function handleBulkFiles(files) {
-  const arr = Array.from(files).filter(f => f.name.endsWith('.json'));
-  if (!arr.length) { showToast('No .json files found', 'error'); return; }
-  if (arr.length > 100) { showToast('Maximum 100 files at once. Only first 100 will be processed.', 'warning'); arr.splice(100); }
-
   const area = document.getElementById('bulkPreviewArea');
   area.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-muted)">
     <div class="spinner" style="display:inline-block;width:24px;height:24px;margin-right:8px;vertical-align:middle"></div>
-    Parsing ${arr.length} file(s)...</div>`;
+    Reading files...</div>`;
 
-  // Parse all files
+  // ── Collect all JSON texts (from .json files directly or extracted from ZIP) ─
+  const jsonEntries = []; // { name, text }
+
+  for (const file of Array.from(files)) {
+    if (file.name.toLowerCase().endsWith('.zip')) {
+      // Extract all .json files from ZIP using JSZip
+      try {
+        if (typeof JSZip === 'undefined') {
+          showToast('JSZip library not loaded — refresh the page and try again', 'error'); return;
+        }
+        const zip = await JSZip.loadAsync(file);
+        const zipJsonFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.json'));
+        for (const zipFile of zipJsonFiles) {
+          const text = await zipFile.async('string');
+          jsonEntries.push({ name: zipFile.name.split('/').pop(), text });
+        }
+        showToast(`ZIP extracted: ${zipJsonFiles.length} JSON file(s) found`, 'info');
+      } catch(e) {
+        showToast('ZIP extraction failed: ' + e.message, 'error'); return;
+      }
+    } else if (file.name.toLowerCase().endsWith('.json')) {
+      const text = await file.text();
+      jsonEntries.push({ name: file.name, text });
+    }
+  }
+
+  if (!jsonEntries.length) { showToast('No .json files found in selection or ZIP', 'error'); return; }
+  if (jsonEntries.length > 100) {
+    showToast('Maximum 100 files. Only first 100 will be processed.', 'warning');
+    jsonEntries.splice(100);
+  }
+
+  area.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-muted)">
+    <div class="spinner" style="display:inline-block;width:24px;height:24px;margin-right:8px;vertical-align:middle"></div>
+    Parsing ${jsonEntries.length} JSON file(s)...</div>`;
+
+  // Parse all JSON entries
   const parsed = [];
-  for (const file of arr) {
-    const text = await file.text();
-    parsed.push(parseSBIJson(text, file.name));
+  for (const entry of jsonEntries) {
+    parsed.push(parseSBIJson(entry.text, entry.name));
   }
 
   // Check duplicates against existing workflows
