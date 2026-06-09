@@ -1272,6 +1272,7 @@ async function viewWorkflow(id) {
     <div class="tab-bar" id="wfTabs">
       <div class="tab-item active" onclick="showWfTab('decision','${id}')">Decision</div>
       <div class="tab-item" onclick="showWfTab('humanloop','${id}')">Human in Loop</div>
+      <div class="tab-item" onclick="showWfTab('medicalfeedback','${id}')">Medical Feedback</div>
       <div class="tab-item" onclick="showWfTab('calculations','${id}')">Calculations</div>
       <div class="tab-item" onclick="showWfTab('processing','${id}')">Processing</div>
       <div class="tab-item" onclick="showWfTab('policy','${id}')">Policy</div>
@@ -1371,6 +1372,42 @@ function showWfTab(tab, wfId) {
       window._hilEditMode = false;
       window._hilPendingEdits = {};
       showHILSubTab('extracted', wf.id);
+      break;
+
+    case 'medicalfeedback':
+      el.innerHTML = `
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <h3 style="margin:0"><i data-lucide="stethoscope"></i> Medical Feedback & ICMR Analysis</h3>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:3px">
+              Enter clinical observations. These will be analysed against ICMR guidelines automatically.
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;font-weight:600;color:var(--text);display:block;margin-bottom:6px">
+              Medical Observation / Clinical Feedback <span style="color:var(--text-muted);font-weight:400">(English only)</span>
+            </label>
+            <textarea id="medFeedbackInput" class="form-control"
+              style="width:100%;min-height:100px;resize:vertical;font-size:13px;line-height:1.5"
+              placeholder="Enter clinical observations in plain English. Example: Patient appears mildly breathless. Bilateral pedal oedema noted. JVP raised. Prescriptions found include Amlodipine 5mg OD and Metformin 500mg BD which were not declared in the proposal."></textarea>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+              Min 10 characters. Once submitted, feedback cannot be edited (audit trail).
+            </div>
+          </div>
+          <button class="btn btn-accent btn-sm" onclick="submitMedicalFeedback('${wf.id}')">
+            <i data-lucide="send"></i> Submit Feedback
+          </button>
+        </div>
+      </div>
+
+      <div id="icmrFindingsArea"></div>
+      <div id="medFeedbackHistory"></div>`;
+
+      setTimeout(renderIcons, 0);
+      loadMedicalFeedback('${wf.id}');
       break;
 
     case 'calculations':
@@ -3002,8 +3039,126 @@ async function viewVendorCase(wfId, vendorId) {
         </button>
       </div>
       `}
-    </div></div>`;
+    </div></div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-header">
+        <h3 style="margin:0"><i data-lucide="stethoscope"></i> Medical Feedback</h3>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Add clinical observations in English. Auto-analysed against ICMR guidelines.</div>
+      </div>
+      <div class="card-body">
+        <textarea id="vendorMedFeedbackInput" class="form-control"
+          style="width:100%;min-height:80px;resize:vertical;font-size:13px;line-height:1.5;margin-bottom:8px"
+          placeholder="E.g: Mild pedal oedema bilateral. Amlodipine 5mg prescription found but hypertension not declared in proposal."></textarea>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">Once submitted, feedback cannot be edited (permanent audit record).</div>
+        <button class="btn btn-accent btn-sm" id="vendorFeedbackBtn">
+          <i data-lucide="send"></i> Submit Feedback
+        </button>
+      </div>
+    </div>
+    <div id="vendorIcmrArea" style="margin-top:14px"></div>
+    <div id="vendorFeedbackHistory" style="margin-top:14px"></div>`;
+
+  // Wire submit button after DOM is ready
+  setTimeout(() => {
+    const btn = document.getElementById('vendorFeedbackBtn');
+    if (btn) btn.onclick = () => submitVendorMedFeedback('${wfId}', '${vendorId}');
+    loadVendorMedicalFeedback('${wfId}');
+    renderIcons();
+  }, 0);
+
   } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading case</p></div>'; }
+}
+
+async function submitVendorMedFeedback(wfId, vendorId) {
+  const input = document.getElementById('vendorMedFeedbackInput');
+  const text = input?.value?.trim();
+  if (!text || text.length < 10) { showToast('Feedback must be at least 10 characters', 'error'); return; }
+  const btn = document.getElementById('vendorFeedbackBtn');
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+    const r = await api('/api/workflow/' + wfId + '/medical-feedback', { method: 'POST', body: JSON.stringify({ feedback: text }) });
+    if (r.success) {
+      showToast('Feedback submitted. ICMR analysis updated.', 'success');
+      if (input) input.value = '';
+      loadVendorMedicalFeedback(wfId);
+    } else { showToast(r.error || 'Failed to submit', 'error'); }
+  } catch(e) { showToast(e.message, 'error'); }
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="send"></i> Submit Feedback'; setTimeout(renderIcons, 0); }
+}
+
+async function loadVendorMedicalFeedback(wfId) {
+  const icmrArea = document.getElementById('vendorIcmrArea');
+  const histArea = document.getElementById('vendorFeedbackHistory');
+  if (!icmrArea || !histArea) return;
+  try {
+    const r = await api('/api/workflow/' + wfId + '/medical-feedback');
+    const ia = r.icmr_analysis;
+
+    // ICMR results
+    if (ia && (ia.icmr_findings?.length > 0 || ia.summary)) {
+      const riskColor = { low:'var(--success)', moderate:'var(--warning)', high:'var(--danger)', very_high:'var(--danger)' }[ia.overall_clinical_risk] || 'var(--text-muted)';
+      const riskBg    = { low:'var(--success-bg)', moderate:'var(--warning-bg)', high:'var(--danger-bg)', very_high:'var(--danger-bg)' }[ia.overall_clinical_risk] || 'var(--surface-alt)';
+      const clsColor  = { normal:'#047857', borderline:'#B45309', significant:'#d97706', high:'#B91C1C', decline_trigger:'#7f1d1d' };
+      const clsBg     = { normal:'#ECFDF5', borderline:'#FFFBEB', significant:'#FEF3C7', high:'#FEF2F2', decline_trigger:'#FEE2E2' };
+
+      const rows = (ia.icmr_findings||[]).map(f =>
+        '<tr style="border-bottom:1px solid var(--border-light)">' +
+        '<td style="padding:7px 10px;font-size:11px;color:var(--text-muted)">' + (f.source||'') + '</td>' +
+        '<td style="padding:7px 10px;font-size:12px">' + (f.finding||'') + '</td>' +
+        '<td style="padding:7px 10px">' +
+          '<span style="padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;background:' + (clsBg[f.icmr_classification]||'#f3f4f6') + ';color:' + (clsColor[f.icmr_classification]||'#6b7280') + '">' +
+          (f.icmr_classification||'').replace('_',' ').toUpperCase() + '</span>' +
+          (f.non_disclosure_flag ? ' <span style="padding:2px 6px;border-radius:10px;font-size:10px;font-weight:700;background:#FEE2E2;color:#B91C1C">⚠ NON-DISCLOSURE</span>' : '') +
+        '</td>' +
+        '<td style="padding:7px 10px;font-size:12px">' + (f.risk_implication||'') + '</td>' +
+        '<td style="padding:7px 10px"><span class="badge badge-' + (f.suggested_action==='approve'?'success':f.suggested_action==='refer'?'warning':f.suggested_action==='decline'?'danger':'neutral') + '">' + (f.suggested_action||'') + '</span></td>' +
+        '</tr>'
+      ).join('');
+
+      icmrArea.innerHTML =
+        '<div class="card" style="border-left:4px solid ' + riskColor + '">' +
+          '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">' +
+            '<div style="font-weight:700;font-size:14px">ICMR Analysis Results</div>' +
+            '<div style="padding:6px 14px;border-radius:8px;background:' + riskBg + ';text-align:center">' +
+              '<div style="font-size:10px;color:' + riskColor + ';font-weight:700;text-transform:uppercase">Overall Clinical Risk</div>' +
+              '<div style="font-size:15px;font-weight:800;color:' + riskColor + '">' + (ia.overall_clinical_risk||'').replace('_',' ').toUpperCase() + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card-body">' +
+            (ia.summary ? '<div style="font-size:13px;padding:10px 14px;background:var(--surface-alt);border-radius:6px;margin-bottom:12px;line-height:1.6">' + ia.summary + '</div>' : '') +
+            (ia.non_disclosure_flags?.length ? '<div style="padding:8px 12px;background:var(--danger-bg);border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--danger)"><strong>⚠ Non-Disclosure:</strong> ' + ia.non_disclosure_flags.join(', ') + '</div>' : '') +
+            (ia.score_adjustment < 0 ? '<div style="padding:8px 12px;background:var(--warning-bg);border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--warning)"><strong>Score Adjustment:</strong> ' + ia.score_adjustment + ' pts applied</div>' : '') +
+            (rows ? '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--surface-alt);border-bottom:2px solid var(--border)"><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Source</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Finding</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Classification</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Risk Implication</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Action</th></tr></thead><tbody>' + rows + '</tbody></table>' :
+            '<div style="text-align:center;padding:14px;color:var(--text-muted);font-size:12px">No adverse clinical findings.</div>') +
+          '</div>' +
+        '</div>';
+    } else {
+      icmrArea.innerHTML = r.feedback?.length > 0
+        ? '<div style="padding:10px 14px;background:var(--info-bg);border-radius:6px;font-size:12px;color:var(--info)">ICMR analysis will run when documents are submitted or feedback is added.</div>'
+        : '';
+    }
+
+    // Feedback history
+    const fb = r.feedback || [];
+    if (fb.length > 0) {
+      histArea.innerHTML = '<div class="card"><div class="card-header"><h3>Feedback History (' + fb.length + ')</h3></div><div class="card-body" style="padding:0">' +
+        fb.map(f =>
+          '<div style="padding:12px 16px;border-bottom:1px solid var(--border-light)">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+              '<div style="font-size:12px;font-weight:600">' + (f.submitted_by_name||f.submitted_by||'Unknown') + '</div>' +
+              '<div style="font-size:10px;color:var(--text-muted)">' + new Date(f.timestamp).toLocaleString('en-IN') + '</div>' +
+            '</div>' +
+            '<div style="font-size:13px;line-height:1.6;padding:10px 12px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary)">' + f.feedback + '</div>' +
+          '</div>'
+        ).join('') +
+      '</div></div>';
+    } else {
+      histArea.innerHTML = '';
+    }
+    setTimeout(renderIcons, 0);
+  } catch(e) {
+    if (icmrArea) icmrArea.innerHTML = '<div style="color:var(--danger);font-size:12px">Error loading ICMR analysis: ' + e.message + '</div>';
+  }
 }
 
 function handleVendorCaseDrop(e, wfId, vendorId) { e.preventDefault(); e.currentTarget.classList.remove('dragover'); uploadVendorCaseFiles(wfId, vendorId, e.dataTransfer.files); }
@@ -3545,7 +3700,8 @@ async function renderMasters() {
         {icon:'<i data-lucide="bar-chart-3"></i>',title:'Loading Table',desc:'Loading percentages, age bands, loading cap, waiting periods',onclick:"_mastersView='loading';renderMasters()"},
         {icon:'<i data-lucide="hospital"></i>',title:'Medical Scoring',desc:'Component weights and metric thresholds (100-point engine)',onclick:"_mastersView='scoring';renderMasters()"},
         {icon:'<i data-lucide="sliders-horizontal"></i>',title:'Per-CAT Scoring',desc:'Editable approve / refer / decline thresholds for CAT 1-4 and TeleMER',onclick:"_mastersView='catscoring';renderMasters()"},
-        {icon:'<i data-lucide="library"></i>',title:'Historical UW Data',desc:'Upload past UW decisions to train the system for PPHC-skip intelligence',onclick:"_mastersView='historical';renderMasters()"}
+        {icon:'<i data-lucide="library"></i>',title:'Historical UW Data',desc:'Upload past UW decisions to train the system for PPHC-skip intelligence',onclick:"_mastersView='historical';renderMasters()"},
+        {icon:'<i data-lucide="book-open"></i>',title:'ICMR Guidelines',desc:'Clinical text interpretation guidelines for ICMR-based analysis of non-numeric findings',onclick:"_mastersView='icmrguidelines';renderMasters()"}
       ].map(c => `<div class="card" style="cursor:pointer;transition:all 0.15s;border:1.5px solid var(--border)" onclick="${c.onclick}" onmouseover="this.style.borderColor='var(--primary)'" onmouseout="this.style.borderColor='var(--border)'"><div class="card-body" style="text-align:center;padding:28px 16px"><div style="font-size:32px;margin-bottom:10px">${c.icon}</div><div style="font-size:15px;font-weight:700;color:var(--text)">${c.title}</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">${c.desc}</div></div></div>`).join('')}
     </div>`;
     return;
@@ -3821,6 +3977,190 @@ async function renderMasters() {
         } catch(e) { /* Calibration data not available yet */ }
       }
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+  } else if (_mastersView === 'icmrguidelines') {
+    el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/icmr-guidelines');
+      el.innerHTML = backBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <h3>ICMR Guidelines</h3>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px">
+            Guidelines used to analyse non-numeric clinical text from vendor reports and manual feedback.
+            Numeric scoring is governed by Per-CAT Scoring Configuration — not these guidelines.
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="resetICMRGuidelines()">
+            <i data-lucide="rotate-ccw"></i> Reset to Default
+          </button>
+          <button class="btn btn-accent btn-sm" onclick="saveICMRGuidelines()">
+            <i data-lucide="save"></i> Save Guidelines
+          </button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-body" style="padding:10px 14px">
+          <div style="display:flex;gap:16px;font-size:12px;color:var(--text-muted)">
+            <span><strong>Last updated:</strong> ${data.last_updated ? new Date(data.last_updated).toLocaleString('en-IN') : 'Never (using system default)'}</span>
+            <span><strong>Updated by:</strong> ${data.updated_by || 'System'}</span>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;padding:8px 12px;background:var(--info-bg);border-radius:6px;border:1px solid var(--info)">
+            <strong>Important:</strong> These guidelines are used ONLY for interpreting non-numeric clinical text
+            (ECG findings, MER notes, manual feedback). Numeric lab values (HbA1C, BP, etc.) are scored
+            by Per-CAT Scoring Configuration factors and bands.
+          </div>
+          <textarea id="icmrGuidelinesText" class="form-control"
+            style="width:100%;min-height:500px;font-size:12px;font-family:'JetBrains Mono',monospace;line-height:1.6;resize:vertical"
+          >${(data.guidelines||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+        </div>
+      </div>`;
+      setTimeout(renderIcons, 0);
+    } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: ' + e.message + '</p></div>'; }
+  }
+}
+
+async function saveICMRGuidelines() {
+  const text = document.getElementById('icmrGuidelinesText')?.value?.trim();
+  if (!text || text.length < 100) { showToast('Guidelines text too short (min 100 chars)', 'error'); return; }
+  try {
+    const r = await api('/api/icmr-guidelines', { method:'PUT', body: JSON.stringify({ text }) });
+    if (r.success) showToast('ICMR guidelines saved', 'success');
+    else showToast(r.error || 'Save failed', 'error');
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function resetICMRGuidelines() {
+  if (!confirm('Reset ICMR guidelines to system defaults? Your customisations will be lost.')) return;
+  try {
+    const r = await api('/api/icmr-guidelines/reset', { method:'POST', body: '{}' });
+    if (r.success) { showToast('Reset to defaults', 'success'); _mastersView='icmrguidelines'; renderMasters(); }
+    else showToast(r.error || 'Reset failed', 'error');
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function submitMedicalFeedback(wfId) {
+  const text = document.getElementById('medFeedbackInput')?.value?.trim();
+  if (!text || text.length < 10) { showToast('Feedback must be at least 10 characters', 'error'); return; }
+  try {
+    const btn = document.querySelector('button[onclick*="submitMedicalFeedback"]');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Submitting...'; setTimeout(renderIcons,0); }
+    const r = await api('/api/workflow/' + wfId + '/medical-feedback', { method:'POST', body: JSON.stringify({ feedback: text }) });
+    if (r.success) {
+      showToast('Feedback submitted. ICMR analysis updated.', 'success');
+      document.getElementById('medFeedbackInput').value = '';
+      loadMedicalFeedback(wfId);
+    } else { showToast(r.error || 'Failed', 'error'); }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="send"></i> Submit Feedback'; setTimeout(renderIcons,0); }
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function loadMedicalFeedback(wfId) {
+  try {
+    const r = await api('/api/workflow/' + wfId + '/medical-feedback');
+    const icmrArea = document.getElementById('icmrFindingsArea');
+    const histArea = document.getElementById('medFeedbackHistory');
+    if (!icmrArea || !histArea) return;
+
+    // ── ICMR Analysis Results ─────────────────────────────────────────────
+    const ia = r.icmr_analysis;
+    if (ia && (ia.icmr_findings?.length > 0 || ia.summary)) {
+      const riskColors = { low:'var(--success)', moderate:'var(--warning)', high:'var(--danger)', very_high:'var(--danger)' };
+      const riskBg = { low:'var(--success-bg)', moderate:'var(--warning-bg)', high:'var(--danger-bg)', very_high:'var(--danger-bg)' };
+      const classColors = { normal:'#047857', borderline:'#B45309', significant:'#d97706', high:'#B91C1C', decline_trigger:'#7f1d1d' };
+      const classBg = { normal:'#ECFDF5', borderline:'#FFFBEB', significant:'#FEF3C7', high:'#FEF2F2', decline_trigger:'#FEE2E2' };
+
+      const findingRows = (ia.icmr_findings||[]).map(f => `
+        <tr style="border-bottom:1px solid var(--border-light)">
+          <td style="padding:8px 12px;font-size:11px;color:var(--text-muted)">${f.source||''}</td>
+          <td style="padding:8px 12px;font-size:12px">${f.finding||''}</td>
+          <td style="padding:8px 12px">
+            <span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${classBg[f.icmr_classification]||'#f3f4f6'};color:${classColors[f.icmr_classification]||'#6b7280'}">${(f.icmr_classification||'').replace('_',' ').toUpperCase()}</span>
+            ${f.non_disclosure_flag ? '<span style="margin-left:4px;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:700;background:#FEE2E2;color:#B91C1C">⚠ NON-DISCLOSURE</span>' : ''}
+          </td>
+          <td style="padding:8px 12px;font-size:11px;color:var(--text-muted)">${f.icmr_reference||''}</td>
+          <td style="padding:8px 12px;font-size:12px">${f.risk_implication||''}</td>
+          <td style="padding:8px 12px">
+            <span class="badge badge-${f.suggested_action==='approve'?'success':f.suggested_action==='refer'?'warning':f.suggested_action==='decline'?'danger':'neutral'}">${f.suggested_action||''}</span>
+          </td>
+        </tr>`).join('');
+
+      const adjText = ia.score_adjustment < 0 ? `<span style="color:var(--danger);font-weight:700">${ia.score_adjustment} pts</span>` : '<span style="color:var(--text-muted)">None</span>';
+
+      icmrArea.innerHTML = `
+      <div class="card" style="margin-bottom:14px;border-left:4px solid ${riskColors[ia.overall_clinical_risk]||'var(--border)'}">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:700;font-size:14px"><i data-lucide="activity"></i> ICMR Clinical Analysis Results</div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <div style="text-align:center;padding:6px 14px;border-radius:8px;background:${riskBg[ia.overall_clinical_risk]||'var(--surface-alt)'}">
+              <div style="font-size:10px;font-weight:600;color:${riskColors[ia.overall_clinical_risk]||'var(--text-muted)'};text-transform:uppercase">Overall Clinical Risk</div>
+              <div style="font-size:16px;font-weight:800;color:${riskColors[ia.overall_clinical_risk]||'var(--text)'}">${(ia.overall_clinical_risk||'').replace('_',' ').toUpperCase()}</div>
+            </div>
+            <div style="text-align:center;padding:6px 14px;border-radius:8px;background:var(--surface-alt)">
+              <div style="font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase">Score Adjustment</div>
+              <div style="font-size:16px;font-weight:800">${adjText}</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          ${ia.summary ? `<div style="font-size:13px;padding:10px 14px;background:var(--surface-alt);border-radius:6px;margin-bottom:12px;line-height:1.6">${ia.summary}</div>` : ''}
+          ${ia.non_disclosure_flags?.length > 0 ? `<div style="padding:10px 14px;background:var(--danger-bg);border-radius:6px;border:1px solid rgba(185,28,28,0.2);margin-bottom:12px;font-size:12px;color:var(--danger)"><strong>⚠ Non-Disclosure Flags:</strong> ${ia.non_disclosure_flags.join(', ')}</div>` : ''}
+          ${ia.additional_tests_recommended?.length > 0 ? `<div style="padding:10px 14px;background:var(--info-bg);border-radius:6px;border:1px solid rgba(14,116,144,0.2);margin-bottom:12px;font-size:12px"><strong>Recommended Additional Tests:</strong> ${ia.additional_tests_recommended.join(', ')}</div>` : ''}
+          ${findingRows ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="background:var(--surface-alt);border-bottom:2px solid var(--border)">
+              <th style="padding:7px 12px;text-align:left;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Source</th>
+              <th style="padding:7px 12px;text-align:left;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Finding</th>
+              <th style="padding:7px 12px;text-align:left;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase">ICMR Classification</th>
+              <th style="padding:7px 12px;text-align:left;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase">ICMR Reference</th>
+              <th style="padding:7px 12px;text-align:left;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Risk Implication</th>
+              <th style="padding:7px 12px;text-align:left;font-size:10.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Action</th>
+            </tr></thead>
+            <tbody>${findingRows}</tbody>
+          </table>` : '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:12px">No adverse clinical findings from ICMR analysis.</div>'}
+        </div>
+        <div class="card-body" style="padding:8px 14px;border-top:1px solid var(--border);font-size:10px;color:var(--text-muted)">
+          Analysed: ${ia.analysed_at ? new Date(ia.analysed_at).toLocaleString('en-IN') : 'Unknown'} &nbsp;|&nbsp; Source: ${ia.source || 'Unknown'}
+        </div>
+      </div>`;
+    } else {
+      icmrArea.innerHTML = '<div class="card" style="margin-bottom:14px"><div class="card-body" style="text-align:center;padding:24px;color:var(--text-muted)"><i data-lucide="activity"></i><div style="margin-top:8px;font-size:13px">No ICMR analysis yet. ICMR analysis runs automatically when vendor submits documents,<br>or when feedback is submitted after documents are processed.</div></div></div>';
+    }
+    setTimeout(renderIcons, 0);
+
+    // ── Feedback history ─────────────────────────────────────────────────
+    const fb = r.feedback || [];
+    if (fb.length === 0) {
+      histArea.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:12px">No feedback submitted yet.</div>';
+      return;
+    }
+    histArea.innerHTML = `
+    <div class="card">
+      <div class="card-header"><h3>Feedback History (${fb.length})</h3></div>
+      <div class="card-body" style="padding:0">
+        ${fb.map(f => `
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border-light)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:28px;height:28px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">${(f.submitted_by_name||'U').charAt(0).toUpperCase()}</div>
+              <div>
+                <div style="font-size:12px;font-weight:600">${f.submitted_by_name||f.submitted_by||'Unknown'}</div>
+                <div style="font-size:10px;color:var(--text-muted)">${new Date(f.timestamp).toLocaleString('en-IN')}</div>
+              </div>
+            </div>
+            <span class="badge badge-neutral" style="font-size:10px">Read-only</span>
+          </div>
+          <div style="font-size:13px;line-height:1.6;padding:10px 12px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary)">${f.feedback}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+    setTimeout(renderIcons, 0);
+  } catch(e) {
+    const a = document.getElementById('icmrFindingsArea');
+    if (a) a.innerHTML = '<div style="color:var(--danger);font-size:12px">Error loading ICMR analysis: ' + e.message + '</div>';
   }
 }
 
