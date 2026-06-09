@@ -4,7 +4,51 @@
  */
 require('dotenv').config();
 const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
-const __bedrockClient = new BedrockRuntimeClient({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1' });
+const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
+
+// ── Cross-account Bedrock client with STS credential refresh ─────────────────
+let __bedrockClient = null;
+let __bedrockCredExpiry = null;
+
+async function getBedrockClient() {
+  const now = Date.now();
+  if (__bedrockClient && __bedrockCredExpiry && now < __bedrockCredExpiry) return __bedrockClient;
+
+  const crossAccountRoleArn = process.env.BEDROCK_CROSS_ACCOUNT_ROLE_ARN;
+  const bedrockRegion = process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1';
+
+  if (!crossAccountRoleArn) {
+    // No cross-account role — use instance credentials directly
+    if (!__bedrockClient) {
+      __bedrockClient = new BedrockRuntimeClient({ region: bedrockRegion });
+      console.log('[Bedrock] Using instance credentials (no cross-account role configured)');
+    }
+    __bedrockCredExpiry = now + (55 * 60 * 1000);
+    return __bedrockClient;
+  }
+
+  try {
+    const stsClient = new STSClient({ region: bedrockRegion });
+    const assumeRes = await stsClient.send(new AssumeRoleCommand({
+      RoleArn: crossAccountRoleArn,
+      RoleSessionName: 'sbi-uw-bedrock-session',
+      DurationSeconds: 3600
+    }));
+    const creds = assumeRes.Credentials;
+    __bedrockClient = new BedrockRuntimeClient({
+      region: bedrockRegion,
+      credentials: { accessKeyId: creds.AccessKeyId, secretAccessKey: creds.SecretAccessKey, sessionToken: creds.SessionToken }
+    });
+    __bedrockCredExpiry = new Date(creds.Expiration).getTime() - (10 * 60 * 1000);
+    console.log('[Bedrock] ✅ Cross-account credentials assumed. Role:', crossAccountRoleArn, '| Expires:', creds.Expiration);
+    return __bedrockClient;
+  } catch(err) {
+    console.error('[Bedrock] ❌ STS AssumeRole failed:', err.message, '— falling back to instance credentials');
+    __bedrockClient = new BedrockRuntimeClient({ region: bedrockRegion });
+    __bedrockCredExpiry = now + (10 * 60 * 1000);
+    return __bedrockClient;
+  }
+}
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -1299,12 +1343,13 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               const { model, temperature, ...rest } = params;
           if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrockClient.send(cmd);
+              const __client = await getBedrockClient();
+              const res = await __client.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
@@ -1524,12 +1569,13 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
                     const { model, temperature, ...rest } = params;
           if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
                     const cmd = new InvokeModelCommand({
-                      modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                      modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                       contentType: 'application/json',
                       accept: 'application/json',
                       body: JSON.stringify(rest)
                     });
-                    const res = await __bedrockClient.send(cmd);
+                    const __client = await getBedrockClient();
+              const res = await __client.send(cmd);
                     return JSON.parse(Buffer.from(res.body).toString('utf8'));
                   }
                 }
@@ -2215,12 +2261,13 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
               const { model, temperature, ...rest } = params;
           if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrockClient.send(cmd);
+              const __client = await getBedrockClient();
+              const res = await __client.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
@@ -2388,12 +2435,13 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
               const { model, temperature, ...rest } = params;
           if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrockClient.send(cmd);
+              const __client = await getBedrockClient();
+              const res = await __client.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
@@ -4616,12 +4664,13 @@ app.post('/api/uw-rules/upload', requireAuth, upload.single('document'), validat
               const { model, temperature, ...rest } = params;
           if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(rest)
               });
-              const res = await __bedrockClient.send(cmd);
+              const __client = await getBedrockClient();
+              const res = await __client.send(cmd);
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }

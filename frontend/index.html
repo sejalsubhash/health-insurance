@@ -3745,7 +3745,9 @@ async function viewVendorCases(vendorId) {
   const el = document.getElementById('mainContent'); el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
   try {
     const data = await api(`/api/vendors/${vendorId}/cases`);
-    const v = data.vendor; const cases = data.cases;
+    if (!data || data.error) throw new Error(data?.error || 'Vendor not found');
+    const v = data.vendor; const cases = data.cases || [];
+    if (!v) throw new Error(`Vendor ${vendorId} not found — check vendor configuration`);
     const pending = cases.filter(c => !c.docs_submitted);
     const submitted = cases.filter(c => c.docs_submitted);
     document.getElementById('pageTitle').textContent = `${v.name} — Cases`;
@@ -3769,7 +3771,14 @@ async function viewVendorCases(vendorId) {
     </div>
     <div id="vendorCaseTabContent"></div>`;
     showVendorCaseTab('pending');
-  } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading vendor cases</p></div>'; }
+  } catch(e) {
+    console.error('viewVendorCases error:', e.message);
+    el.innerHTML = `<div class="empty-state">
+      <p style="color:var(--danger);font-weight:500">Error loading vendor cases</p>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:6px">${esc(e.message)}</p>
+      <button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="showPage('vendors')">← Back to Vendors</button>
+    </div>`;
+  }
 }
 
 function showVendorCaseTab(tab) {
