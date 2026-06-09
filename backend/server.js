@@ -3910,13 +3910,63 @@ app.get('/api/workflow/:id/diagnostic-triggers', requireAuth, (req, res) => {
   res.json(result);
 });
 
-// GET /api/workflow/:id/telemer-questionnaire — generate tele-MER questionnaire
+// GET /api/workflow/:id/telemer-questionnaire — serve real SBI MER questions + diagnostic triggers
 app.get('/api/workflow/:id/telemer-questionnaire', requireAuth, (req, res) => {
   const wf = workflowEngine.getWorkflow(req.params.id);
   if (!wf) return res.status(404).json({ error: 'Not found' });
-  const triggers = diagnosticTriggers.evaluateTriggers({ age: wf.age, gender: wf.gender, bmi: wf.declared_bmi, sum_assured: wf.sum_assured, smoking: wf.lifestyle?.smoking, medical_history: wf.medical_history, lifestyle: wf.lifestyle });
-  const questionnaire = diagnosticTriggers.generateQuestionnaire({ age: wf.age, gender: wf.gender, medical_history: wf.medical_history, lifestyle: wf.lifestyle, conditions: wf.medical_history?.pre_existing_conditions }, triggers.categories);
-  res.json({ triggers, questionnaire, proposer: { name: wf.proposer_name, age: wf.age, gender: wf.gender, product: wf.product_name, sa: wf.sum_assured } });
+
+  // Keep existing diagnostic triggers (unchanged)
+  let triggers = { total_triggers: 0, triggered_rules: [] };
+  try {
+    triggers = diagnosticTriggers.evaluateTriggers({ age: wf.age, gender: wf.gender, bmi: wf.declared_bmi, sum_assured: wf.sum_assured, smoking: wf.lifestyle?.smoking, medical_history: wf.medical_history, lifestyle: wf.lifestyle });
+  } catch(e) { /* diagnosticTriggers may not be available */ }
+
+  // Load real SBI MER question set from config
+  let qConfig = null;
+  try { qConfig = require('./config/telemer-questions.json'); } catch(e) {}
+
+  if (!qConfig) {
+    // Fallback: use old questionnaire generator if config missing
+    try {
+      const questionnaire = diagnosticTriggers.generateQuestionnaire({ age: wf.age, gender: wf.gender, medical_history: wf.medical_history, lifestyle: wf.lifestyle, conditions: wf.medical_history?.pre_existing_conditions }, triggers.categories);
+      return res.json({ triggers, questionnaire, proposer: { name: wf.proposer_name, age: wf.age, gender: wf.gender, product: wf.product_name, sa: wf.sum_assured } });
+    } catch(e2) { return res.status(500).json({ error: 'Question config missing' }); }
+  }
+
+  // Build sections from config — filter by gender/age, skip EXAMINER (rendered separately in UI)
+  const sections = [];
+  for (const [sKey, sec] of Object.entries(qConfig.sections)) {
+    if (sKey === 'EXAMINER') continue;
+    if (sec.gender_filter && sec.gender_filter !== (wf.gender || '').toUpperCase()) continue;
+    if (sec.age_filter) { const age = wf.age || 0; if (age < sec.age_filter.min || age > sec.age_filter.max) continue; }
+    sections.push({
+      section: sec.label,              // keep existing field name 'section' so frontend works
+      key: sKey,
+      component: sec.scoring_component,
+      questions: sec.questions.map(q => ({
+        id: q.id,
+        q: q.text,                     // keep existing field name 'q' so frontend works
+        type: q.type === 'yes_no_detail' ? 'yesno' : (q.type === 'select' ? 'choice' : q.type),
+        followup: q.type === 'yes_no_detail' ? 'Please provide details — duration, medication, current status...' : null,
+        options: q.options || null,
+        critical: q.critical || q.auto_escalate || false,
+        risk_weight: q.risk_weight || 0,
+        scoring_component: q.scoring_component
+      }))
+    });
+  }
+
+  const totalQ = sections.reduce((s, sec) => s + sec.questions.length, 0);
+  res.json({
+    triggers,
+    questionnaire: {
+      _version: qConfig._version,
+      sections,
+      total_questions: totalQ,
+      estimated_duration_minutes: Math.ceil(totalQ * 0.8)
+    },
+    proposer: { name: wf.proposer_name, age: wf.age, gender: wf.gender, product: wf.product_name, sa: wf.sum_assured }
+  });
 });
 
 // POST /api/workflow/:id/telemer-submit — submit tele-MER interview data
@@ -3934,7 +3984,11 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
       call_duration_seconds: call_duration_seconds || 0,
       submitted_at: new Date().toISOString(),
       submitted_by: req.user?.email || 'examiner',
-      status: 'completed'
+      status: 'completed',
+      // Store vendor remarks separately for easy UW access
+      vendor_remarks:  examiner_observations?.vendor_remarks  || '',
+      dr_final_remark: examiner_observations?.dr_final_remark || '',
+      clinical_notes:  examiner_observations?.clinical_notes  || ''
     };
 
     // Parse answers for extracted_data format (so scoring engine can use them)
@@ -3944,11 +3998,13 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
     wf.extracted_data.telemer_data.examiner_observations = examiner_observations;
 
     // Check for medication-condition mismatches
+    // Scan GEN_03 (medications question in new form) AND GEN_01 (legacy fallback)
     const medications = [];
     const nonDisclosures = [];
+    const medScanQIds = ['GEN_03', 'GEN_01'];
     for (const [qId, answer] of Object.entries(answers)) {
-      if (qId === 'GEN_01' && answer.value === 'yes' && answer.followup) {
-        // Parse medication mentions
+      if (!medScanQIds.includes(qId)) continue;
+      if (answer.value === 'yes' && answer.followup) {
         const medText = answer.followup.toLowerCase();
         const medMap = {
           // Diabetes
@@ -3959,8 +4015,7 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
           amlodipine: 'hypertension', telmisartan: 'hypertension', atenolol: 'hypertension',
           losartan: 'hypertension', ramipril: 'hypertension', lisinopril: 'hypertension',
           olmesartan: 'hypertension', valsartan: 'hypertension', bisoprolol: 'hypertension',
-          nebivolol: 'hypertension', telma: 'hypertension', inderai: 'hypertension',
-          inderal: 'hypertension',
+          nebivolol: 'hypertension', telma: 'hypertension', inderai: 'hypertension', inderal: 'hypertension',
           // Cholesterol / Lipids
           atorvastatin: 'high_cholesterol', rosuvastatin: 'high_cholesterol',
           simvastatin: 'high_cholesterol', pitavastatin: 'high_cholesterol',
@@ -3968,42 +4023,41 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
           // Thyroid
           thyroxine: 'thyroid', levothyroxine: 'thyroid', eltroxin: 'thyroid',
           thyronorm: 'thyroid', methimazole: 'thyroid', carbimazole: 'thyroid',
-          // Cardiac risk (anti-platelets / anti-coagulants)
+          // Cardiac risk
           aspirin: 'cardiac_risk', clopidogrel: 'cardiac_risk',
           warfarin: 'cardiac_risk', rivaroxaban: 'cardiac_risk',
-          dabigatran: 'cardiac_risk', apixaban: 'cardiac_risk',
-          ecosprin: 'cardiac_risk',
-          // ── NEW categories ────────────────────────────────────────────────
-          // Parkinson's disease — critical non-disclosure (like Rajeev Mathur case)
+          dabigatran: 'cardiac_risk', apixaban: 'cardiac_risk', ecosprin: 'cardiac_risk',
+          // Parkinson's
           syndopa: 'parkinsons', levodopa: 'parkinsons', carbidopa: 'parkinsons',
           aciten: 'parkinsons', pramipexole: 'parkinsons', ropinirole: 'parkinsons',
           selegiline: 'parkinsons', rasagiline: 'parkinsons', amantadine: 'parkinsons',
           'tab. syndopa': 'parkinsons', 'tab. aciten': 'parkinsons',
-          // Kidney / Proteinuria (renal conditions)
+          // Kidney
           wysolone: 'kidney_disease', deflazacort: 'kidney_disease',
           tacrolimus: 'kidney_disease', cyclosporine: 'kidney_disease',
           mycophenolate: 'kidney_disease', raflate: 'kidney_disease',
-          // Autoimmune / Inflammation
+          // Autoimmune
           prednisolone: 'autoimmune', methylprednisolone: 'autoimmune',
           dexamethasone: 'autoimmune', hydroxychloroquine: 'autoimmune',
           methotrexate: 'autoimmune', sulfasalazine: 'autoimmune',
-          // Gout / Uric acid
+          // Gout
           allopurinol: 'gout', febuxostat: 'gout', probenecid: 'gout',
           // Mental health / Neurological
           risperidone: 'psychiatric', olanzapine: 'psychiatric',
           quetiapine: 'psychiatric', haloperidol: 'psychiatric',
           clonazepam: 'neurological', phenytoin: 'neurological',
           valproate: 'neurological', carbamazepine: 'neurological',
-          // Cancer (chemotherapy drugs — immediate escalation)
+          // Cancer
           tamoxifen: 'cancer', letrozole: 'cancer', anastrozole: 'cancer',
           imatinib: 'cancer', capecitabine: 'cancer',
         };
         for (const [med, condition] of Object.entries(medMap)) {
           if (medText.includes(med)) {
-            medications.push({ name: med, treats: condition });
-            // Check if condition was declared
-            const declared = (wf.medical_history?.pre_existing_conditions || []).some(c => (typeof c === 'string' ? c : c.name || '').toLowerCase().includes(condition.replace('_', '')));
-            if (!declared) nonDisclosures.push({ medication: med, implied_condition: condition, disclosed: false });
+            if (!medications.find(m => m.name === med)) {
+              medications.push({ name: med, treats: condition });
+              const declared = (wf.medical_history?.pre_existing_conditions || []).some(c => (typeof c === 'string' ? c : c.name || '').toLowerCase().includes(condition.replace('_', '')));
+              if (!declared) nonDisclosures.push({ medication: med, implied_condition: condition, disclosed: false });
+            }
           }
         }
       }
@@ -4011,7 +4065,7 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
     wf.telemer_data.medications_detected = medications;
     wf.telemer_data.non_disclosures = nonDisclosures;
 
-    // Determine recommendation
+    // Determine recommendation (existing logic — unchanged)
     const evasiveCount = Object.values(answers).filter(a => a.confidence === 'evasive').length;
     const cooperativeness = examiner_observations?.cooperativeness || 'cooperative';
     let telemer_recommendation = 'proceed_to_scoring';
@@ -4028,14 +4082,30 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
     wf.state_history.push({ state: 'telemer_completed', timestamp: new Date().toISOString(), actor: req.user?.email || 'examiner', note: `Tele-MER interview completed. Duration: ${Math.round((call_duration_seconds||0)/60)}min. Recommendation: ${telemer_recommendation}. ${medications.length} medication(s) detected.` });
     workflowEngine.updateWorkflow(wf.id, wf);
 
-    // If recommendation is to proceed, trigger AI analysis
+    // Run TeleMER scoring if proceeding (new — does not affect existing flow if it fails)
+    let telemerScore = null;
     if (telemer_recommendation === 'proceed_to_scoring') {
+      try {
+        const voiceAnalysis = req.body.voice_analysis || null;
+        telemerScore = riskEngine.calculateTeleMERRisk(
+          { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures },
+          voiceAnalysis,
+          catScoringConfig
+        );
+        wf.telemer_data.score = telemerScore;
+        wf.telemer_data.scored_at = new Date().toISOString();
+        if (!wf.risk_result) wf.risk_result = {};
+        wf.risk_result.telemer_score    = telemerScore.score;
+        wf.risk_result.telemer_grade    = telemerScore.grade;
+        wf.risk_result.telemer_decision = telemerScore.decision;
+        console.log(`[TeleMER] ${wf.id} scored: ${telemerScore.score}/100 Grade=${telemerScore.grade} Decision=${telemerScore.decision}`);
+      } catch(scoreErr) { console.error('[TeleMER] Scoring error (non-fatal):', scoreErr.message); }
       wf.docs_submitted = true;
       wf.docs_submitted_at = new Date().toISOString();
       workflowEngine.updateWorkflow(wf.id, wf);
     }
 
-    res.json({ success: true, recommendation: telemer_recommendation, medications, non_disclosures: nonDisclosures, escalation_reasons: wf.telemer_data.escalation_reasons });
+    res.json({ success: true, recommendation: telemer_recommendation, medications, non_disclosures: nonDisclosures, escalation_reasons: wf.telemer_data.escalation_reasons, score: telemerScore });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

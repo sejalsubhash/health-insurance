@@ -1,0 +1,537 @@
+{
+  "_version": "sbi-tele-mer-v1",
+  "_source": "SBI General Insurance — Medical Examination Report (Tele) — HEALTHINDIA INSURANCE TPA SERVICES PVT. LTD",
+  "sections": {
+    "BIOMETRIC": {
+      "label": "Biometric & Basic Details",
+      "scoring_component": "documentation",
+      "questions": [
+        { "id": "BIO_01", "text": "Height (cm)", "type": "numeric", "required": true },
+        { "id": "BIO_02", "text": "Weight (kg)", "type": "numeric", "required": true },
+        { "id": "BIO_03", "text": "BMI", "type": "numeric", "auto_calc": true },
+        { "id": "BIO_04", "text": "Occupation", "type": "text", "required": true },
+        { "id": "BIO_05", "text": "Telephone / Mobile No", "type": "text", "required": true }
+      ]
+    },
+    "GENERAL": {
+      "label": "General Health",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "GEN_01",
+          "text": "Are you currently in good health & entirely free from any mental or physical impairment or congenital deformities? If not, please specify.",
+          "type": "yes_no_detail",
+          "expected_answer": "yes",
+          "risk_weight": 10,
+          "scoring_component": "history",
+          "escalate_if": "no"
+        },
+        {
+          "id": "GEN_02",
+          "text": "Do you have any health complaints, either present or past? If yes, please specify.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history",
+          "escalate_if": "yes_with_major_condition"
+        },
+        {
+          "id": "GEN_03",
+          "text": "Are you currently under treatment or have you been taking any medicines / pills / drugs etc.?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 12,
+          "scoring_component": "clinical",
+          "triggers_med_scan": true,
+          "note": "Triggers medication non-disclosure scan against medMap"
+        },
+        {
+          "id": "GEN_04",
+          "text": "During last 5 years have you been medically examined, received medical advice or treatment? If Yes, please provide details of blood test / urine test / X-ray / ECG OR any special test like CT scan / MRI scans etc.",
+          "type": "yes_no_detail",
+          "expected_answer": "any",
+          "risk_weight": 5,
+          "scoring_component": "documentation"
+        },
+        {
+          "id": "GEN_05",
+          "text": "Have you undergone or been advised any surgical procedure? If yes, please give present clinical condition / deformity / disability.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 6,
+          "scoring_component": "history"
+        },
+        {
+          "id": "GEN_06",
+          "text": "Has there been any recent weight loss or weight gain? If yes, please specify.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 5,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "GEN_07",
+          "text": "Have you ever in the past or are currently consuming any of the following: Cigarette / Beedi / Pan / Gutkha / Alcohol? If yes, please specify quantity and duration.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 10,
+          "scoring_component": "lifestyle"
+        },
+        {
+          "id": "GEN_08",
+          "text": "Any evidence of eczema, psoriasis or varicose veins.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 3,
+          "scoring_component": "history"
+        },
+        {
+          "id": "GEN_09",
+          "text": "Have either of your natural parents or any siblings or spouse suffered from or are suffering from any medical condition like Cancer, Heart related Problems, Diabetes, Blood Pressure, Hepatitis, Stroke, HIV/AIDS etc.?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        },
+        {
+          "id": "GEN_10",
+          "text": "Is there anything else you would like to share with us with respect to your health or habits?",
+          "type": "yes_no_detail",
+          "expected_answer": "any",
+          "risk_weight": 3,
+          "scoring_component": "documentation"
+        }
+      ]
+    },
+    "CARDIAC": {
+      "label": "Cardiac & Blood Pressure",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "CARD_01",
+          "text": "Have you ever had any complaints of chest pain, Pain in Left Arm, fainting, palpitation, breathlessness. Was it diagnosed to relate with any heart disease or heart attack?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 10,
+          "scoring_component": "history",
+          "critical": true
+        },
+        {
+          "id": "CARD_02",
+          "text": "Have you ever suffered from any heart disease or disorder, heart valve problem, raised blood pressure or cholesterol problems?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 10,
+          "scoring_component": "history",
+          "critical": true
+        },
+        {
+          "id": "CARD_03",
+          "text": "Have you ever suffered or suffering from Hypertension or High blood pressure problem? If Yes, mention the medication and duration of treatment.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        },
+        {
+          "id": "CARD_04",
+          "text": "Have you ever suffered or suffering from Diabetes or blood sugar problem? If Yes, mention the medication and duration of treatment.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        },
+        {
+          "id": "CARD_05",
+          "text": "Any history of Ischaemic Heart Disease, Heart Attack, Stenting, PTCA, CABG, Open heart surgery, Left ventricular failure, Hypertension, Rheumatic heart disease, Rheumatic Fever, Heart block, Cardiac valvular dysfunction, Coronary Artery disease etc.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 12,
+          "scoring_component": "history",
+          "critical": true,
+          "auto_escalate": true
+        }
+      ]
+    },
+    "RESPIRATORY": {
+      "label": "Respiratory System",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "RESP_01",
+          "text": "Have you ever suffered from asthma, bronchitis, COPD, tuberculosis (TB) or coughing with blood or any other lung infection or any problem leading to breathing difficulties?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        }
+      ]
+    },
+    "GASTRO": {
+      "label": "Digestive System",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "GI_01",
+          "text": "Have you ever suffered or suffering from any disease or disorder of the digestive system including infections of the stomach, stomach ulcer, Chronic or recurrent Diarrhoea, blood in stool & vomitus, colitis, Crohns disease, Acid peptic disorder, Jaundice, Hepatitis or any other digestive problem?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 6,
+          "scoring_component": "history"
+        },
+        {
+          "id": "GI_02",
+          "text": "Have you ever been suffered or suffering from Fissure / Piles / gall bladder disorder or gall stones, hernia, Hepatitis A/B/C/D/E, Liver disorder, Liver Cirrhosis, Fatty Liver, ulcerative colitis, pilonidal sinus, Pancreatitis, splenic disorder or any other disorder. (Please give exact duration & present condition along with treatment details)",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 6,
+          "scoring_component": "history"
+        },
+        {
+          "id": "GI_03",
+          "text": "Have you ever been tested for HIV / AIDS / VDRL or any other sexually transmitted disease? If yes, please give full details regarding the result.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 10,
+          "scoring_component": "history",
+          "critical": true,
+          "auto_escalate": true
+        }
+      ]
+    },
+    "RENAL": {
+      "label": "Kidney & Urinary System",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "RENAL_01",
+          "text": "Do you have any history of any problems related to kidney, ureter, bladder, prostate, undescended testes/varicocele or reproductive organs or have you had blood, protein or sugar in the urine?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        },
+        {
+          "id": "RENAL_02",
+          "text": "Have you ever suffered or suffering from any of the following condition or undergo any of the following surgery like benign prostate hypertrophy, congenital deficits incontinence of urine, Nephritis, Polycystic kidney renal or ureteric calculi, Renal failure, recurrent Urine infection, ureteral stricture, any other disorder. (please give exact duration & present condition & treatment details)",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history",
+          "critical": true
+        }
+      ]
+    },
+    "HAEMATOLOGY": {
+      "label": "Blood Disorders",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "HAEM_01",
+          "text": "Have you ever suffered or suffering from any of the following condition like Haematological disorder Anaemia, Bleeding disorder, blood transfusion, Thalassemia, any other disorder? (please give exact duration & present condition & treatment details)",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 6,
+          "scoring_component": "history"
+        }
+      ]
+    },
+    "EYES_ENT": {
+      "label": "Eyes, Ears, Nose & Throat",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "ENT_01",
+          "text": "Do you have any problems affecting your vision, hearing or any other eye, ear, nose or throat problems?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 4,
+          "scoring_component": "history"
+        },
+        {
+          "id": "ENT_02",
+          "text": "Have you ever suffered or suffering from any of the following condition or undergo any of the following surgery like Deviated nasal septum, Difficulty in swallowing, hypertrophied tonsils/adenoids/turbinates, Any discharge from ear, Perforation of ear drum, recurrent sinusitis, Myopia, Refractory errors, glaucoma, Cataract, recurrent ear infection or any disorder. (please give exact duration & present condition & treatment details)",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 4,
+          "scoring_component": "history"
+        }
+      ]
+    },
+    "MUSCULOSKELETAL": {
+      "label": "Joints, Muscles & Bones",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "MSK_01",
+          "text": "Have you ever had any problem with your joints or muscle, Including pain, weakness, swelling or stiffness or any physical disability?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 5,
+          "scoring_component": "history"
+        },
+        {
+          "id": "MSK_02",
+          "text": "Have you ever suffered or suffering from any of the following condition or undergo any of the following surgery like Bone or joint disorder, Rheumatic arthritis, Gout, infection like osteomyelitis, injuries/disabilities, healed or non healed fractures, Osteoarthritis, Osteoporosis & Any other disorder. (please give exact duration & present condition & treatment details also confirm any disability & deformity & for fracture site of fracture, procedure done with date of surgery / Details of Implant removal if any)",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 5,
+          "scoring_component": "history"
+        }
+      ]
+    },
+    "ENDOCRINE": {
+      "label": "Endocrine & Metabolic",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "ENDO_01",
+          "text": "Endocrine or metabolic disorder: Have you ever suffered or suffering from any of the following condition like Diabetes (Type 1/Type 2), Hypothyroidism, Hyperthyroidism, goitre, lipid disorder or any other disorder (please give exact duration & present condition & treatment details).",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        },
+        {
+          "id": "ENDO_02",
+          "text": "Have you ever suffered or suffering from Endocrine/thyroid dysfunction? If Yes, please give details.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 6,
+          "scoring_component": "history"
+        }
+      ]
+    },
+    "ONCOLOGY": {
+      "label": "Cancer & Tumours",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "ONC_01",
+          "text": "Have you ever had or been told to have or been treated for any cancer, tumour, cyst, enlarge glands, lump or disorder of skin, lymph gland or any other malignancy or growth of any kind?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 12,
+          "scoring_component": "history",
+          "critical": true,
+          "auto_escalate": true
+        }
+      ]
+    },
+    "NEURO": {
+      "label": "Neurological System",
+      "scoring_component": "history",
+      "questions": [
+        {
+          "id": "NEURO_01",
+          "text": "Have you ever had suffered from any cerebro-vascular disease like stroke and transient ischaemic attack (TIA), or any diseases of the nervous system like Parkinsons and Multiple Sclerosis or musculo-skeletal disorder such as paralysis / paraplegia etc.?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 10,
+          "scoring_component": "history",
+          "critical": true
+        },
+        {
+          "id": "NEURO_02",
+          "text": "Have you ever suffered or suffering from any of the following condition or undergo any of the following surgery like Epilepsy, intracranial infection, migraine, intracranial headache, Numbness, Spinal disorder, double vision, tingling any other disorder (please give exact duration & present condition & treatment details).",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        },
+        {
+          "id": "NEURO_03",
+          "text": "Have you ever suffered from any illness because of stress, depression, personality disorder, psychosis, schizophrenia disorder, anxiety or neurological symptoms like fits, blackouts, convulsions, epilepsy?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "history"
+        }
+      ]
+    },
+    "MISC": {
+      "label": "Miscellaneous",
+      "scoring_component": "documentation",
+      "questions": [
+        {
+          "id": "MISC_01",
+          "text": "Have you ever suffered or suffering from any of the following condition like oedema or puffiness, unexplained recurrent & persistent fever, unexplained weight loss or any other disorder?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 5,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "MISC_02",
+          "text": "Has any proposal for insurance on your life ever been declined, postponed, withdrawn or accepted at an increased premium, special terms or with reduced cover?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 8,
+          "scoring_component": "clinical",
+          "auto_escalate_if": "yes"
+        }
+      ]
+    },
+    "FEMALE_SPECIFIC": {
+      "label": "Female Specific (Age 18-40)",
+      "scoring_component": "history",
+      "gender_filter": "F",
+      "age_filter": { "min": 18, "max": 40 },
+      "questions": [
+        {
+          "id": "FEM_01",
+          "text": "Obstetric History: G P A - Does she have children, If Yes, how many?",
+          "type": "yes_no_detail",
+          "risk_weight": 3,
+          "scoring_component": "history"
+        },
+        {
+          "id": "FEM_02",
+          "text": "Any adverse menstrual history and LMP?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 4,
+          "scoring_component": "history"
+        },
+        {
+          "id": "FEM_03",
+          "text": "Any history of MTP, gestational HT/DM? If Yes, give detail?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 5,
+          "scoring_component": "history"
+        },
+        {
+          "id": "FEM_04",
+          "text": "Is she now pregnant? If Yes, number of weeks?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 6,
+          "scoring_component": "history"
+        },
+        {
+          "id": "FEM_05",
+          "text": "Have you ever visited a medical practitioner for any problems of breast / uterus / cervix etc. If yes, please give details of the same.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 5,
+          "scoring_component": "history"
+        },
+        {
+          "id": "FEM_06",
+          "text": "Have you undergone any of these tests like mammogram, ultrasound, pap smear etc.? If yes, please give full details regarding the result and the reason for the same.",
+          "type": "yes_no_detail",
+          "expected_answer": "any",
+          "risk_weight": 3,
+          "scoring_component": "documentation"
+        }
+      ]
+    },
+    "COVID": {
+      "label": "COVID-19 Screening",
+      "scoring_component": "clinical",
+      "questions": [
+        {
+          "id": "COVID_01",
+          "text": "In last 1 month, any loss of smell/taste, cough, fever, shortness of breath, malaise, Rhinorrhoea, sore throat or GI symptoms like nausea, vomiting, diarrhoea, body ache/backache?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 4,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "COVID_02",
+          "text": "Are you self-isolating due to symptoms of coronavirus (COVID-19)? Or have you been self-isolated in last two months?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 4,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "COVID_03",
+          "text": "Are you currently experiencing any of the following symptoms? Cough, fever, sore throat, chest congestion, runny nose, body ache, difficulty in breathing, loss of taste and smell, pink eyes, hearing impairment, GI symptoms, one sided facial swelling, headache, Black lesions on nasal bridge or upper inside of mouth",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 5,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "COVID_04",
+          "text": "In last 3 months any family member diagnosed with Covid 19, anyone advised to take covid 19 test, or anyone quarantined, any covid 19 test results awaited?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 3,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "COVID_05",
+          "text": "Have you been in close contact with anyone who has been quarantined or who has been diagnosed with COVID-19?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 3,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "COVID_06",
+          "text": "In past 1 month, you or your family member came in contact with anyone who was Covid 19 positive or travelled from other countries to India in last 30 days.",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 3,
+          "scoring_component": "clinical"
+        },
+        {
+          "id": "COVID_07",
+          "text": "Have you or your family members travelled anywhere outside India in last 30 days?",
+          "type": "yes_no_detail",
+          "expected_answer": "no",
+          "risk_weight": 2,
+          "scoring_component": "clinical"
+        }
+      ]
+    },
+    "EXAMINER": {
+      "label": "Examiner Observations",
+      "scoring_component": "documentation",
+      "questions": [
+        {
+          "id": "EXAM_01",
+          "text": "Dr Final Remark if any",
+          "type": "text",
+          "risk_weight": 0,
+          "scoring_component": "documentation"
+        },
+        {
+          "id": "EXAM_02",
+          "text": "Overall cooperativeness of the applicant during the interview",
+          "type": "select",
+          "options": ["cooperative", "evasive", "hostile"],
+          "risk_weight": 15,
+          "scoring_component": "documentation",
+          "escalate_if": ["evasive", "hostile"]
+        },
+        {
+          "id": "EXAM_03",
+          "text": "Call duration (minutes)",
+          "type": "numeric",
+          "risk_weight": 0,
+          "scoring_component": "documentation"
+        }
+      ]
+    }
+  },
+
+  "scoring_rules": {
+    "escalation_triggers": [
+      { "rule": "non_disclosure_medication", "description": "Medication detected that implies an undeclared condition", "action": "escalate_to_pphc" },
+      { "rule": "evasive_answers_3plus", "description": "3 or more answers marked as evasive by examiner", "action": "escalate_to_pphc" },
+      { "rule": "examiner_hostile_evasive", "description": "Examiner marks overall cooperativeness as evasive or hostile", "action": "escalate_to_pphc" },
+      { "rule": "auto_escalate_question", "description": "Critical question answered YES (cardiac history, cancer, HIV, declined proposal)", "action": "escalate_to_pphc" }
+    ],
+    "component_question_map": {
+      "lifestyle":      ["GEN_07"],
+      "history":        ["GEN_01","GEN_02","GEN_05","GEN_08","GEN_09","CARD_01","CARD_02","CARD_03","CARD_04","CARD_05","RESP_01","GI_01","GI_02","GI_03","RENAL_01","RENAL_02","HAEM_01","ENT_01","ENT_02","MSK_01","MSK_02","ENDO_01","ENDO_02","ONC_01","NEURO_01","NEURO_02","NEURO_03","FEM_01","FEM_02","FEM_03","FEM_04","FEM_05"],
+      "clinical":       ["GEN_03","GEN_06","MISC_01","MISC_02","COVID_01","COVID_02","COVID_03","COVID_04","COVID_05","COVID_06","COVID_07"],
+      "documentation":  ["BIO_01","BIO_02","BIO_03","BIO_04","GEN_04","GEN_10","FEM_06","EXAM_01","EXAM_02","EXAM_03"]
+    }
+  }
+}
