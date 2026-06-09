@@ -1341,12 +1341,16 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
-          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              // Use inference profile ARN (cross-account) if set, else fall back to model ID
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+              if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId,
                 contentType: 'application/json',
                 accept: 'application/json',
-                body: JSON.stringify(rest)
+                body: JSON.stringify(requestBody)
               });
               const __client = await getBedrockClient();
               const res = await __client.send(cmd);
@@ -1567,15 +1571,18 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
                 messages: {
                   create: async (params) => {
                     const { model, temperature, ...rest } = params;
-          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+                    if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+                    const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+                    const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+                    if (rest.system) requestBody.system = rest.system;
                     const cmd = new InvokeModelCommand({
-                      modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                      modelId,
                       contentType: 'application/json',
                       accept: 'application/json',
-                      body: JSON.stringify(rest)
+                      body: JSON.stringify(requestBody)
                     });
                     const __client = await getBedrockClient();
-              const res = await __client.send(cmd);
+                    const res = await __client.send(cmd);
                     return JSON.parse(Buffer.from(res.body).toString('utf8'));
                   }
                 }
@@ -2259,12 +2266,16 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
-          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              // Use inference profile ARN (cross-account) if set, else fall back to model ID
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+              if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId,
                 contentType: 'application/json',
                 accept: 'application/json',
-                body: JSON.stringify(rest)
+                body: JSON.stringify(requestBody)
               });
               const __client = await getBedrockClient();
               const res = await __client.send(cmd);
@@ -2433,12 +2444,16 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
-          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              // Use inference profile ARN (cross-account) if set, else fall back to model ID
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+              if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId,
                 contentType: 'application/json',
                 accept: 'application/json',
-                body: JSON.stringify(rest)
+                body: JSON.stringify(requestBody)
               });
               const __client = await getBedrockClient();
               const res = await __client.send(cmd);
@@ -4662,12 +4677,16 @@ app.post('/api/uw-rules/upload', requireAuth, upload.single('document'), validat
           messages: {
             create: async (params) => {
               const { model, temperature, ...rest } = params;
-          if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
+              // Use inference profile ARN (cross-account) if set, else fall back to model ID
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+              if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
-                modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                modelId,
                 contentType: 'application/json',
                 accept: 'application/json',
-                body: JSON.stringify(rest)
+                body: JSON.stringify(requestBody)
               });
               const __client = await getBedrockClient();
               const res = await __client.send(cmd);
