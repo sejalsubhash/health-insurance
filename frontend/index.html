@@ -2944,26 +2944,36 @@ function renderBiometricCard(wf) {
 // ─── Vendor Document Management Panel ───
 
 async function viewVendorCase(wfId, vendorId) {
-  const el = document.getElementById('mainContent'); el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  const el = document.getElementById('mainContent');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
   try {
-    const wf = await api(`/api/workflow/${wfId}`);
+    const wf      = await api(`/api/workflow/${wfId}`);
     const docData = await api(`/api/workflow/${wfId}/documents`);
-    const docs = docData.documents || [];
+    const docs    = docData.documents || [];
     const submitted = docData.docs_submitted || false;
-    const vendorName = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic'}[vendorId] || vendorId;
+    const vendorName = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic','VEND-004':'ClinAssure Diagnostics','VEND-005':'MedElite Advanced Diagnostics'}[vendorId] || vendorId;
+
+    // Load existing feedback for display
+    let existingFeedback = [];
+    let existingIcmr = null;
+    try {
+      const fbData = await api(`/api/workflow/${wfId}/medical-feedback`);
+      existingFeedback = fbData.feedback || [];
+      existingIcmr     = fbData.icmr_analysis || null;
+    } catch(e) { /* ignore */ }
 
     el.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
       <button class="btn btn-outline btn-sm" onclick="viewVendorCases('${vendorId}')">← Back to ${vendorName}</button>
       <h3>${esc(wf.proposer_name)}</h3> ${stateLabel(wf.state)}
-      ${wf.reassignment_count?`<span class="badge badge-warning">Reassigned (${wf.reassignment_count}x)</span>`:''}
+      ${wf.reassignment_count ? `<span class="badge badge-warning">Reassigned (${wf.reassignment_count}x)</span>` : ''}
     </div>
-    ${wf.reassignment_reason && !submitted?`<div style="padding:12px 16px;background:var(--warning-bg);border:1px solid var(--warning);border-radius:8px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+    ${wf.reassignment_reason && !submitted ? `<div style="padding:12px 16px;background:var(--warning-bg);border:1px solid var(--warning);border-radius:8px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
       <div style="font-size:20px;color:var(--warning)"><i data-lucide="alert-triangle"></i></div>
       <div><div style="font-size:14px;font-weight:600;color:var(--warning)">Case Reassigned — Action Required</div>
       <div style="font-size:13px;color:var(--text-muted);margin-top:2px">Reason: ${esc(wf.reassignment_reason)}</div>
       <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Please review, correct documents, and resubmit.</div></div>
-    </div>`:''}
+    </div>` : ''}
     <div class="grid-2">
       <div class="card"><div class="card-header"><h3>Case Information</h3></div><div class="card-body">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">
@@ -2972,23 +2982,21 @@ async function viewVendorCase(wfId, vendorId) {
           <div><span style="color:var(--text-muted)">Age:</span> ${wf.age} years</div>
           <div><span style="color:var(--text-muted)">Gender:</span> ${wf.gender}</div>
         </div>
-        ${wf.observations?`<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:4px">Observations / Instructions</div><div style="font-size:13px">${esc(wf.observations)}</div></div>`:''}
-        ${wf.required_tests?.length?`<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${t.replace(/_/g,' ')}</span>`).join('')}</div></div>`:''}
+        ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:4px">Observations / Instructions</div><div style="font-size:13px">${esc(wf.observations)}</div></div>` : ''}
+        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${t.replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
         <div style="margin-top:10px;padding:10px;background:${wf.pphc_biometrics?'var(--success-bg)':'var(--surface-alt)'};border-radius:8px;border-left:3px solid ${wf.pphc_biometrics?'var(--success)':'var(--warning)'}">
           <div style="font-size:11px;font-weight:600;color:${wf.pphc_biometrics?'var(--success)':'var(--warning)'};text-transform:uppercase;margin-bottom:6px">Identity Verification — Face Capture</div>
-          ${wf.pphc_biometrics ? `<div style="display:flex;align-items:center;gap:10px"><div style="width:50px;height:50px;border-radius:6px;overflow:hidden"><img src="data:image/jpeg;base64,${wf.pphc_biometrics.face_image?.substring(0,100)}..." style="width:50px;height:50px;object-fit:cover" onerror="this.parentElement.innerHTML='<i data-lucide="user-round"></i>'"></div><div><div style="font-size:13px;color:var(--success);font-weight:600"><i data-lucide="check-circle-2" class="i-success"></i> Face captured</div><div style="font-size:11px;color:var(--text-muted)">Captured: ${new Date(wf.pphc_biometrics.captured_at).toLocaleString('en-IN')}</div></div></div>`
-          : `<div style="display:flex;align-items:center;gap:10px"><div style="font-size:12px;color:var(--text-muted)">Capture proposer face before conducting medical tests</div><button class="btn btn-sm btn-accent" onclick="openLiveCaptureModal('vendor','${wfId}','${vendorId}')"><i data-lucide="camera"></i> Live Capture</button></div>`}
-        </div>      </div></div>
+          ${wf.pphc_biometrics
+            ? `<div style="display:flex;align-items:center;gap:10px"><div style="font-size:13px;color:var(--success);font-weight:600"><i data-lucide="check-circle-2" class="i-success"></i> Face captured on ${new Date(wf.pphc_biometrics.captured_at).toLocaleString('en-IN')}</div></div>`
+            : `<div style="display:flex;align-items:center;gap:10px"><div style="font-size:12px;color:var(--text-muted)">Capture proposer face before conducting medical tests</div><button class="btn btn-sm btn-accent" onclick="openLiveCaptureModal('vendor','${wfId}','${vendorId}')"><i data-lucide="camera"></i> Live Capture</button></div>`}
+        </div>
+      </div></div>
       <div class="card"><div class="card-header"><h3>Workflow Timeline</h3></div><div class="card-body" style="max-height:250px;overflow-y:auto">
         ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
       </div></div>
     </div>
-    <div class="card"><div class="card-header"><h3>Documents (${docs.length})</h3>
-      ${submitted ? '<span class="badge badge-success"><i data-lucide="check"></i> Final Submitted</span>' : ''}
-    </div><div class="card-body">
 
     ${wf.pphc_recommendation === 'telemer' || vendorId === 'VEND-003' ? `
-    <!-- Tele-MER Interview Section -->
     <div style="margin-bottom:16px;padding:14px;background:var(--info-bg);border-radius:10px;border-left:4px solid var(--accent)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div>
@@ -2997,20 +3005,53 @@ async function viewVendorCase(wfId, vendorId) {
         </div>
         ${wf.telemer_data?.status === 'completed' ? '<span class="badge badge-success"><i data-lucide="check-circle-2" class="i-success"></i> Completed</span>' : '<span class="badge badge-warning">Pending</span>'}
       </div>
-      ${wf.telemer_data?.status === 'completed' ? `
-        <div style="padding:10px;background:var(--success-bg);border-radius:8px;font-size:13px">
-          <strong>Interview submitted</strong> on ${new Date(wf.telemer_data.submitted_at).toLocaleString('en-IN')} by ${wf.telemer_data.submitted_by || 'examiner'}<br>
-          Duration: ${Math.round((wf.telemer_data.call_duration_seconds||0)/60)} minutes |
-          Medications detected: ${wf.telemer_data.medications_detected?.length || 0} |
-          Recommendation: <strong style="color:${wf.telemer_data.recommendation==='proceed_to_scoring'?'var(--success)':'var(--danger)'}">${(wf.telemer_data.recommendation||'').replace(/_/g,' ')}</strong>
-          ${wf.telemer_data.non_disclosures?.length ? `<div style="margin-top:6px;color:var(--danger)"><i data-lucide="alert-triangle"></i> ${wf.telemer_data.non_disclosures.length} potential non-disclosure(s) detected</div>` : ''}
-        </div>` : `
-        <button class="btn btn-accent" onclick="startTeleMERInterview('${wfId}','${vendorId}')"><i data-lucide="phone"></i> Start Tele-MER Interview</button>
-        <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Opens the questionnaire-based interview form</span>`}
-    </div>
-    ` : ''}
-      ${submitted ? `<div style="padding:10px;background:var(--success-bg);border-radius:8px;color:var(--success);font-weight:500;margin-bottom:12px;font-size:13px"><i data-lucide="check"></i> Documents final-submitted on ${new Date(docData.docs_submitted_at).toLocaleString('en-IN')}. No further changes allowed.</div>` : ''}
+      ${wf.telemer_data?.status === 'completed'
+        ? `<div style="padding:10px;background:var(--success-bg);border-radius:8px;font-size:13px">
+            <strong>Interview submitted</strong> on ${new Date(wf.telemer_data.submitted_at).toLocaleString('en-IN')} by ${wf.telemer_data.submitted_by || 'examiner'}<br>
+            Duration: ${Math.round((wf.telemer_data.call_duration_seconds||0)/60)} minutes | Medications detected: ${wf.telemer_data.medications_detected?.length || 0} |
+            Recommendation: <strong style="color:${wf.telemer_data.recommendation==='proceed_to_scoring'?'var(--success)':'var(--danger)'}">${(wf.telemer_data.recommendation||'').replace(/_/g,' ')}</strong>
+            ${wf.telemer_data.non_disclosures?.length ? `<div style="margin-top:6px;color:var(--danger)"><i data-lucide="alert-triangle"></i> ${wf.telemer_data.non_disclosures.length} potential non-disclosure(s) detected</div>` : ''}
+           </div>`
+        : `<button class="btn btn-accent" onclick="startTeleMERInterview('${wfId}','${vendorId}')"><i data-lucide="phone"></i> Start Tele-MER Interview</button>
+           <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Opens the questionnaire-based interview form</span>`}
+    </div>` : ''}
 
+    <!-- ── Medical Feedback — ABOVE document upload ── -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <h3 style="margin:0"><i data-lucide="stethoscope"></i> Medical Feedback</h3>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:3px">Clinical observations in English — analysed against ICMR guidelines on final submit</div>
+        </div>
+        ${submitted ? '<span class="badge badge-neutral" style="font-size:10px">Read-only after submit</span>' : ''}
+      </div>
+      <div class="card-body">
+        ${submitted
+          ? (existingFeedback.length === 0
+              ? '<div style="font-size:13px;color:var(--text-muted)">No feedback was entered before submission.</div>'
+              : existingFeedback.map(f => `<div style="padding:10px 12px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary);margin-bottom:8px">
+                  <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${f.submitted_by_name||f.submitted_by} · ${new Date(f.timestamp).toLocaleString('en-IN')}</div>
+                  <div style="font-size:13px;line-height:1.6">${f.feedback}</div>
+                </div>`).join('')
+            )
+          : `<textarea id="vendorMedFeedbackInput" class="form-control"
+              style="width:100%;min-height:80px;resize:vertical;font-size:13px;line-height:1.5"
+              placeholder="Enter clinical observations. E.g: Mild pedal oedema bilateral. Amlodipine 5mg found in prescription but hypertension not declared.">${existingFeedback.length > 0 ? '' : ''}</textarea>
+             <div style="font-size:11px;color:var(--text-muted);margin-top:6px">Optional — leave blank if no additional observations. Submitted together with documents.</div>
+             ${existingFeedback.length > 0 ? `<div style="margin-top:12px"><div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">Previously Submitted Feedback</div>
+               ${existingFeedback.map(f => `<div style="padding:10px 12px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary);margin-bottom:6px">
+                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${f.submitted_by_name||f.submitted_by} · ${new Date(f.timestamp).toLocaleString('en-IN')}</div>
+                 <div style="font-size:13px;line-height:1.6">${f.feedback}</div>
+               </div>`).join('')}
+             </div>` : ''}`}
+      </div>
+    </div>
+
+    <!-- ── Documents ── -->
+    <div class="card"><div class="card-header"><h3>Documents (${docs.length})</h3>
+      ${submitted ? '<span class="badge badge-success"><i data-lucide="check"></i> Final Submitted</span>' : ''}
+    </div><div class="card-body">
+      ${submitted ? `<div style="padding:10px;background:var(--success-bg);border-radius:8px;color:var(--success);font-weight:500;margin-bottom:12px;font-size:13px"><i data-lucide="check"></i> Documents final-submitted on ${new Date(docData.docs_submitted_at).toLocaleString('en-IN')}. No further changes allowed.</div>` : ''}
       ${docs.length === 0 && !submitted ? '<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:12px">No documents uploaded yet.</div>' :
         docs.map(d => `<div class="doc-item" id="doc-${d.id}">
           <div class="doc-icon">${docIcon(d.name)}</div>
@@ -3018,148 +3059,136 @@ async function viewVendorCase(wfId, vendorId) {
           <span class="badge badge-info">${d.category||d.type}</span>
           ${submitted ? '' : `<button class="btn btn-sm btn-danger" onclick="removeAndRefresh('${wfId}','${d.id}','${vendorId}')"><i data-lucide="x"></i> Remove</button>`}
         </div>`).join('')}
-
       ${submitted ? '' : `
       <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
           <span style="font-size:13px;font-weight:600">Upload Reports</span>
-          <span style="font-size:11px;color:var(--text-muted)">Document type will be detected automatically</span>
+          <span style="font-size:11px;color:var(--text-muted)">Document type auto-detected</span>
         </div>
         <div class="file-upload-zone" onclick="document.getElementById('vendorCaseFileInput').click()" ondrop="handleVendorCaseDrop(event,'${wfId}','${vendorId}')" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">
           <div style="font-size:24px;margin-bottom:4px"><i data-lucide="folder"></i></div>
           <div style="font-size:13px;font-weight:500">Drop files here or click to browse</div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">PDF, XLS, XLSX, DOC, DOCX, JPG, PNG — Multiple files supported</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">PDF, XLS, XLSX, DOC, DOCX, JPG, PNG</div>
           <input type="file" id="vendorCaseFileInput" multiple accept=".pdf,.xls,.xlsx,.doc,.docx,.jpg,.jpeg,.png,.tif,.tiff" style="display:none" onchange="uploadVendorCaseFiles('${wfId}','${vendorId}',this.files)">
         </div>
       </div>
       <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);padding-top:16px">
         <div style="font-size:12px;color:var(--text-muted)">${docs.length} document(s) ready</div>
-        <button class="btn btn-success" onclick="finalSubmitAndRefresh('${wfId}','${vendorId}')" ${docs.length===0?'disabled style="opacity:0.5;cursor:not-allowed"':''}>
-          <i data-lucide="check"></i> Final Submit (${docs.length} docs)
+        <button class="btn btn-success" id="vendorFinalSubmitBtn" ${docs.length===0?'disabled style="opacity:0.5;cursor:not-allowed"':''}>
+          <i data-lucide="check"></i> Final Submit (${docs.length} docs + feedback)
         </button>
-      </div>
-      `}
+      </div>`}
     </div></div>
-    <div class="card" style="margin-top:16px">
-      <div class="card-header">
-        <h3 style="margin:0"><i data-lucide="stethoscope"></i> Medical Feedback</h3>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Add clinical observations in English. Auto-analysed against ICMR guidelines.</div>
-      </div>
-      <div class="card-body">
-        <textarea id="vendorMedFeedbackInput" class="form-control"
-          style="width:100%;min-height:80px;resize:vertical;font-size:13px;line-height:1.5;margin-bottom:8px"
-          placeholder="E.g: Mild pedal oedema bilateral. Amlodipine 5mg prescription found but hypertension not declared in proposal."></textarea>
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">Once submitted, feedback cannot be edited (permanent audit record).</div>
-        <button class="btn btn-accent btn-sm" id="vendorFeedbackBtn">
-          <i data-lucide="send"></i> Submit Feedback
-        </button>
-      </div>
-    </div>
-    <div id="vendorIcmrArea" style="margin-top:14px"></div>
-    <div id="vendorFeedbackHistory" style="margin-top:14px"></div>`;
 
-  // Wire submit button after DOM is ready
-  setTimeout(() => {
-    const btn = document.getElementById('vendorFeedbackBtn');
-    if (btn) btn.onclick = () => submitVendorMedFeedback('${wfId}', '${vendorId}');
-    loadVendorMedicalFeedback('${wfId}');
-    renderIcons();
-  }, 0);
+    <!-- ICMR results shown after submission -->
+    <div id="vendorIcmrArea" style="margin-top:14px"></div>`;
 
-  } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading case</p></div>'; }
+    // ── Wire Final Submit button (handles docs + feedback together) ──────────
+    setTimeout(() => {
+      const submitBtn = document.getElementById('vendorFinalSubmitBtn');
+      if (submitBtn) {
+        submitBtn.onclick = () => finalSubmitWithFeedback(wfId, vendorId, docs.length);
+      }
+      // Show existing ICMR results if any
+      if (existingIcmr && existingIcmr.icmr_findings?.length > 0) {
+        renderVendorIcmrResults(existingIcmr);
+      }
+      renderIcons();
+    }, 0);
+
+  } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading case: ' + e.message + '</p></div>'; }
 }
 
-async function submitVendorMedFeedback(wfId, vendorId) {
-  const input = document.getElementById('vendorMedFeedbackInput');
-  const text = input?.value?.trim();
-  if (!text || text.length < 10) { showToast('Feedback must be at least 10 characters', 'error'); return; }
-  const btn = document.getElementById('vendorFeedbackBtn');
+async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
+  const feedbackInput = document.getElementById('vendorMedFeedbackInput');
+  const feedbackText  = feedbackInput?.value?.trim() || '';
+
+  if (docCount === 0 && !feedbackText) {
+    showToast('Please upload at least one document before submitting', 'error');
+    return;
+  }
+  if (!confirm(`Submit ${docCount} document(s)${feedbackText ? ' + medical feedback' : ''} for AI analysis?\n\nThis cannot be undone.`)) return;
+
+  const btn = document.getElementById('vendorFinalSubmitBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+
   try {
-    if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
-    const r = await api('/api/workflow/' + wfId + '/medical-feedback', { method: 'POST', body: JSON.stringify({ feedback: text }) });
-    if (r.success) {
-      showToast('Feedback submitted. ICMR analysis updated.', 'success');
-      if (input) input.value = '';
-      loadVendorMedicalFeedback(wfId);
-    } else { showToast(r.error || 'Failed to submit', 'error'); }
-  } catch(e) { showToast(e.message, 'error'); }
-  if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="send"></i> Submit Feedback'; setTimeout(renderIcons, 0); }
-}
-
-async function loadVendorMedicalFeedback(wfId) {
-  const icmrArea = document.getElementById('vendorIcmrArea');
-  const histArea = document.getElementById('vendorFeedbackHistory');
-  if (!icmrArea || !histArea) return;
-  try {
-    const r = await api('/api/workflow/' + wfId + '/medical-feedback');
-    const ia = r.icmr_analysis;
-
-    // ICMR results
-    if (ia && (ia.icmr_findings?.length > 0 || ia.summary)) {
-      const riskColor = { low:'var(--success)', moderate:'var(--warning)', high:'var(--danger)', very_high:'var(--danger)' }[ia.overall_clinical_risk] || 'var(--text-muted)';
-      const riskBg    = { low:'var(--success-bg)', moderate:'var(--warning-bg)', high:'var(--danger-bg)', very_high:'var(--danger-bg)' }[ia.overall_clinical_risk] || 'var(--surface-alt)';
-      const clsColor  = { normal:'#047857', borderline:'#B45309', significant:'#d97706', high:'#B91C1C', decline_trigger:'#7f1d1d' };
-      const clsBg     = { normal:'#ECFDF5', borderline:'#FFFBEB', significant:'#FEF3C7', high:'#FEF2F2', decline_trigger:'#FEE2E2' };
-
-      const rows = (ia.icmr_findings||[]).map(f =>
-        '<tr style="border-bottom:1px solid var(--border-light)">' +
-        '<td style="padding:7px 10px;font-size:11px;color:var(--text-muted)">' + (f.source||'') + '</td>' +
-        '<td style="padding:7px 10px;font-size:12px">' + (f.finding||'') + '</td>' +
-        '<td style="padding:7px 10px">' +
-          '<span style="padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;background:' + (clsBg[f.icmr_classification]||'#f3f4f6') + ';color:' + (clsColor[f.icmr_classification]||'#6b7280') + '">' +
-          (f.icmr_classification||'').replace('_',' ').toUpperCase() + '</span>' +
-          (f.non_disclosure_flag ? ' <span style="padding:2px 6px;border-radius:10px;font-size:10px;font-weight:700;background:#FEE2E2;color:#B91C1C">⚠ NON-DISCLOSURE</span>' : '') +
-        '</td>' +
-        '<td style="padding:7px 10px;font-size:12px">' + (f.risk_implication||'') + '</td>' +
-        '<td style="padding:7px 10px"><span class="badge badge-' + (f.suggested_action==='approve'?'success':f.suggested_action==='refer'?'warning':f.suggested_action==='decline'?'danger':'neutral') + '">' + (f.suggested_action||'') + '</span></td>' +
-        '</tr>'
-      ).join('');
-
-      icmrArea.innerHTML =
-        '<div class="card" style="border-left:4px solid ' + riskColor + '">' +
-          '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">' +
-            '<div style="font-weight:700;font-size:14px">ICMR Analysis Results</div>' +
-            '<div style="padding:6px 14px;border-radius:8px;background:' + riskBg + ';text-align:center">' +
-              '<div style="font-size:10px;color:' + riskColor + ';font-weight:700;text-transform:uppercase">Overall Clinical Risk</div>' +
-              '<div style="font-size:15px;font-weight:800;color:' + riskColor + '">' + (ia.overall_clinical_risk||'').replace('_',' ').toUpperCase() + '</div>' +
-            '</div>' +
-          '</div>' +
-          '<div class="card-body">' +
-            (ia.summary ? '<div style="font-size:13px;padding:10px 14px;background:var(--surface-alt);border-radius:6px;margin-bottom:12px;line-height:1.6">' + ia.summary + '</div>' : '') +
-            (ia.non_disclosure_flags?.length ? '<div style="padding:8px 12px;background:var(--danger-bg);border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--danger)"><strong>⚠ Non-Disclosure:</strong> ' + ia.non_disclosure_flags.join(', ') + '</div>' : '') +
-            (ia.score_adjustment < 0 ? '<div style="padding:8px 12px;background:var(--warning-bg);border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--warning)"><strong>Score Adjustment:</strong> ' + ia.score_adjustment + ' pts applied</div>' : '') +
-            (rows ? '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--surface-alt);border-bottom:2px solid var(--border)"><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Source</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Finding</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Classification</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Risk Implication</th><th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Action</th></tr></thead><tbody>' + rows + '</tbody></table>' :
-            '<div style="text-align:center;padding:14px;color:var(--text-muted);font-size:12px">No adverse clinical findings.</div>') +
-          '</div>' +
-        '</div>';
-    } else {
-      icmrArea.innerHTML = r.feedback?.length > 0
-        ? '<div style="padding:10px 14px;background:var(--info-bg);border-radius:6px;font-size:12px;color:var(--info)">ICMR analysis will run when documents are submitted or feedback is added.</div>'
-        : '';
+    // Step 1 — Save feedback if entered (before submit so ICMR gets it)
+    if (feedbackText && feedbackText.length >= 10) {
+      try {
+        await api(`/api/workflow/${wfId}/medical-feedback`, {
+          method: 'POST',
+          body: JSON.stringify({ feedback: feedbackText })
+        });
+      } catch(e) { console.warn('Feedback save failed:', e.message); }
     }
 
-    // Feedback history
-    const fb = r.feedback || [];
-    if (fb.length > 0) {
-      histArea.innerHTML = '<div class="card"><div class="card-header"><h3>Feedback History (' + fb.length + ')</h3></div><div class="card-body" style="padding:0">' +
-        fb.map(f =>
-          '<div style="padding:12px 16px;border-bottom:1px solid var(--border-light)">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
-              '<div style="font-size:12px;font-weight:600">' + (f.submitted_by_name||f.submitted_by||'Unknown') + '</div>' +
-              '<div style="font-size:10px;color:var(--text-muted)">' + new Date(f.timestamp).toLocaleString('en-IN') + '</div>' +
-            '</div>' +
-            '<div style="font-size:13px;line-height:1.6;padding:10px 12px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary)">' + f.feedback + '</div>' +
-          '</div>'
-        ).join('') +
-      '</div></div>';
+    // Step 2 — Final submit documents (triggers AI extraction + ICMR analysis)
+    const res = await api(`/api/workflow/${wfId}/submit-documents`, { method: 'POST', body: '{}' });
+    if (res.success) {
+      showToast('Documents' + (feedbackText ? ' and feedback' : '') + ' submitted successfully!', 'success');
+      viewVendorCase(wfId, vendorId);
     } else {
-      histArea.innerHTML = '';
+      showToast(res.error || res.message || 'Submission failed', 'error');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Final Submit (' + docCount + ' docs + feedback)'; setTimeout(renderIcons, 0); }
     }
-    setTimeout(renderIcons, 0);
   } catch(e) {
-    if (icmrArea) icmrArea.innerHTML = '<div style="color:var(--danger);font-size:12px">Error loading ICMR analysis: ' + e.message + '</div>';
+    showToast(e.message, 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Final Submit'; setTimeout(renderIcons, 0); }
   }
 }
+
+function renderVendorIcmrResults(ia) {
+  const area = document.getElementById('vendorIcmrArea');
+  if (!area || !ia) return;
+  const riskColor = { low:'var(--success)', moderate:'var(--warning)', high:'var(--danger)', very_high:'var(--danger)' }[ia.overall_clinical_risk] || 'var(--text-muted)';
+  const riskBg    = { low:'var(--success-bg)', moderate:'var(--warning-bg)', high:'var(--danger-bg)', very_high:'var(--danger-bg)' }[ia.overall_clinical_risk] || 'var(--surface-alt)';
+  const clsColor  = { normal:'#047857', borderline:'#B45309', significant:'#d97706', high:'#B91C1C', decline_trigger:'#7f1d1d' };
+  const clsBg     = { normal:'#ECFDF5', borderline:'#FFFBEB', significant:'#FEF3C7', high:'#FEF2F2', decline_trigger:'#FEE2E2' };
+
+  const rows = (ia.icmr_findings||[]).map(f =>
+    `<tr style="border-bottom:1px solid var(--border-light)">
+      <td style="padding:7px 10px;font-size:11px;color:var(--text-muted)">${f.source||''}</td>
+      <td style="padding:7px 10px;font-size:12px">${f.finding||''}</td>
+      <td style="padding:7px 10px">
+        <span style="padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;background:${clsBg[f.icmr_classification]||'#f3f4f6'};color:${clsColor[f.icmr_classification]||'#6b7280'}">
+          ${(f.icmr_classification||'').replace('_',' ').toUpperCase()}
+        </span>
+        ${f.non_disclosure_flag ? ' <span style="padding:2px 6px;border-radius:10px;font-size:10px;font-weight:700;background:#FEE2E2;color:#B91C1C">⚠ NON-DISCLOSURE</span>' : ''}
+      </td>
+      <td style="padding:7px 10px;font-size:12px">${f.risk_implication||''}</td>
+      <td style="padding:7px 10px"><span class="badge badge-${f.suggested_action==='approve'?'success':f.suggested_action==='refer'?'warning':f.suggested_action==='decline'?'danger':'neutral'}">${f.suggested_action||''}</span></td>
+    </tr>`
+  ).join('');
+
+  area.innerHTML = `
+  <div class="card" style="border-left:4px solid ${riskColor}">
+    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+      <div style="font-weight:700;font-size:14px"><i data-lucide="activity"></i> ICMR Clinical Analysis</div>
+      <div style="padding:6px 14px;border-radius:8px;background:${riskBg}">
+        <div style="font-size:10px;color:${riskColor};font-weight:700;text-transform:uppercase">Overall Clinical Risk</div>
+        <div style="font-size:15px;font-weight:800;color:${riskColor}">${(ia.overall_clinical_risk||'').replace('_',' ').toUpperCase()}</div>
+      </div>
+    </div>
+    <div class="card-body">
+      ${ia.summary ? `<div style="font-size:13px;padding:10px 14px;background:var(--surface-alt);border-radius:6px;margin-bottom:12px;line-height:1.6">${ia.summary}</div>` : ''}
+      ${ia.non_disclosure_flags?.length ? `<div style="padding:8px 12px;background:var(--danger-bg);border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--danger)"><strong>⚠ Non-Disclosure:</strong> ${ia.non_disclosure_flags.join(', ')}</div>` : ''}
+      ${ia.score_adjustment < 0 ? `<div style="padding:8px 12px;background:var(--warning-bg);border-radius:6px;margin-bottom:10px;font-size:12px"><strong>Score Adjustment:</strong> ${ia.score_adjustment} pts</div>` : ''}
+      ${rows ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:var(--surface-alt);border-bottom:2px solid var(--border)">
+          <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Source</th>
+          <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Finding</th>
+          <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Classification</th>
+          <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Risk Implication</th>
+          <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Action</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>` : '<div style="text-align:center;padding:14px;color:var(--text-muted);font-size:12px">No adverse clinical findings.</div>'}
+    </div>
+  </div>`;
+  setTimeout(renderIcons, 0);
+}
+
 
 function handleVendorCaseDrop(e, wfId, vendorId) { e.preventDefault(); e.currentTarget.classList.remove('dragover'); uploadVendorCaseFiles(wfId, vendorId, e.dataTransfer.files); }
 
