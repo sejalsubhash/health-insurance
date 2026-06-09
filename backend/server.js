@@ -1425,6 +1425,18 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
     wf.state_history.push({ state: 'rule_engine_started', timestamp: new Date().toISOString(), actor: 'Rule Engine', note: 'Evaluating against medical-scoring, uw-guidelines, risk-params' });
 
     const analysis = await runAIAnalysis(wf);
+
+    // Apply ICMR clinical text score adjustment (0 or negative only)
+    // Numeric scoring from Per-CAT Scoring Config is already done inside runAIAnalysis
+    const icmrAdj = Number(wf.icmr_analysis?.score_adjustment) || 0;
+    if (icmrAdj < 0 && analysis.risk_score?.normalized != null) {
+      const origScore = analysis.risk_score.normalized;
+      analysis.risk_score.normalized = Math.max(0, Math.round((origScore + icmrAdj) * 100) / 100);
+      analysis.risk_score.icmr_adjusted = true;
+      analysis.risk_score.icmr_adjustment = icmrAdj;
+      console.log('[ICMR] Score adjustment:', icmrAdj, origScore, '->', analysis.risk_score.normalized);
+    }
+
     wf.ai_analysis = analysis;
     wf.risk_score = analysis.risk_score;
     wf.decision = { recommendation: analysis.recommendation, loading_percentage: analysis.loading_percentage||0, exclusions: analysis.exclusions||[], rationale: analysis.rationale };
@@ -3261,6 +3273,85 @@ app.delete('/api/policies/:id', requireRole('Super Admin'), async (req, res) => 
 app.get('/api/product-policy-map', requireAuth, (req, res) => res.json(productPolicyMap));
 
 // ── Module 2: Per-CAT scoring thresholds (editable from Masters Config) ────────
+// ── ICMR Guidelines API ──────────────────────────────────────────────────────
+app.get('/api/icmr-guidelines', requireAuth, async (req, res) => {
+  try {
+    const stored = await s3Client.getConfig('icmr-guidelines').catch(() => null);
+    res.json({
+      success: true,
+      guidelines: stored?.text || icmrAnalyser.DEFAULT_ICMR_GUIDELINES,
+      last_updated: stored?.updated_at || null,
+      updated_by: stored?.updated_by || 'system default'
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/icmr-guidelines', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || text.trim().length < 100) return res.status(400).json({ error: 'Guidelines text must be at least 100 characters' });
+    await s3Client.saveConfig('icmr-guidelines', { text: text.trim(), updated_at: new Date().toISOString(), updated_by: req.user?.email || 'Super Admin' });
+    res.json({ success: true, message: 'ICMR guidelines updated successfully' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/icmr-guidelines/reset', requireRole('Super Admin'), async (req, res) => {
+  try {
+    await s3Client.saveConfig('icmr-guidelines', { text: icmrAnalyser.DEFAULT_ICMR_GUIDELINES, updated_at: new Date().toISOString(), updated_by: req.user?.email || 'Super Admin' });
+    res.json({ success: true, message: 'ICMR guidelines reset to system defaults' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Medical Feedback API ──────────────────────────────────────────────────────
+app.post('/api/workflow/:id/medical-feedback', requireAuth, async (req, res) => {
+  try {
+    const { feedback } = req.body;
+    if (!feedback || feedback.trim().length < 10) return res.status(400).json({ error: 'Feedback must be at least 10 characters' });
+    const wf = workflowEngine.getWorkflow(req.params.id);
+    if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+    if (!wf.medical_officer_feedback) wf.medical_officer_feedback = [];
+    const entry = {
+      id: require('crypto').randomUUID(),
+      feedback: feedback.trim(),
+      submitted_by: req.user?.email || 'Unknown',
+      submitted_by_name: req.user?.name || req.user?.email || 'Unknown',
+      timestamp: new Date().toISOString()
+    };
+    wf.medical_officer_feedback.push(entry);
+    wf.updated_at = new Date().toISOString();
+    wf.state_history.push({ state: 'medical_feedback_added', timestamp: entry.timestamp, actor: entry.submitted_by, note: 'Medical feedback: ' + feedback.trim().substring(0, 80) + (feedback.length > 80 ? '...' : '') });
+
+    // Re-run ICMR analysis if documents already processed
+    if (wf.extracted_data && Object.keys(wf.extracted_data).length > 0) {
+      try {
+        const icmrGuidelines = await s3Client.getConfig('icmr-guidelines').catch(() => null);
+        const icmrResult = await icmrAnalyser.runICMRAnalysis(wf, icmrGuidelines?.text || null);
+        wf.icmr_analysis = icmrResult;
+        if (wf.ai_analysis?.risk_score && icmrResult.score_adjustment < 0) {
+          const prev = wf.ai_analysis.risk_score.normalized || 0;
+          wf.ai_analysis.risk_score.normalized = Math.max(0, Math.round((prev + icmrResult.score_adjustment) * 100) / 100);
+          wf.ai_analysis.risk_score.icmr_adjusted = true;
+          wf.ai_analysis.risk_score.icmr_adjustment = icmrResult.score_adjustment;
+        }
+        wf.state_history.push({ state: 'icmr_reanalysed', timestamp: new Date().toISOString(), actor: 'ICMR Engine', note: 'ICMR re-analysis after feedback — ' + (icmrResult.icmr_findings?.length||0) + ' finding(s), risk: ' + icmrResult.overall_clinical_risk });
+      } catch(e) { console.error('[ICMR Re-analysis]', e.message); }
+    }
+
+    workflowEngine.updateWorkflow(req.params.id, wf);
+    socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'feedback_added' });
+    res.json({ success: true, entry, icmr_analysis: wf.icmr_analysis || null });
+  } catch(e) { console.error('Medical feedback error:', e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/workflow/:id/medical-feedback', requireAuth, (req, res) => {
+  try {
+    const wf = workflowEngine.getWorkflow(req.params.id);
+    if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+    res.json({ success: true, feedback: wf.medical_officer_feedback || [], icmr_analysis: wf.icmr_analysis || null });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/cat-scoring', requireAuth, (req, res) => {
   const merged = (catScoringConfig && catScoringConfig.CAT_1) ? catScoringConfig : buildDefaultCatScoring();
   res.json(merged);
