@@ -1390,7 +1390,14 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
             converseContent.push({
               document: {
                 format: 'pdf',
-                name: doc.name.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100),
+                // Bedrock allows only: alphanumeric, spaces, hyphens, parentheses, square brackets
+                // Dots, underscores, slashes are NOT allowed — strip extension and sanitise
+                name: doc.name
+                  .replace(/\.[^.]+$/, '')                          // remove file extension
+                  .replace(/[^a-zA-Z0-9\s\-\(\)\[\]]/g, ' ')       // replace disallowed chars with space
+                  .replace(/\s{2,}/g, ' ')                          // collapse multiple spaces
+                  .trim()
+                  .substring(0, 100) || 'document',
                 source: { bytes: Buffer.from(doc.base64_data, 'base64') }
               }
             });
