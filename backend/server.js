@@ -3,7 +3,7 @@
  * v4.0.0 — STP Fast-Lane + Custom Rules Enforcement + UW Routing Foundation
  */
 require('dotenv').config();
-const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { BedrockRuntimeClient, InvokeModelCommand, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
 
 // ── Cross-account Bedrock client with STS credential refresh ─────────────────
@@ -1352,90 +1352,136 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
     // Try AI extraction from actual document content
     if (true) { // Bedrock — no API key needed, uses IAM role
       try {
-// using top-level __bedrockClient
-        const claude = {
-          messages: {
-            create: async (params) => {
-              const { model, temperature, ...rest } = params;
-              if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
-              // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
-              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
-              if (rest.system) requestBody.system = rest.system;
-              console.log('[Bedrock Invoke] ModelId:', modelId);
-              console.log('[Bedrock Invoke] Payload size (bytes):', JSON.stringify(requestBody).length);
-              console.log('[Bedrock Invoke] max_tokens:', requestBody.max_tokens);
-              console.log('[Bedrock Invoke] messages count:', requestBody.messages?.length);
-              const cmd = new InvokeModelCommand({
-                modelId,
-                contentType: 'application/json',
-                accept: 'application/json',
-                body: JSON.stringify(requestBody)
-              });
-              let __client;
-              try {
-                __client = await getBedrockClient();
-                console.log('[Bedrock Invoke] Client obtained, sending request...');
-              } catch(clientErr) {
-                console.error('[Bedrock Invoke] Failed to get client:', clientErr.message);
-                throw clientErr;
-              }
-              let res;
-              try {
-                const invokeStart = Date.now();
-                res = await __client.send(cmd);
-                console.log('[Bedrock Invoke] ✅ Response received in', (Date.now()-invokeStart), 'ms');
-                console.log('[Bedrock Invoke] HTTP status:', res.$metadata?.httpStatusCode);
-              } catch(invokeErr) {
-                console.error('[Bedrock Invoke] ❌ InvokeModel FAILED');
-                console.error('[Bedrock Invoke] Error name:', invokeErr.name);
-                console.error('[Bedrock Invoke] Error message:', invokeErr.message);
-                console.error('[Bedrock Invoke] HTTP status:', invokeErr.$metadata?.httpStatusCode);
-                console.error('[Bedrock Invoke] Request ID:', invokeErr.$metadata?.requestId);
-                console.error('[Bedrock Invoke] Model ID used:', modelId);
-                if (invokeErr.name === 'AccessDeniedException')      console.error('[Bedrock Invoke] FIX: Role lacks bedrock:InvokeModel permission on model/profile ARN');
-                if (invokeErr.name === 'ResourceNotFoundException')  console.error('[Bedrock Invoke] FIX: Model or inference profile ARN not found in region — check BEDROCK_INFERENCE_PROFILE value');
-                if (invokeErr.name === 'ValidationException')        console.error('[Bedrock Invoke] FIX: Model ID format wrong or model not enabled in Bedrock console');
-                if (invokeErr.name === 'ThrottlingException')        console.error('[Bedrock Invoke] FIX: Bedrock rate limit hit — reduce concurrency');
-                if (invokeErr.name === 'ModelNotReadyException')     console.error('[Bedrock Invoke] FIX: Model not ready — check Bedrock console for model availability');
-                if (invokeErr.message?.includes('inference profile')) console.error('[Bedrock Invoke] FIX: Inference profile may not be shared to this account — check cross-account profile sharing');
-                throw invokeErr;
-              }
-              return JSON.parse(Buffer.from(res.body).toString('utf8'));
-            }
-          }
-        };
+        // ── Build Converse API content blocks ────────────────────────────────
+        // Using ConverseCommand instead of InvokeModelCommand because:
+        // - Inference profiles support 'document' type natively in Converse API
+        // - InvokeModelCommand with Anthropic format does NOT support 'document' on profiles
+        const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+        console.log('[Extraction] Using ConverseCommand — ModelId:', modelId);
 
-        // Build message content with all uploaded documents
-        const contentParts = [];
+        const converseContent = [];
+
         for (const doc of wf.documents) {
-          // Lazy-load from S3 if content not in memory (after restart/reassignment)
-          if (!doc.base64_data && doc.has_content) { // IAM instance role OR static keys
+          // Lazy-load from S3 if content not in memory (IAM instance role or static keys)
+          if (!doc.base64_data && doc.has_content) {
             try {
               const s3Doc = await s3Client.getDocumentFromS3(`documents/${wf.id}/${doc.id}`);
-              if (s3Doc && s3Doc.buffer) { doc.base64_data = s3Doc.buffer.toString('base64'); doc.content_type = doc.content_type || s3Doc.contentType; }
-            } catch(e) { console.error('S3 doc reload for extraction:', e.message); }
-          }
-          if (doc.base64_data) {
-            const isImage = ['image/jpeg','image/png','image/gif','image/webp'].includes(doc.content_type);
-            const isPdf = doc.content_type === 'application/pdf';
-            if (isImage) {
-              contentParts.push({ type: 'image', source: { type: 'base64', media_type: doc.content_type, data: doc.base64_data } });
-              contentParts.push({ type: 'text', text: `[Above is: ${doc.name} — ${doc.category}]` });
-            } else if (isPdf) {
-              contentParts.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: doc.base64_data } });
-              contentParts.push({ type: 'text', text: `[Above is: ${doc.name} — ${doc.category}]` });
-            } else {
-              // For non-image/pdf, try to decode as text
-              try {
-                const textContent = Buffer.from(doc.base64_data, 'base64').toString('utf8');
-                contentParts.push({ type: 'text', text: `[Document: ${doc.name} — ${doc.category}]\n${textContent.substring(0, 5000)}` });
-              } catch(e) {
-                contentParts.push({ type: 'text', text: `[Document: ${doc.name} — ${doc.category} — binary file, cannot extract text]` });
+              if (s3Doc && s3Doc.buffer) {
+                doc.base64_data = s3Doc.buffer.toString('base64');
+                doc.content_type = doc.content_type || s3Doc.contentType;
+                console.log('[Extraction] Lazy-loaded from S3:', doc.name);
               }
+            } catch(e) { console.error('[Extraction] S3 reload failed for', doc.name, ':', e.message); }
+          }
+
+          if (!doc.base64_data) {
+            console.warn('[Extraction] No content for doc:', doc.name, '— skipping');
+            continue;
+          }
+
+          const isPdf   = doc.content_type === 'application/pdf' || doc.name?.toLowerCase().endsWith('.pdf');
+          const isImage = ['image/jpeg','image/jpg','image/png','image/gif','image/webp'].includes(doc.content_type);
+
+          // Label text before each document
+          converseContent.push({ text: `[Document: ${doc.name} — Category: ${doc.category}]` });
+
+          if (isPdf) {
+            // Converse API supports PDF natively as 'document' type — no conversion needed
+            converseContent.push({
+              document: {
+                format: 'pdf',
+                name: doc.name.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100),
+                source: { bytes: Buffer.from(doc.base64_data, 'base64') }
+              }
+            });
+            console.log('[Extraction] Added PDF via Converse document block:', doc.name);
+          } else if (isImage) {
+            // Images supported natively
+            const mediaType = doc.content_type === 'image/jpg' ? 'image/jpeg' : doc.content_type;
+            converseContent.push({
+              image: {
+                format: mediaType.replace('image/', ''),
+                source: { bytes: Buffer.from(doc.base64_data, 'base64') }
+              }
+            });
+            console.log('[Extraction] Added image via Converse image block:', doc.name);
+          } else {
+            // Other files (xlsx, docx etc) — send as text
+            try {
+              const text = Buffer.from(doc.base64_data, 'base64').toString('utf8').substring(0, 5000);
+              converseContent.push({ text: `Content:\n${text}` });
+              console.log('[Extraction] Added other doc as text:', doc.name);
+            } catch(e) {
+              converseContent.push({ text: `[${doc.name} — binary file, could not decode]` });
             }
           }
         }
+
+        console.log('[Extraction] converseContent blocks:', converseContent.length, '| docs:', wf.documents.length);
+
+        // Add extraction prompt
+        converseContent.push({ text: `
+Customer Profile: ${wf.proposer_name}, Age: ${wf.age}, Gender: ${wf.gender}, Sum Assured: ₹${wf.sum_assured}
+Declared Lifestyle: Smoking: ${wf.lifestyle?.smoking||'unknown'}, Alcohol: ${wf.lifestyle?.alcohol||'unknown'}
+Declared Conditions: ${wf.medical_history?.pre_existing_conditions?.join(', ')||'None declared'}
+Observations: ${wf.observations || 'None'}
+
+Extract ALL medical data from the above documents. Return ONLY valid JSON with this structure:
+{
+  "blood_chemistry": { "fasting_glucose": {"value": null, "unit": "mg/dL", "flag": "normal|high|low"}, "hba1c": {"value": null, "unit": "%", "flag": ""}, "total_cholesterol": {"value": null, "unit": "mg/dL", "flag": ""}, "hdl": {"value": null, "unit": "mg/dL", "flag": ""}, "ldl": {"value": null, "unit": "mg/dL", "flag": ""}, "triglycerides": {"value": null, "unit": "mg/dL", "flag": ""}, "tc_hdl_ratio": {"value": null, "unit": "ratio", "flag": ""}, "sgot_ast": {"value": null, "unit": "U/L", "flag": ""}, "sgpt_alt": {"value": null, "unit": "U/L", "flag": ""}, "serum_creatinine": {"value": null, "unit": "mg/dL", "flag": ""}, "blood_urea": {"value": null, "unit": "mg/dL", "flag": ""}, "uric_acid": {"value": null, "unit": "mg/dL", "flag": ""}, "total_bilirubin": {"value": null, "unit": "mg/dL", "flag": ""}, "total_protein": {"value": null, "unit": "g/dL", "flag": ""}, "albumin": {"value": null, "unit": "g/dL", "flag": ""}, "hiv": {"value": "non_reactive", "flag": "normal"}, "hbsag": {"value": "non_reactive", "flag": "normal"} },
+  "hematology": { "hemoglobin": {"value": null, "unit": "g/dL", "flag": ""}, "rbc_count": {"value": null, "unit": "million/cumm", "flag": ""}, "wbc_count": {"value": null, "unit": "/cumm", "flag": ""}, "platelet_count": {"value": null, "unit": "/cumm", "flag": ""}, "esr": {"value": null, "unit": "mm/hr", "flag": ""} },
+  "physical_exam": { "bmi": {"value": null, "ref_range": "18.5-24.9", "flag": ""}, "blood_pressure": {"systolic": {"value": null, "unit": "mmHg", "flag": ""}, "diastolic": {"value": null, "unit": "mmHg", "flag": ""}} },
+  "urine_analysis": { "protein": {"value": "nil", "flag": "normal"}, "glucose": {"value": "nil", "flag": "normal"} },
+  "cardiac": { "ecg": {"overall_interpretation": "normal", "findings": ""} },
+  "liver_extended": { "ggt": {"value": null, "unit": "U/L", "flag": ""}, "alp": {"value": null, "unit": "U/L", "flag": ""} },
+  "thyroid": { "tsh": {"value": null, "unit": "mIU/L", "flag": ""} },
+  "cardiac_extended": { "lvef": {"value": null, "unit": "%", "flag": ""}, "tmt": {"result": "not_done", "findings": ""} },
+  "chest_xray": { "interpretation": "normal", "findings": "" },
+  "correlation_data": {
+    "medications_found": [],
+    "drug_condition_mismatches": [],
+    "multi_system_correlations": [],
+    "cardiovascular_risk": { "framingham_risk_category": "low|moderate|high|very_high", "risk_factors_count": 0, "rationale": "" }
+  },
+  "summary": "Brief summary of all findings",
+  "parameters_found": 0
+}
+
+IMPORTANT: medications_found — list any medications found in documents. Set disclosed=false if the condition it treats was NOT in declared conditions. drug_condition_mismatches — flag if medication implies undeclared condition. Set values to null if not found. Count non-null values in parameters_found.` });
+
+        // ── Call Bedrock using ConverseCommand ───────────────────────────────
+        const __client = await getBedrockClient();
+        const invokeStart = Date.now();
+
+        const converseRes = await __client.send(new ConverseCommand({
+          modelId,
+          system: [{ text: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown, no explanation, no code fences.' }],
+          messages: [{ role: 'user', content: converseContent }],
+          inferenceConfig: { maxTokens: 8000, temperature: 0 }
+        }));
+
+        const elapsed = Date.now() - invokeStart;
+        console.log('[Extraction] ✅ Converse API responded in', elapsed, 'ms');
+        console.log('[Extraction] Stop reason:', converseRes.stopReason);
+        console.log('[Extraction] Input tokens:', converseRes.usage?.inputTokens, '| Output tokens:', converseRes.usage?.outputTokens);
+
+        const responseText = converseRes.output?.message?.content
+          ?.filter(b => b.text)
+          ?.map(b => b.text)
+          ?.join('') || '';
+
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          extractedData = JSON.parse(jsonMatch[0]);
+          extractionMethod = 'ai_extraction';
+          apiLog.push({ agent: 'AI Document Extraction (Converse)', timestamp: new Date().toISOString(),
+            tokens: { input: converseRes.usage?.inputTokens, output: converseRes.usage?.outputTokens },
+            duration_ms: elapsed, status: 'success', parameters_found: extractedData.parameters_found || 0 });
+        } else {
+          console.warn('[Extraction] No JSON found in response. Raw:', responseText.substring(0, 300));
+        }
+        wf.state_history.push({ state: 'extraction_complete', timestamp: new Date().toISOString(), actor: 'AI Engine',
+          note: `Extracted ${extractedData.parameters_found||0} parameters from ${wf.documents.length} document(s) via Converse API` });
 
         contentParts.push({ type: 'text', text: `
 Customer Profile: ${wf.proposer_name}, Age: ${wf.age}, Gender: ${wf.gender}, Sum Assured: ₹${wf.sum_assured}
@@ -1472,23 +1518,7 @@ IMPORTANT INSTRUCTIONS FOR correlation_data:
 
 Set values to null if not found. Only extract what is ACTUALLY present. Set "flag" based on reference ranges. Count non-null values in "parameters_found".` });
 
-        const startTime = Date.now();
-        const response = await claude.messages.create({
-          model: 'claude-3-sonnet-20240229',
-          max_tokens: 8000,
-          temperature: 0,
-          system: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown or explanation.',
-          messages: [{ role: 'user', content: contentParts }]
-        });
 
-        const responseText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          extractedData = JSON.parse(jsonMatch[0]);
-          extractionMethod = 'ai_extraction';
-          apiLog.push({ agent: 'AI Document Extraction', timestamp: new Date().toISOString(), tokens: { input: response.usage?.input_tokens, output: response.usage?.output_tokens }, duration_ms: Date.now() - startTime, status: 'success', parameters_found: extractedData.parameters_found || 0 });
-        }
-        wf.state_history.push({ state: 'extraction_complete', timestamp: new Date().toISOString(), actor: 'AI Engine', note: `Extracted ${extractedData.parameters_found||0} parameters from ${wf.documents.length} document(s)` });
       } catch(claudeErr) {
         console.error('[Extraction] ❌ EXTRACTION FAILED — full error details:');
         console.error('[Extraction] Error name:', claudeErr.name);
@@ -1498,7 +1528,7 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
         console.error('[Extraction] Stack:', claudeErr.stack?.split('\n').slice(0,4).join(' | '));
         console.error('[Extraction] Workflow ID:', wf.id);
         console.error('[Extraction] Documents count:', wf.documents?.length);
-        console.error('[Extraction] contentParts built:', contentParts?.length);
+        console.error('[Extraction] converseContent blocks:', converseContent?.length);
         apiLog.push({ agent: 'AI Document Extraction', timestamp: new Date().toISOString(), status: 'error',
           error: claudeErr.message, error_name: claudeErr.name, http_status: claudeErr.$metadata?.httpStatusCode });
         wf.state_history.push({ state: 'extraction_fallback', timestamp: new Date().toISOString(), actor: 'System',
