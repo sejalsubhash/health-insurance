@@ -28,6 +28,9 @@ async function getBedrockClient() {
   }
 
   try {
+    console.log('[Bedrock] Attempting STS AssumeRole...');
+    console.log('[Bedrock] Role ARN:', crossAccountRoleArn);
+    console.log('[Bedrock] STS Region:', bedrockRegion);
     const stsClient = new STSClient({ region: bedrockRegion });
     const assumeRes = await stsClient.send(new AssumeRoleCommand({
       RoleArn: crossAccountRoleArn,
@@ -40,10 +43,23 @@ async function getBedrockClient() {
       credentials: { accessKeyId: creds.AccessKeyId, secretAccessKey: creds.SecretAccessKey, sessionToken: creds.SessionToken }
     });
     __bedrockCredExpiry = new Date(creds.Expiration).getTime() - (10 * 60 * 1000);
-    console.log('[Bedrock] ✅ Cross-account credentials assumed. Role:', crossAccountRoleArn, '| Expires:', creds.Expiration);
+    console.log('[Bedrock] ✅ STS AssumeRole SUCCESS');
+    console.log('[Bedrock] Temp AccessKeyId prefix:', creds.AccessKeyId.substring(0,8) + '...');
+    console.log('[Bedrock] Credentials expire:', creds.Expiration);
+    console.log('[Bedrock] Client region:', bedrockRegion);
     return __bedrockClient;
   } catch(err) {
-    console.error('[Bedrock] ❌ STS AssumeRole failed:', err.message, '— falling back to instance credentials');
+    console.error('[Bedrock] ❌ STS AssumeRole FAILED');
+    console.error('[Bedrock] Error name:', err.name);
+    console.error('[Bedrock] Error message:', err.message);
+    console.error('[Bedrock] Error code:', err.$metadata?.httpStatusCode);
+    console.error('[Bedrock] Request ID:', err.$metadata?.requestId);
+    if (err.name === 'AccessDenied')            console.error('[Bedrock] FIX: EC2 instance role lacks sts:AssumeRole permission on', crossAccountRoleArn);
+    if (err.name === 'NoSuchEntity')            console.error('[Bedrock] FIX: Role ARN does not exist:', crossAccountRoleArn);
+    if (err.name === 'ExpiredTokenException')   console.error('[Bedrock] FIX: Instance credentials expired — check IMDSv2 on EC2');
+    if (err.name === 'CredentialsProviderError')console.error('[Bedrock] FIX: EC2 has no IAM instance role attached');
+    if (err.message?.includes('trust'))         console.error('[Bedrock] FIX: Trust policy on role does not allow this EC2 role to assume it');
+    console.error('[Bedrock] Falling back to instance credentials — Bedrock may still fail if instance has no bedrock permissions');
     __bedrockClient = new BedrockRuntimeClient({ region: bedrockRegion });
     __bedrockCredExpiry = now + (10 * 60 * 1000);
     return __bedrockClient;
@@ -1343,17 +1359,48 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE //|| process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
+              console.log('[Bedrock Invoke] ModelId:', modelId);
+              console.log('[Bedrock Invoke] Payload size (bytes):', JSON.stringify(requestBody).length);
+              console.log('[Bedrock Invoke] max_tokens:', requestBody.max_tokens);
+              console.log('[Bedrock Invoke] messages count:', requestBody.messages?.length);
               const cmd = new InvokeModelCommand({
                 modelId,
                 contentType: 'application/json',
                 accept: 'application/json',
                 body: JSON.stringify(requestBody)
               });
-              const __client = await getBedrockClient();
-              const res = await __client.send(cmd);
+              let __client;
+              try {
+                __client = await getBedrockClient();
+                console.log('[Bedrock Invoke] Client obtained, sending request...');
+              } catch(clientErr) {
+                console.error('[Bedrock Invoke] Failed to get client:', clientErr.message);
+                throw clientErr;
+              }
+              let res;
+              try {
+                const invokeStart = Date.now();
+                res = await __client.send(cmd);
+                console.log('[Bedrock Invoke] ✅ Response received in', (Date.now()-invokeStart), 'ms');
+                console.log('[Bedrock Invoke] HTTP status:', res.$metadata?.httpStatusCode);
+              } catch(invokeErr) {
+                console.error('[Bedrock Invoke] ❌ InvokeModel FAILED');
+                console.error('[Bedrock Invoke] Error name:', invokeErr.name);
+                console.error('[Bedrock Invoke] Error message:', invokeErr.message);
+                console.error('[Bedrock Invoke] HTTP status:', invokeErr.$metadata?.httpStatusCode);
+                console.error('[Bedrock Invoke] Request ID:', invokeErr.$metadata?.requestId);
+                console.error('[Bedrock Invoke] Model ID used:', modelId);
+                if (invokeErr.name === 'AccessDeniedException')      console.error('[Bedrock Invoke] FIX: Role lacks bedrock:InvokeModel permission on model/profile ARN');
+                if (invokeErr.name === 'ResourceNotFoundException')  console.error('[Bedrock Invoke] FIX: Model or inference profile ARN not found in region — check BEDROCK_INFERENCE_PROFILE value');
+                if (invokeErr.name === 'ValidationException')        console.error('[Bedrock Invoke] FIX: Model ID format wrong or model not enabled in Bedrock console');
+                if (invokeErr.name === 'ThrottlingException')        console.error('[Bedrock Invoke] FIX: Bedrock rate limit hit — reduce concurrency');
+                if (invokeErr.name === 'ModelNotReadyException')     console.error('[Bedrock Invoke] FIX: Model not ready — check Bedrock console for model availability');
+                if (invokeErr.message?.includes('inference profile')) console.error('[Bedrock Invoke] FIX: Inference profile may not be shared to this account — check cross-account profile sharing');
+                throw invokeErr;
+              }
               return JSON.parse(Buffer.from(res.body).toString('utf8'));
             }
           }
@@ -1363,7 +1410,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         const contentParts = [];
         for (const doc of wf.documents) {
           // Lazy-load from S3 if content not in memory (after restart/reassignment)
-          if (!doc.base64_data && doc.has_content && process.env.AWS_ACCESS_KEY_ID) {
+          if (!doc.base64_data && doc.has_content) { // IAM instance role OR static keys
             try {
               const s3Doc = await s3Client.getDocumentFromS3(`documents/${wf.id}/${doc.id}`);
               if (s3Doc && s3Doc.buffer) { doc.base64_data = s3Doc.buffer.toString('base64'); doc.content_type = doc.content_type || s3Doc.contentType; }
@@ -1443,9 +1490,19 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
         }
         wf.state_history.push({ state: 'extraction_complete', timestamp: new Date().toISOString(), actor: 'AI Engine', note: `Extracted ${extractedData.parameters_found||0} parameters from ${wf.documents.length} document(s)` });
       } catch(claudeErr) {
-        console.error('Claude extraction error:', claudeErr.message);
-        apiLog.push({ agent: 'AI Document Extraction', timestamp: new Date().toISOString(), status: 'error', error: claudeErr.message });
-        wf.state_history.push({ state: 'extraction_fallback', timestamp: new Date().toISOString(), actor: 'System', note: 'Claude API error: ' + claudeErr.message + ' — using document metadata analysis' });
+        console.error('[Extraction] ❌ EXTRACTION FAILED — full error details:');
+        console.error('[Extraction] Error name:', claudeErr.name);
+        console.error('[Extraction] Error message:', claudeErr.message);
+        console.error('[Extraction] HTTP status:', claudeErr.$metadata?.httpStatusCode);
+        console.error('[Extraction] Request ID:', claudeErr.$metadata?.requestId);
+        console.error('[Extraction] Stack:', claudeErr.stack?.split('\n').slice(0,4).join(' | '));
+        console.error('[Extraction] Workflow ID:', wf.id);
+        console.error('[Extraction] Documents count:', wf.documents?.length);
+        console.error('[Extraction] contentParts built:', contentParts?.length);
+        apiLog.push({ agent: 'AI Document Extraction', timestamp: new Date().toISOString(), status: 'error',
+          error: claudeErr.message, error_name: claudeErr.name, http_status: claudeErr.$metadata?.httpStatusCode });
+        wf.state_history.push({ state: 'extraction_fallback', timestamp: new Date().toISOString(), actor: 'System',
+          note: 'Claude API error: ' + claudeErr.name + ': ' + claudeErr.message });
       }
     }
 
@@ -1572,7 +1629,7 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
                   create: async (params) => {
                     const { model, temperature, ...rest } = params;
                     if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
-                    const modelId = process.env.BEDROCK_INFERENCE_PROFILE // || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+                    const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
                     const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
                     if (rest.system) requestBody.system = rest.system;
                     const cmd = new InvokeModelCommand({
@@ -2268,7 +2325,7 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE //|| process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
@@ -2446,7 +2503,7 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE // || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
@@ -4679,7 +4736,7 @@ app.post('/api/uw-rules/upload', requireAuth, upload.single('document'), validat
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE// || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
