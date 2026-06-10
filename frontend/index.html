@@ -1420,14 +1420,63 @@ function showWfTab(tab, wfId) {
       const emS = analysis.em_scoring;
       // Extract actual values for display
       const calcEd = wf.extracted_data || {};
+      const bc  = calcEd.blood_chemistry  || {};
+      const hem = calcEd.hematology       || {};
+      const pe  = calcEd.physical_exam    || {};
+      const ur  = calcEd.urine_analysis   || {};
+      const ca  = calcEd.cardiac          || {};
+      const lv  = calcEd.liver_extended   || {};
+      const th  = calcEd.thyroid          || {};
+      const ce  = calcEd.cardiac_extended || {};
+      const cx  = calcEd.chest_xray       || {};
+
+      // Comprehensive value map — covers ALL Per-CAT factor IDs
       const actualValues = {
-        bmi: calcEd.physical_exam?.bmi?.value, blood_pressure: calcEd.physical_exam?.blood_pressure_systolic?.value || calcEd.physical_exam?.blood_pressure?.systolic?.value,
-        fasting_glucose: calcEd.blood_chemistry?.fasting_glucose?.value, hba1c: calcEd.blood_chemistry?.hba1c?.value,
-        tc_hdl_ratio: calcEd.blood_chemistry?.tc_hdl_ratio?.value, sgpt: calcEd.blood_chemistry?.sgpt_alt?.value,
-        creatinine: calcEd.blood_chemistry?.serum_creatinine?.value, ecg: calcEd.cardiac?.ecg?.overall_interpretation,
-        hemoglobin: calcEd.hematology?.hemoglobin?.value, urine_protein: calcEd.urine_analysis?.protein?.value
+        // Old keys (kept for backward compat)
+        bmi:              pe.bmi?.value,
+        blood_pressure:   pe.blood_pressure?.systolic?.value || pe.blood_pressure_systolic?.value,
+        fasting_glucose:  bc.fasting_glucose?.value,
+        hba1c:            bc.hba1c?.value,
+        tc_hdl_ratio:     bc.tc_hdl_ratio?.value,
+        sgpt:             bc.sgpt_alt?.value,
+        creatinine:       bc.serum_creatinine?.value,
+        ecg:              ca.ecg?.overall_interpretation,
+        hemoglobin:       hem.hemoglobin?.value,
+        urine_protein:    ur.protein?.value,
+        // Per-CAT factor IDs
+        bmi_bp:           pe.bmi?.value && pe.blood_pressure?.systolic?.value
+                            ? pe.bmi.value + ' BMI / ' + pe.blood_pressure.systolic.value + ' mmHg'
+                            : (pe.bmi?.value ? pe.bmi.value + ' kg/m²' : null),
+        urine_routine:    ur.protein?.value || ur.glucose?.value,
+        cbc:              hem.hemoglobin?.value,
+        esr:              hem.esr?.value,
+        sgpt:             bc.sgpt_alt?.value,
+        serum_creatinine: bc.serum_creatinine?.value,
+        total_cholesterol:bc.total_cholesterol?.value,
+        triglyceride:     bc.triglycerides?.value,
+        urine_microalbumin:ur.microalbumin?.value || ur.albumin_creatinine_ratio?.value,
+        lipid_profile:    bc.ldl?.value ? 'LDL:'+bc.ldl.value : (bc.tc_hdl_ratio?.value ? 'Ratio:'+bc.tc_hdl_ratio.value : null),
+        lft:              bc.sgpt_alt?.value ? 'SGPT:'+bc.sgpt_alt.value+', Bili:'+( bc.total_bilirubin?.value||'?')+', Alb:'+(bc.albumin?.value||'?') : null,
+        kft:              bc.serum_creatinine?.value ? 'Cr:'+bc.serum_creatinine.value+', BUN:'+(bc.blood_urea?.value||bc.bun?.value||'?') : null,
+        echo_2d:          ce.lvef?.value ? ce.lvef.value + '%' : null,
+        psa_pap:          bc.psa?.value || null,
+        // Tele MER factors
+        smoking:          calcEd.lifestyle?.smoking || null,
+        alcohol:          calcEd.lifestyle?.alcohol || null,
+        tobacco:          calcEd.lifestyle?.tobacco || null,
+        occupation:       calcEd.lifestyle?.occupation || null,
+        exercise:         calcEd.lifestyle?.exercise || null,
+        pre_existing:     calcEd.medical_history?.pre_existing_conditions?.join(', ') || null,
+        family_history:   calcEd.medical_history?.family_history || null,
+        drug_condition:   bc.medications_found?.length ? bc.medications_found.length + ' medication(s)' : null,
+        cv_risk:          calcEd.correlation_data?.cardiovascular_risk?.framingham_risk_category || null,
       };
-      const paramUnits = { bmi:'kg/m²', blood_pressure:'mmHg', fasting_glucose:'mg/dL', hba1c:'%', tc_hdl_ratio:'ratio', sgpt:'U/L', creatinine:'mg/dL', hemoglobin:'g/dL' };
+      const paramUnits = {
+        bmi:'kg/m²', blood_pressure:'mmHg', fasting_glucose:'mg/dL', hba1c:'%',
+        tc_hdl_ratio:'ratio', sgpt:'U/L', creatinine:'mg/dL', hemoglobin:'g/dL',
+        serum_creatinine:'mg/dL', total_cholesterol:'mg/dL', triglyceride:'mg/dL',
+        cbc:'g/dL', esr:'mm/hr', urine_microalbumin:'mg/g', echo_2d:'%'
+      };
 
       el.innerHTML = `
       <!-- Summary Card -->
@@ -1463,7 +1512,14 @@ function showWfTab(tab, wfId) {
             const ranges = {bmi:'18.5-24.9',blood_pressure:'<120 mmHg',fasting_glucose:'<100 mg/dL',hba1c:'<5.7%',tc_hdl_ratio:'<3.5',sgpt:'<40 U/L',creatinine:'<1.3 mg/dL',ecg:'Normal',hemoglobin:'>13 g/dL (M), >12 (F)',urine_protein:'Nil'};
             return `<tr>
               <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
-              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${actualValues[pk] !== null && actualValues[pk] !== undefined ? actualValues[pk] + (paramUnits[pk] ? ' <span style="font-weight:400;color:var(--text-muted)">'+paramUnits[pk]+'</span>' : '') : '<span style="color:var(--text-muted)">—</span>'}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${(() => {
+                // Use value from scoring engine factorResults first (most accurate)
+                // Fall back to actualValues map
+                const sv = pv.value !== null && pv.value !== undefined ? pv.value : (actualValues[pk] !== null && actualValues[pk] !== undefined ? actualValues[pk] : null);
+                if (sv === null || sv === undefined) return '<span style="color:var(--text-muted)">—</span>';
+                const unit = paramUnits[pk] || '';
+                return String(sv) + (unit ? ' <span style="font-weight:400;color:var(--text-muted)">' + unit + '</span>' : '');
+              })()}</td>
               <td style="font-size:11px;color:var(--text-muted)">${ranges[pk]||''}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
               <td><span class="badge ${pv.status==='excellent'||pv.status==='normal'?'badge-success':pv.status==='good'?'badge-info':pv.status==='fair'||pv.status==='borderline'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
