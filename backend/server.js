@@ -1457,7 +1457,7 @@ IMPORTANT: medications_found — list any medications found in documents. Set di
           modelId,
           system: [{ text: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown, no explanation, no code fences.' }],
           messages: [{ role: 'user', content: converseContent }],
-          inferenceConfig: { maxTokens: 8000, temperature: 0 }
+          inferenceConfig: { maxTokens: 4096, temperature: 0 }
         }));
 
         const elapsed = Date.now() - invokeStart;
@@ -1660,7 +1660,7 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
                     const { model, temperature, ...rest } = params;
                     if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
                     const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
-                    const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+                    const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: Math.min(rest.max_tokens || 4096, 4096), messages: rest.messages };
                     if (rest.system) requestBody.system = rest.system;
                     const cmd = new InvokeModelCommand({
                       modelId,
@@ -2356,7 +2356,7 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
               const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
-              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: Math.min(rest.max_tokens || 4096, 4096), messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
                 modelId,
@@ -2534,7 +2534,7 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
               const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
-              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: Math.min(rest.max_tokens || 4096, 4096), messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
                 modelId,
@@ -4767,7 +4767,7 @@ app.post('/api/uw-rules/upload', requireAuth, upload.single('document'), validat
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
               const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
-              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
+              const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: Math.min(rest.max_tokens || 4096, 4096), messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
                 modelId,
