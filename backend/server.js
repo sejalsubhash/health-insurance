@@ -1343,7 +1343,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE //|| process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
@@ -1572,7 +1572,7 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
                   create: async (params) => {
                     const { model, temperature, ...rest } = params;
                     if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
-                    const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+                    const modelId = process.env.BEDROCK_INFERENCE_PROFILE // || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
                     const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
                     if (rest.system) requestBody.system = rest.system;
                     const cmd = new InvokeModelCommand({
@@ -2268,7 +2268,7 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE //|| process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
@@ -2446,7 +2446,7 @@ app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE // || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
@@ -4679,7 +4679,7 @@ app.post('/api/uw-rules/upload', requireAuth, upload.single('document'), validat
               const { model, temperature, ...rest } = params;
               if (!rest.anthropic_version) rest.anthropic_version = 'bedrock-2023-05-31';
               // Use inference profile ARN (cross-account) if set, else fall back to model ID
-              const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+              const modelId = process.env.BEDROCK_INFERENCE_PROFILE// || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
               const requestBody = { anthropic_version: rest.anthropic_version, max_tokens: rest.max_tokens || 8000, messages: rest.messages };
               if (rest.system) requestBody.system = rest.system;
               const cmd = new InvokeModelCommand({
