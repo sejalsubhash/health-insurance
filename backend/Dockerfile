@@ -6,6 +6,10 @@ RUN npm ci --omit=dev
 FROM node:20-alpine
 WORKDIR /app
 
+# Add poppler-utils for PDF text extraction (pdftotext)
+# Required because Bedrock inference profiles do not support 'document' content type
+RUN apk add --no-cache poppler-utils
+
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 COPY --from=deps /app/node_modules ./node_modules

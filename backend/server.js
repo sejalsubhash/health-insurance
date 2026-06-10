@@ -1388,22 +1388,75 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
           converseContent.push({ text: `[Document: ${doc.name} — Category: ${doc.category}]` });
 
           if (isPdf) {
-            // Converse API supports PDF natively as 'document' type — no conversion needed
-            converseContent.push({
-              document: {
-                format: 'pdf',
-                // Bedrock allows only: alphanumeric, spaces, hyphens, parentheses, square brackets
-                // Dots, underscores, slashes are NOT allowed — strip extension and sanitise
-                name: doc.name
-                  .replace(/\.[^.]+$/, '')                          // remove file extension
-                  .replace(/[^a-zA-Z0-9\s\-\(\)\[\]]/g, ' ')       // replace disallowed chars with space
-                  .replace(/\s{2,}/g, ' ')                          // collapse multiple spaces
-                  .trim()
-                  .substring(0, 100) || 'document',
-                source: { bytes: Buffer.from(doc.base64_data, 'base64') }
+            // Convert PDF pages to JPEG images using pdftoppm (poppler-utils)
+            // This handles scanned/image-based PDFs that have no text layer.
+            // Claude reads the images visually — same as a human reading the report.
+            const fs   = require('fs');
+            const os   = require('os');
+            const path = require('path');
+            const { execSync } = require('child_process');
+
+            const tmpDir  = path.join(os.tmpdir(), 'pdf_' + Date.now() + '_' + Math.random().toString(36).slice(2));
+            const tmpPdf  = tmpDir + '.pdf';
+            let imagesAdded = 0;
+
+            try {
+              fs.writeFileSync(tmpPdf, Buffer.from(doc.base64_data, 'base64'));
+              fs.mkdirSync(tmpDir, { recursive: true });
+
+              // Convert all pages to JPEG at 150 DPI (good quality, reasonable size)
+              execSync(`pdftoppm -jpeg -r 150 "${tmpPdf}" "${tmpDir}/page"`, { timeout: 60000, stdio: 'pipe' });
+
+              const pageFiles = fs.readdirSync(tmpDir)
+                .filter(f => f.endsWith('.jpg') || f.endsWith('.jpeg') || f.endsWith('.ppm'))
+                .sort()
+                .slice(0, 10); // max 10 pages per document
+
+              if (pageFiles.length > 0) {
+                converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — ${pageFiles.length} page(s)]` });
+                for (const pageFile of pageFiles) {
+                  const imgBuffer = fs.readFileSync(path.join(tmpDir, pageFile));
+                  converseContent.push({
+                    image: {
+                      format: 'jpeg',
+                      source: { bytes: imgBuffer }
+                    }
+                  });
+                  imagesAdded++;
+                }
+                console.log('[Extraction] PDF→images:', doc.name, '→', imagesAdded, 'page image(s) added');
+              } else {
+                // pdftoppm produced no output — try sending as document block as fallback
+                console.warn('[Extraction] pdftoppm produced no images for:', doc.name, '— falling back to document block');
+                converseContent.push({
+                  document: {
+                    format: 'pdf',
+                    name: doc.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9\s\-\(\)\[\]]/g, ' ').replace(/\s{2,}/g, ' ').trim().substring(0, 100) || 'document',
+                    source: { bytes: Buffer.from(doc.base64_data, 'base64') }
+                  }
+                });
               }
-            });
-            console.log('[Extraction] Added PDF via Converse document block:', doc.name);
+            } catch(pdfErr) {
+              console.warn('[Extraction] pdftoppm failed for', doc.name, ':', pdfErr.message);
+              // Fallback: send as document block
+              converseContent.push({
+                document: {
+                  format: 'pdf',
+                  name: doc.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9\s\-\(\)\[\]]/g, ' ').replace(/\s{2,}/g, ' ').trim().substring(0, 100) || 'document',
+                  source: { bytes: Buffer.from(doc.base64_data, 'base64') }
+                }
+              });
+              console.warn('[Extraction] Used document block fallback for:', doc.name);
+            } finally {
+              // Cleanup temp files
+              try { fs.unlinkSync(tmpPdf); } catch(_) {}
+              try {
+                if (fs.existsSync(tmpDir)) {
+                  fs.readdirSync(tmpDir).forEach(f => { try { fs.unlinkSync(path.join(tmpDir, f)); } catch(_) {} });
+                  fs.rmdirSync(tmpDir);
+                }
+              } catch(_) {}
+            }
           } else if (isImage) {
             // Images supported natively
             const mediaType = doc.content_type === 'image/jpg' ? 'image/jpeg' : doc.content_type;
