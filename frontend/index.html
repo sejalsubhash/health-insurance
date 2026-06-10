@@ -1425,57 +1425,109 @@ function showWfTab(tab, wfId) {
       const pe  = calcEd.physical_exam    || {};
       const ur  = calcEd.urine_analysis   || {};
       const ca  = calcEd.cardiac          || {};
-      const lv  = calcEd.liver_extended   || {};
-      const th  = calcEd.thyroid          || {};
       const ce  = calcEd.cardiac_extended || {};
-      const cx  = calcEd.chest_xray       || {};
 
-      // Comprehensive value map — covers ALL Per-CAT factor IDs
+      // getRawValue: returns { val, unit } — the actual numeric/text value from the report
+      // Maps Per-CAT factor IDs → exact extracted_data path
+      function getRawValue(factorId) {
+        const map = {
+          // ── Medical Parameters ──────────────────────────────────────────
+          bmi_bp: () => {
+            const bmi = pe.bmi?.value;
+            const sys = pe.blood_pressure?.systolic?.value || pe.blood_pressure_systolic?.value;
+            const dia = pe.blood_pressure?.diastolic?.value || pe.blood_pressure_diastolic?.value;
+            if (bmi && sys) return { val: bmi + ' / ' + sys + (dia?'/'+dia:''), unit: 'kg/m² | mmHg' };
+            if (bmi)        return { val: bmi, unit: 'kg/m²' };
+            if (sys)        return { val: sys + (dia?'/'+dia:''), unit: 'mmHg' };
+            return null;
+          },
+          ecg: () => {
+            const v = ca.ecg?.overall_interpretation || ca.ecg?.findings;
+            return v ? { val: v, unit: '' } : null;
+          },
+          urine_routine: () => {
+            const p = ur.protein?.value; const g = ur.glucose?.value;
+            if (p || g) return { val: [p&&('Protein:'+p), g&&('Glucose:'+g)].filter(Boolean).join(', '), unit: '' };
+            return null;
+          },
+          cbc: () => {
+            const hb  = hem.hemoglobin?.value;
+            const wbc = hem.wbc_count?.value;
+            const plt = hem.platelet_count?.value;
+            if (hb || wbc) return { val: [hb&&('Hb:'+hb), wbc&&('WBC:'+wbc), plt&&('Plt:'+plt)].filter(Boolean).join(', '), unit: 'g/dL | /cumm' };
+            return null;
+          },
+          esr:              () => hem.esr?.value != null ? { val: hem.esr.value, unit: 'mm/hr' } : null,
+          hba1c:            () => bc.hba1c?.value != null ? { val: bc.hba1c.value, unit: '%' } : null,
+          sgpt:             () => (bc.sgpt_alt?.value ?? bc.sgpt?.value) != null ? { val: bc.sgpt_alt?.value ?? bc.sgpt?.value, unit: 'U/L' } : null,
+          serum_creatinine: () => bc.serum_creatinine?.value != null ? { val: bc.serum_creatinine.value, unit: 'mg/dL' } : null,
+          total_cholesterol:() => bc.total_cholesterol?.value != null ? { val: bc.total_cholesterol.value, unit: 'mg/dL' } : null,
+          triglyceride:     () => (bc.triglycerides?.value ?? bc.triglyceride?.value) != null ? { val: bc.triglycerides?.value ?? bc.triglyceride?.value, unit: 'mg/dL' } : null,
+          urine_microalbumin:() => {
+            const v = ur.microalbumin?.value ?? ur.albumin_creatinine_ratio?.value;
+            return v != null ? { val: v, unit: 'mg/g' } : null;
+          },
+          lipid_profile: () => {
+            const ldl = bc.ldl?.value; const hdl = bc.hdl?.value;
+            const tc  = bc.total_cholesterol?.value; const tg = bc.triglycerides?.value;
+            if (!ldl && !hdl && !tc && !tg) return null;
+            return { val: [ldl&&('LDL:'+ldl), hdl&&('HDL:'+hdl), tc&&('TC:'+tc), tg&&('TG:'+tg)].filter(Boolean).join(' | '), unit: 'mg/dL' };
+          },
+          lft: () => {
+            const s = bc.sgpt_alt?.value ?? bc.sgpt?.value;
+            const b = bc.total_bilirubin?.value; const a = bc.albumin?.value;
+            if (!s && !b && !a) return null;
+            return { val: [s&&('SGPT:'+s), b&&('Bili:'+b), a&&('Alb:'+a)].filter(Boolean).join(' | '), unit: 'U/L | mg/dL | g/dL' };
+          },
+          kft: () => {
+            const cr = bc.serum_creatinine?.value;
+            const bu = bc.blood_urea?.value ?? bc.bun?.value;
+            const ua = bc.uric_acid?.value;
+            if (!cr && !bu) return null;
+            return { val: [cr&&('Cr:'+cr), bu&&('BUN:'+bu), ua&&('UA:'+ua)].filter(Boolean).join(' | '), unit: 'mg/dL' };
+          },
+          echo_2d: () => {
+            const lvef = ce.lvef?.value ?? ca.echo?.lvef_percent?.value;
+            return lvef != null ? { val: lvef, unit: '% LVEF' } : null;
+          },
+          psa_pap: () => {
+            const psa = bc.psa?.value;
+            return psa != null ? { val: psa, unit: 'ng/mL' } : null;
+          },
+          // Tele MER
+          smoking:    () => calcEd.lifestyle?.smoking    ? { val: calcEd.lifestyle.smoking, unit: '' }    : null,
+          alcohol:    () => calcEd.lifestyle?.alcohol    ? { val: calcEd.lifestyle.alcohol, unit: '' }    : null,
+          tobacco:    () => calcEd.lifestyle?.tobacco    ? { val: calcEd.lifestyle.tobacco, unit: '' }    : null,
+          occupation: () => calcEd.lifestyle?.occupation ? { val: calcEd.lifestyle.occupation, unit: '' } : null,
+          exercise:   () => calcEd.lifestyle?.exercise   ? { val: calcEd.lifestyle.exercise, unit: '' }   : null,
+          pre_existing:() => {
+            const v = calcEd.medical_history?.pre_existing_conditions;
+            return v?.length ? { val: v.join(', '), unit: '' } : null;
+          },
+          drug_condition: () => {
+            const meds = calcEd.correlation_data?.medications_found;
+            return meds?.length ? { val: meds.map(m=>m.name).join(', '), unit: '' } : null;
+          },
+          cv_risk: () => {
+            const v = calcEd.correlation_data?.cardiovascular_risk?.framingham_risk_category;
+            return v ? { val: v, unit: '' } : null;
+          }
+        };
+        const fn = map[factorId];
+        return fn ? fn() : null;
+      }
+
+      // Keep old actualValues for legacy display sections
       const actualValues = {
-        // Old keys (kept for backward compat)
-        bmi:              pe.bmi?.value,
-        blood_pressure:   pe.blood_pressure?.systolic?.value || pe.blood_pressure_systolic?.value,
-        fasting_glucose:  bc.fasting_glucose?.value,
-        hba1c:            bc.hba1c?.value,
-        tc_hdl_ratio:     bc.tc_hdl_ratio?.value,
-        sgpt:             bc.sgpt_alt?.value,
-        creatinine:       bc.serum_creatinine?.value,
-        ecg:              ca.ecg?.overall_interpretation,
-        hemoglobin:       hem.hemoglobin?.value,
-        urine_protein:    ur.protein?.value,
-        // Per-CAT factor IDs
-        bmi_bp:           pe.bmi?.value && pe.blood_pressure?.systolic?.value
-                            ? pe.bmi.value + ' BMI / ' + pe.blood_pressure.systolic.value + ' mmHg'
-                            : (pe.bmi?.value ? pe.bmi.value + ' kg/m²' : null),
-        urine_routine:    ur.protein?.value || ur.glucose?.value,
-        cbc:              hem.hemoglobin?.value,
-        esr:              hem.esr?.value,
-        sgpt:             bc.sgpt_alt?.value,
-        serum_creatinine: bc.serum_creatinine?.value,
-        total_cholesterol:bc.total_cholesterol?.value,
-        triglyceride:     bc.triglycerides?.value,
-        urine_microalbumin:ur.microalbumin?.value || ur.albumin_creatinine_ratio?.value,
-        lipid_profile:    bc.ldl?.value ? 'LDL:'+bc.ldl.value : (bc.tc_hdl_ratio?.value ? 'Ratio:'+bc.tc_hdl_ratio.value : null),
-        lft:              bc.sgpt_alt?.value ? 'SGPT:'+bc.sgpt_alt.value+', Bili:'+( bc.total_bilirubin?.value||'?')+', Alb:'+(bc.albumin?.value||'?') : null,
-        kft:              bc.serum_creatinine?.value ? 'Cr:'+bc.serum_creatinine.value+', BUN:'+(bc.blood_urea?.value||bc.bun?.value||'?') : null,
-        echo_2d:          ce.lvef?.value ? ce.lvef.value + '%' : null,
-        psa_pap:          bc.psa?.value || null,
-        // Tele MER factors
-        smoking:          calcEd.lifestyle?.smoking || null,
-        alcohol:          calcEd.lifestyle?.alcohol || null,
-        tobacco:          calcEd.lifestyle?.tobacco || null,
-        occupation:       calcEd.lifestyle?.occupation || null,
-        exercise:         calcEd.lifestyle?.exercise || null,
-        pre_existing:     calcEd.medical_history?.pre_existing_conditions?.join(', ') || null,
-        family_history:   calcEd.medical_history?.family_history || null,
-        drug_condition:   bc.medications_found?.length ? bc.medications_found.length + ' medication(s)' : null,
-        cv_risk:          calcEd.correlation_data?.cardiovascular_risk?.framingham_risk_category || null,
+        bmi: pe.bmi?.value, blood_pressure: pe.blood_pressure?.systolic?.value,
+        fasting_glucose: bc.fasting_glucose?.value, hba1c: bc.hba1c?.value,
+        tc_hdl_ratio: bc.tc_hdl_ratio?.value, sgpt: bc.sgpt_alt?.value ?? bc.sgpt?.value,
+        creatinine: bc.serum_creatinine?.value, ecg: ca.ecg?.overall_interpretation,
+        hemoglobin: hem.hemoglobin?.value, urine_protein: ur.protein?.value
       };
       const paramUnits = {
         bmi:'kg/m²', blood_pressure:'mmHg', fasting_glucose:'mg/dL', hba1c:'%',
-        tc_hdl_ratio:'ratio', sgpt:'U/L', creatinine:'mg/dL', hemoglobin:'g/dL',
-        serum_creatinine:'mg/dL', total_cholesterol:'mg/dL', triglyceride:'mg/dL',
-        cbc:'g/dL', esr:'mm/hr', urine_microalbumin:'mg/g', echo_2d:'%'
+        tc_hdl_ratio:'ratio', sgpt:'U/L', creatinine:'mg/dL', hemoglobin:'g/dL'
       };
 
       el.innerHTML = `
@@ -1513,12 +1565,9 @@ function showWfTab(tab, wfId) {
             return `<tr>
               <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${(() => {
-                // Use value from scoring engine factorResults first (most accurate)
-                // Fall back to actualValues map
-                const sv = pv.value !== null && pv.value !== undefined ? pv.value : (actualValues[pk] !== null && actualValues[pk] !== undefined ? actualValues[pk] : null);
-                if (sv === null || sv === undefined) return '<span style="color:var(--text-muted)">—</span>';
-                const unit = paramUnits[pk] || '';
-                return String(sv) + (unit ? ' <span style="font-weight:400;color:var(--text-muted)">' + unit + '</span>' : '');
+                const rv = getRawValue(pk);
+                if (!rv) return '<span style="color:var(--text-muted)">—</span>';
+                return String(rv.val) + (rv.unit ? ' <span style="font-weight:400;font-size:10px;color:var(--text-muted)">' + rv.unit + '</span>' : '');
               })()}</td>
               <td style="font-size:11px;color:var(--text-muted)">${ranges[pk]||''}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
