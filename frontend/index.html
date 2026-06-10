@@ -565,7 +565,7 @@ function updateRequiredTests() {
 
   // Check and highlight mandatory tests
   if (mandatory.length > 0) {
-    hint.textContent = `(${product} policy requires: ${mandatory.map(t => t.replace(/_/g, ' ')).join(', ')})`;
+    hint.textContent = `(${product} policy requires: ${mandatory.map(t => (t||'').toString().replace(/_/g, ' ')).join(', ')})`;
     hint.style.color = 'var(--info)';
     checkboxes.forEach(cb => {
       if (mandatory.includes(cb.value)) {
@@ -596,7 +596,7 @@ function removeCustomTest(test) {
 }
 function renderCustomTests() {
   const el = document.getElementById('customTestsList');
-  el.innerHTML = window._customTests.map(t => `<span class="badge badge-info" style="font-size:12px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" onclick="removeCustomTest('${t}')">${t.replace(/_/g,' ')} <i data-lucide="x"></i></span>`).join('');
+  el.innerHTML = window._customTests.map(t => `<span class="badge badge-info" style="font-size:12px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" onclick="removeCustomTest('${t}')">${(t||'').toString().replace(/_/g,' ')} <i data-lucide="x"></i></span>`).join('');
 }
 
 function stateLabel(state) { const map = { created:['Created','badge-neutral'], stp_evaluating:['STP Evaluating','badge-info'], auto_issued:['<i data-lucide="zap"></i> Auto-Issued','badge-success'], nstp_flagged:['NSTP Flagged','badge-warning'], vendor_assigned:['Vendor Assigned','badge-info'], pphc_scheduled:['PPHC Scheduled','badge-info'], pphc_completed:['PPHC Done','badge-info'], extraction_in_progress:['Extracting','badge-info'], extraction_done:['Extracted','badge-info'], rule_engine_processing:['Processing','badge-info'], auto_approved:['Auto Approved','badge-success'], auto_rejected:['Auto Rejected','badge-danger'], counter_offered:['Counter Offer','badge-warning'], referred:['Referred to UW','badge-warning'], uw_reviewing:['UW Reviewing','badge-info'], uw_approved:['UW Approved','badge-success'], uw_rejected:['UW Rejected','badge-danger'], policy_issued:['Policy Issued','badge-success'], customer_notified:['Notified','badge-neutral'], awaiting_additional_info:['<i data-lucide="hourglass"></i> Awaiting Info','badge-warning'], counter_offer_accepted:['<i data-lucide="check-circle-2"></i> CO Accepted','badge-success'], counter_offer_rejected:['<i data-lucide="x-circle"></i> CO Rejected','badge-danger'], counter_offer_expired:['<i data-lucide="alarm-clock"></i> CO Expired','badge-neutral'], payment_confirmed:['<i data-lucide="indian-rupee"></i> Payment OK','badge-success'] }; const [label, cls] = map[state]||[state,'badge-neutral']; return `<span class="badge ${cls}" style="gap:4px">${label}</span>`; }
@@ -1341,10 +1341,10 @@ function showWfTab(tab, wfId) {
             </div>
             <div style="display:none">
               ${analysis.em_scoring.param_details?.length ? `<table class="data-table" style="margin:0"><thead><tr><th>Parameter</th><th>Value</th><th>Section</th><th>Level</th><th style="text-align:right">EM</th></tr></thead><tbody>
-              ${analysis.em_scoring.param_details.map(p => `<tr><td style="font-weight:500">${p.param.replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.value} ${p.unit||''}</td><td style="font-size:11px;color:var(--text-muted)">${p.section.replace(/_/g,' ')}</td><td><span class="badge ${p.level==='severe'||p.level==='crisis'?'badge-danger':p.level==='moderate'||p.level==='high'?'badge-warning':'badge-info'}">${p.level}</span></td><td style="text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--danger)">+${p.em}</td></tr>`).join('')}
+              ${analysis.em_scoring.param_details.map(p => `<tr><td style="font-weight:500">${(p.param||'').toString().replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.value} ${p.unit||''}</td><td style="font-size:11px;color:var(--text-muted)">${(p.section||'').toString().replace(/_/g,' ')}</td><td><span class="badge ${p.level==='severe'||p.level==='crisis'?'badge-danger':p.level==='moderate'||p.level==='high'?'badge-warning':'badge-info'}">${p.level}</span></td><td style="text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--danger)">+${p.em}</td></tr>`).join('')}
               </tbody></table>` : '<div style="padding:12px;text-align:center;color:var(--text-muted);font-size:13px">No adverse parameters detected — all values within normal range</div>'}
               ${analysis.em_scoring.interactions?.length ? `<div style="padding:8px 14px;background:var(--danger-bg)">
-              ${analysis.em_scoring.interactions.map(i => `<div style="font-size:12px;color:var(--danger);padding:3px 0"><strong><i data-lucide="alert-triangle"></i> ${i.name}</strong> — +${i.em} EM interaction (${i.system.replace(/_/g,' ')})</div>`).join('')}
+              ${analysis.em_scoring.interactions.map(i => `<div style="font-size:12px;color:var(--danger);padding:3px 0"><strong><i data-lucide="alert-triangle"></i> ${i.name}</strong> — +${i.em} EM interaction (${(i.system||'').toString().replace(/_/g,' ')})</div>`).join('')}
               </div>` : ''}
             </div>
           </div>` : ''}
@@ -1462,7 +1462,7 @@ function showWfTab(tab, wfId) {
             const emParam = emS?.param_details?.find(p => p.param === pk || p.param === pk.replace(/\s/g,'_'));
             const ranges = {bmi:'18.5-24.9',blood_pressure:'<120 mmHg',fasting_glucose:'<100 mg/dL',hba1c:'<5.7%',tc_hdl_ratio:'<3.5',sgpt:'<40 U/L',creatinine:'<1.3 mg/dL',ecg:'Normal',hemoglobin:'>13 g/dL (M), >12 (F)',urine_protein:'Nil'};
             return `<tr>
-              <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+              <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${actualValues[pk] !== null && actualValues[pk] !== undefined ? actualValues[pk] + (paramUnits[pk] ? ' <span style="font-weight:400;color:var(--text-muted)">'+paramUnits[pk]+'</span>' : '') : '<span style="color:var(--text-muted)">—</span>'}</td>
               <td style="font-size:11px;color:var(--text-muted)">${ranges[pk]||''}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
@@ -1482,7 +1482,7 @@ function showWfTab(tab, wfId) {
         <div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Section</th><th>Level</th><th style="text-align:right">EM Impact</th></tr></thead><tbody>
           ${emS.param_details.filter(p => !['bmi','systolic_bp','diastolic_bp','fasting_glucose','hba1c','tc_hdl_ratio','sgpt_alt','serum_creatinine','hemoglobin'].includes(p.param)).map(p => `<tr>
-            <td style="font-weight:500">${p.param.replace(/_/g,' ')}</td>
+            <td style="font-weight:500">${(p.param||'').toString().replace(/_/g,' ')}</td>
             <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${p.value} ${p.unit||''}</td>
             <td style="font-size:11px;color:var(--text-muted)">${(p.section||'').replace(/_/g,' ')}</td>
             <td><span class="badge ${p.level==='severe'||p.level==='crisis'?'badge-danger':p.level==='moderate'||p.level==='high'?'badge-warning':'badge-info'}">${p.level}</span></td>
@@ -1498,7 +1498,7 @@ function showWfTab(tab, wfId) {
         <div class="card-header"><h3><i data-lucide="alert-triangle"></i> Risk Interactions <span style="font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--danger)">+${emS.interaction_em} EM</span></h3><span style="font-size:11px;color:var(--text-muted)">Multiple adverse values in same system amplify risk</span></div>
         <div class="card-body" style="padding:0">
           ${emS.interactions.map(i => `<div style="padding:10px 16px;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:flex-start">
-            <div><div style="font-size:13px;font-weight:700;color:var(--danger)">${i.name}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px">System: ${(i.system||'').replace(/_/g,' ')} — conditions: ${i.conditions.map(c=>c.replace(/_/g,' ')).join(' + ')}</div></div>
+            <div><div style="font-size:13px;font-weight:700;color:var(--danger)">${i.name}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px">System: ${(i.system||'').replace(/_/g,' ')} — conditions: ${i.conditions.map(c=>(c||'').toString().replace(/_/g,' ')).join(' + ')}</div></div>
             <div style="font-size:16px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--danger)">+${i.em}</div>
           </div>`).join('')}
         </div>
@@ -1513,7 +1513,7 @@ function showWfTab(tab, wfId) {
         <div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
           ${Object.entries(compA.lifestyle_risk?.breakdown||{}).map(([pk,pv])=>`<tr>
-            <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+            <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='never'||pv.status==='none'?'badge-success':pv.status==='former'||pv.status==='occasional'||pv.status==='low'?'badge-info':pv.status==='current'||pv.status==='heavy'||pv.status==='high'?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
@@ -1531,7 +1531,7 @@ function showWfTab(tab, wfId) {
         <div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
           ${Object.entries(compA.medical_history?.breakdown||{}).map(([pk,pv])=>`<tr>
-            <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+            <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='none'||pv.status==='clean'||pv.status==='0 events'?'badge-success':pv.status?.includes('found')||pv.status?.includes('active')?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
@@ -1583,7 +1583,7 @@ function showWfTab(tab, wfId) {
               <div style="display:flex;align-items:center;gap:8px">
                 <span style="font-size:14px">${icon}</span>
                 <div>
-                  <div style="font-size:13px;font-weight:600">${pk.replace(/_/g,' ')}</div>
+                  <div style="font-size:13px;font-weight:600">${(pk||'').toString().replace(/_/g,' ')}</div>
                   <div style="font-size:11px;color:var(--text-muted)">${pv.logic||''}</div>
                 </div>
               </div>
@@ -1605,7 +1605,7 @@ function showWfTab(tab, wfId) {
 
     case 'processing':
       el.innerHTML = `<div class="card"><div class="card-header"><h3>Processing Timeline</h3></div><div class="card-body">
-        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div style="font-size:11px;color:var(--text-muted)">${s.note||''} — by ${s.actor||'system'}</div></div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div></div>`).join('')}
+        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div><div class="step-label">${(s.state||'').toString().replace(/_/g,' ')}</div><div style="font-size:11px;color:var(--text-muted)">${s.note||''} — by ${s.actor||'system'}</div></div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div></div>`).join('')}
       </div></div>
       <div class="card"><div class="card-header"><h3>Documents (${docs.length})</h3><span style="font-size:11px;color:var(--text-muted)">${wf.docs_submitted?'<i data-lucide="check"></i> Final submitted':'Pending'}</span></div><div class="card-body">
         ${docs.length===0?'<div style="color:var(--text-muted);font-size:13px;text-align:center">No documents</div>':docs.map(d=>{
@@ -1792,7 +1792,7 @@ function showWfTab(tab, wfId) {
           else if (flagged > 0) statusBadge = `<span class="badge badge-danger">${flagged} flagged</span>`;
           else statusBadge = '<span class="badge badge-success">OK</span>';
           return `<div style="margin-bottom:6px;padding:8px 12px;background:var(--surface-alt);border-radius:6px;display:flex;align-items:center;gap:12px">
-            <div style="font-size:13px;font-weight:500;text-transform:capitalize;width:140px">${section.replace(/_/g,' ')}</div>
+            <div style="font-size:13px;font-weight:500;text-transform:capitalize;width:140px">${(section||'').toString().replace(/_/g,' ')}</div>
             <div style="flex:1;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${params.length?Math.round(filled/params.length*100):0}%;background:${filled===0&&params.length>0?'var(--warning)':'var(--success)'};border-radius:3px"></div></div>
             <div style="font-size:12px;color:var(--text-muted);min-width:50px">${filled}/${params.length}</div>
             ${statusBadge}
@@ -1836,7 +1836,7 @@ function showHILSubTab(subtab, wfId) {
       if (skipKeys.includes(section) || !data || typeof data !== 'object') continue;
       const params = Object.entries(data).filter(([k,v]) => v && typeof v === 'object' && 'value' in v);
       if (params.length === 0) continue;
-      html += `<div class="card"><div class="card-header"><h3 style="text-transform:capitalize">${section.replace(/_/g,' ')}</h3></div><div class="card-body">
+      html += `<div class="card"><div class="card-header"><h3 style="text-transform:capitalize">${(section||'').toString().replace(/_/g,' ')}</h3></div><div class="card-body">
         <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Unit</th><th>Reference</th><th>Flag</th></tr></thead><tbody>
         ${params.map(([k,v]) => {
           const fp = `${section}.${k}.value`;
@@ -2992,7 +2992,7 @@ async function viewVendorCase(wfId, vendorId) {
         </div>
       </div></div>
       <div class="card"><div class="card-header"><h3>Workflow Timeline</h3></div><div class="card-body" style="max-height:250px;overflow-y:auto">
-        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
+        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${(s.state||'').toString().replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
       </div></div>
     </div>
 
@@ -3247,7 +3247,7 @@ async function startTeleMERInterview(wfId, vendorId) {
     <div class="card" style="margin-bottom:12px">
       <div class="card-header"><h3><i data-lucide="microscope"></i> Diagnostic Triggers Activated</h3><span class="badge badge-warning">${t.total_triggers} trigger(s)</span></div>
       <div class="card-body" style="padding:0"><table class="data-table"><thead><tr><th>Trigger</th><th>Reason</th><th>Additional Tests</th></tr></thead><tbody>
-      ${t.triggered_rules.map(r => `<tr><td style="font-size:11px;font-family:'JetBrains Mono',monospace">${r.id}</td><td style="font-size:12px">${r.reason}</td><td>${r.tests.map(t=>`<span class="badge badge-info" style="font-size:10px;margin:1px">${t.replace(/_/g,' ')}</span>`).join(' ')}</td></tr>`).join('')}
+      ${t.triggered_rules.map(r => `<tr><td style="font-size:11px;font-family:'JetBrains Mono',monospace">${r.id}</td><td style="font-size:12px">${r.reason}</td><td>${r.tests.map(t=>`<span class="badge badge-info" style="font-size:10px;margin:1px">${(t||'').toString().replace(/_/g,' ')}</span>`).join(' ')}</td></tr>`).join('')}
       </tbody></table></div>
     </div>` : ''}
 
@@ -3711,7 +3711,7 @@ function showVendorCaseTab(tab) {
 }
 
 // ─── Communications ───
-async function renderComms() { const el=document.getElementById('mainContent'); try { const stats=await api('/api/communications/stats'); const log=await api('/api/communications'); el.innerHTML=`<div class="grid-4" style="margin-bottom:16px"><div class="stat-card"><div class="stat-label">Total Sent</div><div class="stat-value">${stats.total_sent||0}</div></div><div class="stat-card"><div class="stat-label">Email</div><div class="stat-value">${stats.by_channel?.email||0}</div></div><div class="stat-card"><div class="stat-label">SMS</div><div class="stat-value">${stats.by_channel?.sms||0}</div></div><div class="stat-card"><div class="stat-label">Last 24h</div><div class="stat-value">${stats.last_24h||0}</div></div></div><div class="card"><div class="card-header"><h3>Communication Log</h3></div><div class="card-body">${log.length===0?'<div style="color:var(--text-muted);font-size:13px">No communications yet.</div>':log.slice(0,30).map(c=>`<div style="padding:8px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:6px"><div style="display:flex;justify-content:space-between"><div><span class="badge ${c.channel==='email'?'badge-info':'badge-success'}" style="font-size:9px">${c.channel}</span> <strong style="font-size:12px">${c.template.replace(/_/g,' ')}</strong></div><span style="font-size:11px;color:var(--text-muted)">${new Date(c.sent_at).toLocaleString('en-IN')}</span></div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">To: ${c.recipient_name} (${c.recipient})</div></div>`).join('')}</div></div>`; } catch(e) { el.innerHTML='<div class="empty-state"><p>Error</p></div>'; } }
+async function renderComms() { const el=document.getElementById('mainContent'); try { const stats=await api('/api/communications/stats'); const log=await api('/api/communications'); el.innerHTML=`<div class="grid-4" style="margin-bottom:16px"><div class="stat-card"><div class="stat-label">Total Sent</div><div class="stat-value">${stats.total_sent||0}</div></div><div class="stat-card"><div class="stat-label">Email</div><div class="stat-value">${stats.by_channel?.email||0}</div></div><div class="stat-card"><div class="stat-label">SMS</div><div class="stat-value">${stats.by_channel?.sms||0}</div></div><div class="stat-card"><div class="stat-label">Last 24h</div><div class="stat-value">${stats.last_24h||0}</div></div></div><div class="card"><div class="card-header"><h3>Communication Log</h3></div><div class="card-body">${log.length===0?'<div style="color:var(--text-muted);font-size:13px">No communications yet.</div>':log.slice(0,30).map(c=>`<div style="padding:8px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:6px"><div style="display:flex;justify-content:space-between"><div><span class="badge ${c.channel==='email'?'badge-info':'badge-success'}" style="font-size:9px">${c.channel}</span> <strong style="font-size:12px">${(c.template||'').toString().replace(/_/g,' ')}</strong></div><span style="font-size:11px;color:var(--text-muted)">${new Date(c.sent_at).toLocaleString('en-IN')}</span></div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">To: ${c.recipient_name} (${c.recipient})</div></div>`).join('')}</div></div>`; } catch(e) { el.innerHTML='<div class="empty-state"><p>Error</p></div>'; } }
 
 // ─── Rules ───
 // ─── Masters Configuration ───
@@ -4000,7 +4000,7 @@ async function renderMasters() {
             document.getElementById('calibrationSection').innerHTML = `
             <div class="card" style="margin-top:16px"><div class="card-header"><h3><i data-lucide="refresh-cw"></i> Calibration Offsets (${keys.length} profile types)</h3><span style="font-size:11px;color:var(--text-muted)">Auto-adjustments based on UW override patterns</span></div><div class="card-body" style="padding:0">
             <table class="data-table"><thead><tr><th>Profile Type</th><th>Samples</th><th>Override Rate</th><th>Score Adj.</th><th>Loading Adj.</th><th>Dominant Override</th></tr></thead><tbody>
-            ${keys.map(k => { const o = offsets[k]; return `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${k.replace(/_/g,' ')}</td><td style="font-weight:600">${o.sample_size}</td><td><span class="badge ${o.override_rate>=40?'badge-warning':o.override_rate>=20?'badge-info':'badge-neutral'}">${o.override_rate}%</span></td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.score_adjustment>0?'var(--success)':o.score_adjustment<0?'var(--danger)':'var(--text-muted)'}">${o.score_adjustment>0?'+':''}${o.score_adjustment}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.loading_adjustment<0?'var(--success)':o.loading_adjustment>0?'var(--danger)':'var(--text-muted)'}">${o.loading_adjustment>0?'+':''}${o.loading_adjustment}%</td><td>${o.dominant_override?`<span class="badge ${o.dominant_override==='accept_standard'?'badge-success':o.dominant_override==='decline'?'badge-danger':'badge-warning'}">${o.dominant_override.replace(/_/g,' ')}</span>`:'—'}</td></tr>`; }).join('')}
+            ${keys.map(k => { const o = offsets[k]; return `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${k.replace(/_/g,' ')}</td><td style="font-weight:600">${o.sample_size}</td><td><span class="badge ${o.override_rate>=40?'badge-warning':o.override_rate>=20?'badge-info':'badge-neutral'}">${o.override_rate}%</span></td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.score_adjustment>0?'var(--success)':o.score_adjustment<0?'var(--danger)':'var(--text-muted)'}">${o.score_adjustment>0?'+':''}${o.score_adjustment}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.loading_adjustment<0?'var(--success)':o.loading_adjustment>0?'var(--danger)':'var(--text-muted)'}">${o.loading_adjustment>0?'+':''}${o.loading_adjustment}%</td><td>${o.dominant_override?`<span class="badge ${o.dominant_override==='accept_standard'?'badge-success':o.dominant_override==='decline'?'badge-danger':'badge-warning'}">${(o.dominant_override||'').toString().replace(/_/g,' ')}</span>`:'—'}</td></tr>`; }).join('')}
             </tbody></table></div></div>`;
           }
         } catch(e) { /* Calibration data not available yet */ }
@@ -5533,7 +5533,7 @@ async function renderSTP() {
       <div class="stat-card"><div class="stat-label">Pass Rate</div><div class="stat-value" style="color:${(analytics.pass_rate_pct||0)>=30?'var(--success)':'var(--warning)'}">${analytics.pass_rate_pct||0}%</div></div>
       <div class="stat-card"><div class="stat-label">Avg Eval Time</div><div class="stat-value">${analytics.avg_evaluation_ms||0}<span style="font-size:14px;color:var(--text-muted)">ms</span></div></div>
     </div>
-    ${analytics.top_rejection_reasons?.length ? `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>Top STP Rejection Reasons</h3></div><div class="card-body">${analytics.top_rejection_reasons.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>${r.code.replace(/_/g,' ')}</span><strong>${r.count}</strong></div>`).join('')}</div></div>` : ''}
+    ${analytics.top_rejection_reasons?.length ? `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>Top STP Rejection Reasons</h3></div><div class="card-body">${analytics.top_rejection_reasons.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>${(r.code||'').toString().replace(/_/g,' ')}</span><strong>${r.count}</strong></div>`).join('')}</div></div>` : ''}
     <div class="card">
       <div class="card-header"><h3><i data-lucide="zap"></i> New Proposal — Smart Routing</h3><span style="font-size:11px;color:var(--text-muted)">Evaluates STP eligibility first. Clean profiles auto-issue instantly.</span></div>
       <div class="card-body">
