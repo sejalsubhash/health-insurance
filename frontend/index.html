@@ -2983,7 +2983,7 @@ async function viewVendorCase(wfId, vendorId) {
           <div><span style="color:var(--text-muted)">Gender:</span> ${wf.gender}</div>
         </div>
         ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:4px">Observations / Instructions</div><div style="font-size:13px">${esc(wf.observations)}</div></div>` : ''}
-        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${t.replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
+        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${(t||'').toString().replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
         <div style="margin-top:10px;padding:10px;background:${wf.pphc_biometrics?'var(--success-bg)':'var(--surface-alt)'};border-radius:8px;border-left:3px solid ${wf.pphc_biometrics?'var(--success)':'var(--warning)'}">
           <div style="font-size:11px;font-weight:600;color:${wf.pphc_biometrics?'var(--success)':'var(--warning)'};text-transform:uppercase;margin-bottom:6px">Identity Verification — Face Capture</div>
           ${wf.pphc_biometrics
@@ -3235,11 +3235,8 @@ async function startTeleMERInterview(wfId, vendorId) {
     window._telemerVendorId = vendorId;
     window._telemerStartTime = Date.now();
 
-    // Section accent colours by scoring component
-    const compAccent = { lifestyle:'#1D9E75', history:'#185FA5', clinical:'#D85A30', documentation:'#7F77DD' };
-
     el.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
       <button class="btn btn-outline btn-sm" onclick="viewVendorCase('${wfId}','${vendorId}')">← Back</button>
       <h3><i data-lucide="phone"></i> Tele-MER Interview — ${esc(p.name)}</h3>
       <span class="badge badge-info">${p.age}/${p.gender} | ${p.product} | ₹${(p.sa||0).toLocaleString('en-IN')}</span>
@@ -3250,57 +3247,34 @@ async function startTeleMERInterview(wfId, vendorId) {
     <div class="card" style="margin-bottom:12px">
       <div class="card-header"><h3><i data-lucide="microscope"></i> Diagnostic Triggers Activated</h3><span class="badge badge-warning">${t.total_triggers} trigger(s)</span></div>
       <div class="card-body" style="padding:0"><table class="data-table"><thead><tr><th>Trigger</th><th>Reason</th><th>Additional Tests</th></tr></thead><tbody>
-      ${t.triggered_rules.map(r => `<tr><td style="font-size:11px;font-family:'JetBrains Mono',monospace">${r.id}</td><td style="font-size:12px">${r.reason}</td><td>${(r.tests||[]).map(tt=>`<span class="badge badge-info" style="font-size:10px;margin:1px">${tt.replace(/_/g,' ')}</span>`).join(' ')}</td></tr>`).join('')}
+      ${t.triggered_rules.map(r => `<tr><td style="font-size:11px;font-family:'JetBrains Mono',monospace">${r.id}</td><td style="font-size:12px">${r.reason}</td><td>${r.tests.map(t=>`<span class="badge badge-info" style="font-size:10px;margin:1px">${t.replace(/_/g,' ')}</span>`).join(' ')}</td></tr>`).join('')}
       </tbody></table></div>
     </div>` : ''}
 
     <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
       ${q.total_questions} questions across ${q.sections.length} sections | Estimated duration: ${q.estimated_duration_minutes} minutes
-      ${q.sections.some(s=>s.questions.some(qq=>qq.critical)) ? ' &nbsp;|&nbsp; <span style="color:#C00000;font-weight:500">⚠ Red border = critical question — auto-escalates if answered Yes</span>' : ''}
     </div>
 
-    ${q.sections.map((sec, si) => {
-      const accent = compAccent[sec.component] || 'var(--accent)';
-      return `
-    <div class="card" style="margin-bottom:12px;border-top:3px solid ${accent}">
-      <div class="card-header" style="background:var(--surface-alt);cursor:pointer" onclick="tmToggleSec('tmsec${si}','tmarr${si}')">
-        <h3 style="margin:0">${sec.section}</h3>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:11px;color:var(--text-muted)">${sec.questions.length} question(s)</span>
-          <span id="tmarr${si}" style="color:var(--text-muted)">▼</span>
-        </div>
-      </div>
-      <div id="tmsec${si}" class="card-body">
+    ${q.sections.map((sec, si) => `
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-header" style="background:var(--surface-alt)"><h3>${sec.section}</h3><span style="font-size:11px;color:var(--text-muted)">${sec.questions.length} question(s)</span></div>
+      <div class="card-body">
         ${sec.questions.map((question, qi) => `
-        <div style="margin-bottom:14px;padding:10px 12px;border-radius:6px;background:var(--surface-alt);
-          ${question.critical ? 'border-left:3px solid #C00000' : 'border-left:3px solid var(--border-light)'};
-          ${qi < sec.questions.length - 1 ? 'margin-bottom:8px':''}">
-          <div style="display:flex;gap:8px;align-items:flex-start">
-            <span style="font-size:10px;font-weight:700;color:${accent};min-width:64px;padding-top:3px">${question.id}</span>
+        <div style="margin-bottom:14px;padding-bottom:14px;${qi < sec.questions.length - 1 ? 'border-bottom:1px solid var(--border-light)':''}">
+          <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px">
+            <span style="font-size:11px;font-weight:700;color:var(--accent);min-width:50px">${question.id}</span>
             <div style="flex:1">
-              <div style="font-size:13px;line-height:1.5;${question.critical?'color:#C00000;font-weight:500':''}">${question.critical?'⚠ ':''}${esc(question.q)}</div>
+              <div style="font-size:13px;font-weight:500">${question.q}</div>
               ${question.type === 'yesno' ? `
-                <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
-                  <button type="button" id="btnY_${question.id}"
-                    onclick="tmSetAnswer('${question.id}','yes')"
-                    style="min-width:68px;padding:5px 14px;border-radius:6px;border:2px solid var(--border);background:var(--surface);color:var(--text-primary);font-weight:600;cursor:pointer;font-size:12px;transition:all 0.15s">
-                    ✓ Yes
-                  </button>
-                  <button type="button" id="btnN_${question.id}"
-                    onclick="tmSetAnswer('${question.id}','no')"
-                    style="min-width:68px;padding:5px 14px;border-radius:6px;border:2px solid var(--border);background:var(--surface);color:var(--text-primary);font-weight:600;cursor:pointer;font-size:12px;transition:all 0.15s">
-                    ✗ No
-                  </button>
-                  <input type="hidden" id="ans_${question.id}" value="">
+                <div style="display:flex;gap:8px;margin-top:6px">
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="tm_${question.id}" value="yes" onchange="document.getElementById('fu_${question.id}').style.display=this.value==='yes'&&'${question.followup||''}'?'block':'none'"> Yes</label>
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="tm_${question.id}" value="no" onchange="document.getElementById('fu_${question.id}').style.display='none'"> No</label>
                 </div>
-                <div id="fu_${question.id}" style="display:none;margin-top:8px">
-                  <textarea class="form-control" id="fv_${question.id}" rows="2" style="font-size:12px;${question.critical?'border-color:#C00000':''}"
-                    placeholder="${question.followup || 'Please provide details — duration, medication, current status, last follow-up...'}"></textarea>
-                </div>
+                ${question.followup ? `<div id="fu_${question.id}" style="display:none;margin-top:6px"><textarea class="form-control" id="fv_${question.id}" rows="2" style="font-size:12px" placeholder="${esc(question.followup)}"></textarea></div>` : ''}
               ` : question.type === 'choice' ? `
                 <select class="form-control" id="ans_${question.id}" style="margin-top:6px;font-size:12px;max-width:300px">
                   <option value="">— Select —</option>
-                  ${(question.options||[]).map(o => `<option value="${o}">${o}</option>`).join('')}
+                  ${question.options.map(o => `<option value="${o}">${o}</option>`).join('')}
                 </select>
               ` : `
                 <input class="form-control" id="ans_${question.id}" style="margin-top:6px;font-size:12px" placeholder="Enter response">
@@ -3315,44 +3289,16 @@ async function startTeleMERInterview(wfId, vendorId) {
           </div>
         </div>`).join('')}
       </div>
-    </div>`;
-    }).join('')}
+    </div>`).join('')}
 
-    <div class="card" style="margin-bottom:12px;border:2px solid var(--accent)">
-      <div class="card-header" style="background:var(--info-bg)"><h3><i data-lucide="clipboard-pen"></i> Examiner Observations & Vendor Remarks</h3></div>
+    <div class="card" style="margin-bottom:12px;border-left:3px solid var(--warning)">
+      <div class="card-header"><h3><i data-lucide="eye"></i> Examiner Observations</h3></div>
       <div class="card-body">
-        <div class="form-group" style="margin-bottom:12px">
-          <label style="font-weight:600">Overall Cooperativeness</label>
-          <select class="form-control" id="tm_cooperativeness" style="margin-top:6px;max-width:380px">
-            <option value="cooperative">✅ Cooperative — answered willingly and clearly</option>
-            <option value="hesitant">⚠ Hesitant — required prompting on some questions</option>
-            <option value="evasive">🔴 Evasive — consistently avoided direct answers</option>
-            <option value="hostile">🔴 Hostile — uncooperative / refused to answer</option>
-          </select>
+        <div class="form-group" style="margin-bottom:10px"><label>Overall Cooperativeness</label>
+          <select class="form-control" id="tm_cooperativeness"><option value="cooperative">Cooperative — answered willingly</option><option value="hesitant">Hesitant — required prompting</option><option value="evasive">Evasive — avoided direct answers</option><option value="hostile">Hostile — uncooperative</option></select>
         </div>
-        <div class="form-group" style="margin-bottom:12px">
-          <label style="font-weight:600">Voice Consistency</label>
-          <select class="form-control" id="tm_voice_consistency" style="margin-top:6px;max-width:380px">
-            <option value="100">Consistent throughout — voice and answers aligned</option>
-            <option value="80">Mostly consistent — minor hesitations noted</option>
-            <option value="60">Inconsistent — noticeable stress/hesitation signals</option>
-            <option value="40">Highly inconsistent — significant anomalies detected</option>
-          </select>
-        </div>
-        <div class="form-group" style="margin-bottom:12px">
-          <label style="font-weight:600">Clinical Observations <span style="font-weight:400;color:var(--text-muted)">(background noise, coaching, demeanor)</span></label>
-          <textarea class="form-control" id="tm_clinical_obs" rows="2" style="margin-top:6px"
-            placeholder="e.g. Applicant appeared to be reading answers, coaching voice detected, slurred speech noted..."></textarea>
-        </div>
-        <div class="form-group" style="margin-bottom:12px">
-          <label style="font-weight:600">Vendor Remarks — Final Summary <span style="font-weight:400;color:var(--text-muted)">(visible to UW team)</span></label>
-          <textarea class="form-control" id="tm_vendor_remarks" rows="4" style="margin-top:6px;border-color:var(--accent)"
-            placeholder="Summarise key findings. Include any concerns about non-disclosure, contradictions between answers and medications, or flags the UW team should be aware of."></textarea>
-        </div>
-        <div class="form-group">
-          <label style="font-weight:600">Dr. Final Remark</label>
-          <input class="form-control" id="tm_dr_remark" style="margin-top:6px"
-            placeholder="e.g. k/c/o parkinsons, proteinuria, no complication at present.">
+        <div class="form-group" style="margin-bottom:10px"><label>Additional Notes</label>
+          <textarea class="form-control" id="tm_notes" rows="3" placeholder="Any observations about the proposer's health, demeanor, background noises, coaching, etc."></textarea>
         </div>
       </div>
     </div>
@@ -3362,7 +3308,7 @@ async function startTeleMERInterview(wfId, vendorId) {
       <button class="btn btn-outline" onclick="viewVendorCase('${wfId}','${vendorId}')">Cancel</button>
     </div>`;
 
-    // Start timer (unchanged)
+    // Start timer
     window._telemerTimerInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - window._telemerStartTime) / 1000);
       const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
@@ -3372,30 +3318,7 @@ async function startTeleMERInterview(wfId, vendorId) {
       else clearInterval(window._telemerTimerInterval);
     }, 1000);
 
-    renderIcons();
   } catch(e) { el.innerHTML = `<div class="empty-state"><p>Error: ${e.message}</p></div>`; }
-}
-
-// Toggle Yes/No button styles and show/hide remark textarea
-function tmSetAnswer(qId, val) {
-  const hidden = document.getElementById('ans_' + qId);
-  const btnY   = document.getElementById('btnY_' + qId);
-  const btnN   = document.getElementById('btnN_' + qId);
-  const fu     = document.getElementById('fu_'  + qId);
-  if (hidden) hidden.value = val;
-  if (btnY) { btnY.style.background = val==='yes'?'#217346':'var(--surface)'; btnY.style.color = val==='yes'?'#fff':'var(--text-primary)'; btnY.style.borderColor = val==='yes'?'#217346':'var(--border)'; }
-  if (btnN) { btnN.style.background = val==='no' ?'#C00000':'var(--surface)'; btnN.style.color = val==='no' ?'#fff':'var(--text-primary)'; btnN.style.borderColor = val==='no' ?'#C00000':'var(--border)'; }
-  if (fu)   fu.style.display = val==='yes' ? 'block' : 'none';
-}
-
-// Toggle section collapse
-function tmToggleSec(secId, arrId) {
-  const sec = document.getElementById(secId);
-  const arr = document.getElementById(arrId);
-  if (!sec) return;
-  const open = sec.style.display !== 'none';
-  sec.style.display = open ? 'none' : '';
-  if (arr) arr.textContent = open ? '▶' : '▼';
 }
 
 async function submitTeleMER() {
@@ -3404,26 +3327,22 @@ async function submitTeleMER() {
   const duration = Math.floor((Date.now() - (window._telemerStartTime || Date.now())) / 1000);
   clearInterval(window._telemerTimerInterval);
 
-  // Collect all answers — yes/no from hidden inputs (new Yes/No buttons)
+  // Collect all answers
   const answers = {};
-  document.querySelectorAll('[id^="ans_"]').forEach(el => {
-    const qId = el.id.replace('ans_', '');
-    if (!qId || !el.value) return;
-    if (!answers[qId]) answers[qId] = {};
-    answers[qId].value = el.value;
-    const fuEl = document.getElementById('fv_' + qId);
-    if (fuEl?.value?.trim()) answers[qId].followup = fuEl.value.trim();
-  });
-  // Also collect old-style radio answers (fallback for any remaining radio inputs)
   document.querySelectorAll('[name^="tm_"]').forEach(el => {
     if (el.name === 'tm_cooperativeness') return;
     const qId = el.name.replace('tm_', '');
     if (el.type === 'radio' && el.checked) {
       if (!answers[qId]) answers[qId] = {};
-      if (!answers[qId].value) answers[qId].value = el.value;
+      answers[qId].value = el.value;
       const fuEl = document.getElementById('fv_' + qId);
-      if (fuEl?.value && !answers[qId].followup) answers[qId].followup = fuEl.value;
+      if (fuEl?.value) answers[qId].followup = fuEl.value;
     }
+  });
+  // Collect text/select answers
+  document.querySelectorAll('[id^="ans_"]').forEach(el => {
+    const qId = el.id.replace('ans_', '');
+    if (el.value) answers[qId] = { value: el.value };
   });
   // Collect confidence
   document.querySelectorAll('[name^="conf_"]').forEach(el => {
@@ -3436,35 +3355,17 @@ async function submitTeleMER() {
 
   if (Object.keys(answers).length < 3) { showToast('Please answer at least the key questions before submitting', 'error'); return; }
 
-  const voiceConsistency = parseInt(document.getElementById('tm_voice_consistency')?.value || '100', 10);
-
   const observations = {
-    cooperativeness:  document.getElementById('tm_cooperativeness')?.value  || 'cooperative',
-    notes:            document.getElementById('tm_clinical_obs')?.value     || document.getElementById('tm_notes')?.value || '',
-    vendor_remarks:   document.getElementById('tm_vendor_remarks')?.value   || '',
-    dr_final_remark:  document.getElementById('tm_dr_remark')?.value        || '',
-    clinical_notes:   document.getElementById('tm_clinical_obs')?.value     || '',
-    voice_consistency: voiceConsistency
+    cooperativeness: document.getElementById('tm_cooperativeness')?.value || 'cooperative',
+    notes: document.getElementById('tm_notes')?.value || ''
   };
 
   try {
-    const res = await api(`/api/workflow/${wfId}/telemer-submit`, {
-      method: 'POST',
-      body: JSON.stringify({
-        answers,
-        examiner_observations: observations,
-        call_duration_seconds: duration,
-        voice_analysis: { consistency_analysis: { overall_score: voiceConsistency } }
-      })
-    });
+    const res = await api(`/api/workflow/${wfId}/telemer-submit`, { method: 'POST', body: JSON.stringify({ answers, examiner_observations: observations, call_duration_seconds: duration }) });
     if (res.success) {
       let msg = 'Tele-MER interview submitted. ';
-      if (res.recommendation === 'proceed_to_scoring') {
-        if (res.score) msg += `Score: ${res.score.score}/100 (Grade ${res.score.grade}) → ${(res.score.decision||'').replace(/_/g,' ')}`;
-        else msg += 'Proceeding to AI scoring.';
-      } else {
-        msg += 'Escalation to full PPHC recommended: ' + (res.escalation_reasons || []).join(', ');
-      }
+      if (res.recommendation === 'proceed_to_scoring') msg += 'Proceeding to AI scoring.';
+      else msg += 'Escalation to full PPHC recommended: ' + (res.escalation_reasons || []).join(', ');
       showToast(msg, res.recommendation === 'proceed_to_scoring' ? 'success' : 'warning');
       viewVendorCase(wfId, vendorId);
     } else showToast(res.error || 'Submission failed', 'error');
@@ -3745,9 +3646,7 @@ async function viewVendorCases(vendorId) {
   const el = document.getElementById('mainContent'); el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
   try {
     const data = await api(`/api/vendors/${vendorId}/cases`);
-    if (!data || data.error) throw new Error(data?.error || 'Vendor not found');
-    const v = data.vendor; const cases = data.cases || [];
-    if (!v) throw new Error(`Vendor ${vendorId} not found — check vendor configuration`);
+    const v = data.vendor; const cases = data.cases;
     const pending = cases.filter(c => !c.docs_submitted);
     const submitted = cases.filter(c => c.docs_submitted);
     document.getElementById('pageTitle').textContent = `${v.name} — Cases`;
@@ -3771,14 +3670,7 @@ async function viewVendorCases(vendorId) {
     </div>
     <div id="vendorCaseTabContent"></div>`;
     showVendorCaseTab('pending');
-  } catch(e) {
-    console.error('viewVendorCases error:', e.message);
-    el.innerHTML = `<div class="empty-state">
-      <p style="color:var(--danger);font-weight:500">Error loading vendor cases</p>
-      <p style="font-size:12px;color:var(--text-muted);margin-top:6px">${esc(e.message)}</p>
-      <button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="showPage('vendors')">← Back to Vendors</button>
-    </div>`;
-  }
+  } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading vendor cases</p></div>'; }
 }
 
 function showVendorCaseTab(tab) {
@@ -3807,7 +3699,7 @@ function showVendorCaseTab(tab) {
     <td><span class="badge ${c.docs_submitted?'badge-success':'badge-neutral'}">${(c.documents||[]).length} file(s)</span></td>
     <td style="max-width:120px;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.observations||'—'}</td>
     <td style="font-size:11px">${tab==='pending'
-      ? (c.required_tests?.length ? c.required_tests.map(t=>`<span class="badge badge-info" style="font-size:9px;margin:1px">${t.replace(/_/g,' ')}</span>`).join(' ') : '—')
+      ? (c.required_tests?.length ? c.required_tests.map(t=>`<span class="badge badge-info" style="font-size:9px;margin:1px">${(t||'').toString().replace(/_/g,' ')}</span>`).join(' ') : '—')
       : (c.docs_submitted_at ? new Date(c.docs_submitted_at).toLocaleString('en-IN') : '—')}</td>
     <td style="white-space:nowrap">
       <button class="btn btn-sm btn-primary" onclick="viewVendorCase('${c.id}','${vendorId}')">
