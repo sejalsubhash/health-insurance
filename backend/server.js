@@ -1490,41 +1490,6 @@ IMPORTANT: medications_found — list any medications found in documents. Set di
         wf.state_history.push({ state: 'extraction_complete', timestamp: new Date().toISOString(), actor: 'AI Engine',
           note: `Extracted ${extractedData.parameters_found||0} parameters from ${wf.documents.length} document(s) via Converse API` });
 
-        contentParts.push({ type: 'text', text: `
-Customer Profile: ${wf.proposer_name}, Age: ${wf.age}, Gender: ${wf.gender}, Sum Assured: ₹${wf.sum_assured}
-Declared Lifestyle: Smoking: ${wf.lifestyle?.smoking||'unknown'}, Alcohol: ${wf.lifestyle?.alcohol||'unknown'}
-Declared Conditions: ${wf.medical_history?.pre_existing_conditions?.join(', ')||'None declared'}
-Observations: ${wf.observations || 'None'}
-
-Extract ALL medical data from the above documents. Return ONLY valid JSON with this structure:
-{
-  "blood_chemistry": { "fasting_glucose": {"value": null, "unit": "mg/dL", "flag": "normal|high|low"}, "hba1c": {"value": null, "unit": "%", "flag": ""}, "total_cholesterol": {"value": null, "unit": "mg/dL", "flag": ""}, "hdl": {"value": null, "unit": "mg/dL", "flag": ""}, "ldl": {"value": null, "unit": "mg/dL", "flag": ""}, "triglycerides": {"value": null, "unit": "mg/dL", "flag": ""}, "tc_hdl_ratio": {"value": null, "unit": "ratio", "flag": ""}, "sgot_ast": {"value": null, "unit": "U/L", "flag": ""}, "sgpt_alt": {"value": null, "unit": "U/L", "flag": ""}, "serum_creatinine": {"value": null, "unit": "mg/dL", "flag": ""}, "blood_urea": {"value": null, "unit": "mg/dL", "flag": ""}, "uric_acid": {"value": null, "unit": "mg/dL", "flag": ""}, "total_bilirubin": {"value": null, "unit": "mg/dL", "flag": ""}, "total_protein": {"value": null, "unit": "g/dL", "flag": ""}, "albumin": {"value": null, "unit": "g/dL", "flag": ""}, "hiv": {"value": "non_reactive", "flag": "normal"}, "hbsag": {"value": "non_reactive", "flag": "normal"} },
-  "hematology": { "hemoglobin": {"value": null, "unit": "g/dL", "flag": ""}, "rbc_count": {"value": null, "unit": "million/cumm", "flag": ""}, "wbc_count": {"value": null, "unit": "/cumm", "flag": ""}, "platelet_count": {"value": null, "unit": "/cumm", "flag": ""}, "esr": {"value": null, "unit": "mm/hr", "flag": ""} },
-  "physical_exam": { "bmi": {"value": null, "ref_range": "18.5-24.9", "flag": ""}, "blood_pressure": {"systolic": {"value": null, "unit": "mmHg", "flag": ""}, "diastolic": {"value": null, "unit": "mmHg", "flag": ""}} },
-  "urine_analysis": { "protein": {"value": "nil", "flag": "normal"}, "glucose": {"value": "nil", "flag": "normal"} },
-  "cardiac": { "ecg": {"overall_interpretation": "normal", "findings": ""} },
-  "liver_extended": { "ggt": {"value": null, "unit": "U/L", "flag": ""}, "alp": {"value": null, "unit": "U/L", "flag": ""} },
-  "thyroid": { "tsh": {"value": null, "unit": "mIU/L", "flag": ""} },
-  "cardiac_extended": { "lvef": {"value": null, "unit": "%", "flag": ""}, "tmt": {"result": "not_done", "findings": ""} },
-  "chest_xray": { "interpretation": "normal", "findings": "" },
-  "correlation_data": {
-    "medications_found": [],
-    "drug_condition_mismatches": [],
-    "multi_system_correlations": [],
-    "cardiovascular_risk": { "framingham_risk_category": "low|moderate|high|very_high", "risk_factors_count": 0, "rationale": "" }
-  },
-  "summary": "Brief summary of all findings",
-  "parameters_found": 0
-}
-
-IMPORTANT INSTRUCTIONS FOR correlation_data:
-- medications_found: List any medications, drugs, or prescriptions mentioned anywhere in the documents. Each as {"name":"drug name","condition":"what it treats","disclosed":true/false} — set disclosed=false if the condition it treats was NOT in the declared conditions list above.
-- drug_condition_mismatches: If a medication suggests a condition that was NOT declared (e.g., patient is on Metformin but diabetes was not declared), list it as {"drug":"Metformin","implied_condition":"Diabetes","disclosed":false,"clinical_significance":"high"}.
-- multi_system_correlations: If findings across multiple organ systems are clinically related, list them. E.g., {"systems":["renal","metabolic"],"finding":"High glucose + elevated creatinine suggests diabetic nephropathy","clinical_significance":"high"}.
-- cardiovascular_risk: Based on age (${wf.age}), gender (${wf.gender}), smoking (${wf.lifestyle?.smoking||'unknown'}), and available cholesterol/BP values, estimate Framingham risk category. Count risk factors (age>55M/65F, smoking, diabetes, hypertension, high cholesterol, family history cardiac).
-
-Set values to null if not found. Only extract what is ACTUALLY present. Set "flag" based on reference ranges. Count non-null values in "parameters_found".` });
-
 
       } catch(claudeErr) {
         console.error('[Extraction] ❌ EXTRACTION FAILED — full error details:');
@@ -1535,7 +1500,7 @@ Set values to null if not found. Only extract what is ACTUALLY present. Set "fla
         console.error('[Extraction] Stack:', claudeErr.stack?.split('\n').slice(0,4).join(' | '));
         console.error('[Extraction] Workflow ID:', wf.id);
         console.error('[Extraction] Documents count:', wf.documents?.length);
-        console.error('[Extraction] converseContent blocks:', converseContent?.length);
+        try { console.error('[Extraction] converseContent blocks:', typeof converseContent !== 'undefined' ? converseContent.length : 'not built yet'); } catch(_) {}
         apiLog.push({ agent: 'AI Document Extraction', timestamp: new Date().toISOString(), status: 'error',
           error: claudeErr.message, error_name: claudeErr.name, http_status: claudeErr.$metadata?.httpStatusCode });
         wf.state_history.push({ state: 'extraction_fallback', timestamp: new Date().toISOString(), actor: 'System',
