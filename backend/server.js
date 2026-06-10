@@ -856,9 +856,11 @@ app.post('/api/workflow/create', requireAuth, async (req, res) => {
       ? [catResult.cat.toLowerCase()]
       : (productConfig0?.overrides?.mandatory_tests || []);
     console.log(`[resolveCAT] ${product_name} | Age ${age} | SA ₹${sum_assured} | PED: ${hasPED0} → ${catResult.cat} | ${catResult.reason}`);
-    const uwSelectedTests = required_tests || [];
-    // Combine: policy mandatory tests + UW additional tests (deduplicated)
-    const mergedTests = [...new Set([...policyMandatoryTests, ...uwSelectedTests])];
+    // Filter out any null/undefined/empty values from incoming required_tests
+    const uwSelectedTests = (required_tests || []).filter(t => t != null && t !== '');
+    // Combine: policy mandatory tests + UW additional tests (deduplicated, no nulls)
+    const mergedTests = [...new Set([...policyMandatoryTests, ...uwSelectedTests])]
+      .filter(t => t != null && typeof t === 'string' && t.trim() !== '');
 
     const wf = workflowEngine.createWorkflow({ proposer_name, age: age||35, gender: gender||'male', sum_assured: sum_assured||0, product_name, policy_type, nstp_reason, observations: observations||'', required_tests: mergedTests, assigned_vendor_id: selectedVendor, cat_level: catResult.cat, cat_reason: catResult.reason, lifestyle: lifestyle||{}, medical_history: medical_history||{}, height_cm: height_cm||null, weight_kg: weight_kg||null, declared_bmi: declared_bmi||null });
 
@@ -1477,15 +1479,30 @@ IMPORTANT: medications_found — list any medications found in documents. Set di
           ?.map(b => b.text)
           ?.join('') || '';
 
+        console.log('[Extraction] Raw response length:', responseText.length);
+        console.log('[Extraction] Raw response (first 500):', responseText.substring(0, 500));
+
         const jsonMatch = responseText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          extractedData = JSON.parse(jsonMatch[0]);
-          extractionMethod = 'ai_extraction';
-          apiLog.push({ agent: 'AI Document Extraction (Converse)', timestamp: new Date().toISOString(),
-            tokens: { input: converseRes.usage?.inputTokens, output: converseRes.usage?.outputTokens },
-            duration_ms: elapsed, status: 'success', parameters_found: extractedData.parameters_found || 0 });
+          try {
+            extractedData = JSON.parse(jsonMatch[0]);
+            extractionMethod = 'ai_extraction';
+            console.log('[Extraction] JSON parsed OK — parameters_found:', extractedData.parameters_found);
+            console.log('[Extraction] Keys found:', Object.keys(extractedData).join(', '));
+            // Log non-null blood chemistry values
+            const bc = extractedData.blood_chemistry || {};
+            const nonNull = Object.entries(bc).filter(([k,v]) => v && v.value !== null).map(([k,v]) => k+'='+v.value);
+            console.log('[Extraction] Non-null blood_chemistry:', nonNull.join(', ') || 'NONE');
+            apiLog.push({ agent: 'AI Document Extraction (Converse)', timestamp: new Date().toISOString(),
+              tokens: { input: converseRes.usage?.inputTokens, output: converseRes.usage?.outputTokens },
+              duration_ms: elapsed, status: 'success', parameters_found: extractedData.parameters_found || 0 });
+          } catch(parseErr) {
+            console.error('[Extraction] JSON parse failed:', parseErr.message);
+            console.error('[Extraction] Raw JSON match (first 500):', jsonMatch[0].substring(0, 500));
+          }
         } else {
-          console.warn('[Extraction] No JSON found in response. Raw:', responseText.substring(0, 300));
+          console.warn('[Extraction] No JSON found in response');
+          console.warn('[Extraction] Full raw response:', responseText);
         }
         wf.state_history.push({ state: 'extraction_complete', timestamp: new Date().toISOString(), actor: 'AI Engine',
           note: `Extracted ${extractedData.parameters_found||0} parameters from ${wf.documents.length} document(s) via Converse API` });
@@ -1673,6 +1690,18 @@ IMPORTANT: medications_found — list any medications found in documents. Set di
 
 // AI Analysis function
 async function runAIAnalysis(wf) {
+  // Debug: log what extracted_data contains before scoring
+  const ed = wf.extracted_data || {};
+  console.log('[Scoring] extracted_data keys:', Object.keys(ed).join(', ') || 'EMPTY');
+  if (ed.blood_chemistry) {
+    const nonNull = Object.entries(ed.blood_chemistry)
+      .filter(([k,v]) => v && v.value !== null && v.value !== undefined)
+      .map(([k,v]) => k+'='+v.value);
+    console.log('[Scoring] blood_chemistry non-null:', nonNull.join(', ') || 'ALL NULL');
+  }
+  if (ed.physical_exam) {
+    console.log('[Scoring] bmi:', ed.physical_exam?.bmi?.value, '| bp systolic:', ed.physical_exam?.blood_pressure?.systolic?.value);
+  }
   const fs = require('fs');
   const configPath = require('path').join(__dirname, 'config');
   const medicalScoring = JSON.parse(fs.readFileSync(`${configPath}/medical-scoring.json`, 'utf8'));
