@@ -1790,9 +1790,14 @@ async function runAIAnalysis(wf) {
     if (ov.age_limits) riskParams._age_limits = ov.age_limits;
     // Merge SA limits
     if (ov.sa_limits) riskParams._sa_limits = ov.sa_limits;
-    // Store mandatory tests for checking — use resolveCAT for accurate CAT level
+    // Use the CAT level already assigned to this workflow — do NOT recalculate.
+    // The workflow's cat_level was set at creation time using the correct logic
+    // (including PPHCTestName from JSON, family member ages, manual overrides).
+    // Recalculating here causes the scoring engine to use the wrong Per-CAT config.
     const hasPED_ai = !!(wf.pre_existing_conditions?.length || wf.detailed_ped);
-    const catForAI = resolveCAT(wf.age, wf.sum_assured, ov, hasPED_ai);
+    const catForAI = wf.cat_level
+      ? { cat: wf.cat_level }
+      : resolveCAT(wf.age, wf.sum_assured, ov, hasPED_ai); // fallback only if cat_level missing
     const catTestsMapAI = {
       'STP':      [],
       'tele_mer': [],
