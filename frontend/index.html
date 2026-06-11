@@ -1400,7 +1400,7 @@ function showWfTab(tab, wfId) {
               Min 10 characters. Once submitted, feedback cannot be edited (audit trail).
             </div>
           </div>
-          <button class="btn btn-accent btn-sm" onclick="submitMedicalFeedback('${wf.id}')">
+          <button class="btn btn-accent btn-sm" id="medFeedbackSubmitBtn">
             <i data-lucide="send"></i> Submit Feedback
           </button>
         </div>
@@ -1409,8 +1409,12 @@ function showWfTab(tab, wfId) {
       <div id="icmrFindingsArea"></div>
       <div id="medFeedbackHistory"></div>`;
 
-      setTimeout(renderIcons, 0);
-      loadMedicalFeedback('${wf.id}');
+      setTimeout(() => {
+        renderIcons();
+        const submitBtn = document.getElementById('medFeedbackSubmitBtn');
+        if (submitBtn) submitBtn.onclick = () => submitMedicalFeedback(wf.id);
+        loadMedicalFeedback(wf.id);
+      }, 0);
       break;
 
     case 'calculations':
@@ -2986,7 +2990,7 @@ async function viewVendorCase(wfId, vendorId) {
           <div><span style="color:var(--text-muted)">Gender:</span> ${wf.gender}</div>
         </div>
         ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:4px">Observations / Instructions</div><div style="font-size:13px">${esc(wf.observations)}</div></div>` : ''}
-        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${t.replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
+        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${(t||'unknown').toString().replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
         <div style="margin-top:10px;padding:10px;background:${wf.pphc_biometrics?'var(--success-bg)':'var(--surface-alt)'};border-radius:8px;border-left:3px solid ${wf.pphc_biometrics?'var(--success)':'var(--warning)'}">
           <div style="font-size:11px;font-weight:600;color:${wf.pphc_biometrics?'var(--success)':'var(--warning)'};text-transform:uppercase;margin-bottom:6px">Identity Verification — Face Capture</div>
           ${wf.pphc_biometrics
@@ -3810,7 +3814,7 @@ function showVendorCaseTab(tab) {
     <td><span class="badge ${c.docs_submitted?'badge-success':'badge-neutral'}">${(c.documents||[]).length} file(s)</span></td>
     <td style="max-width:120px;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.observations||'—'}</td>
     <td style="font-size:11px">${tab==='pending'
-      ? (c.required_tests?.length ? c.required_tests.map(t=>`<span class="badge badge-info" style="font-size:9px;margin:1px">${t.replace(/_/g,' ')}</span>`).join(' ') : '—')
+      ? (c.required_tests?.length ? c.required_tests.map(t=>`<span class="badge badge-info" style="font-size:9px;margin:1px">${(t||'unknown').toString().replace(/_/g,' ')}</span>`).join(' ') : '—')
       : (c.docs_submitted_at ? new Date(c.docs_submitted_at).toLocaleString('en-IN') : '—')}</td>
     <td style="white-space:nowrap">
       <button class="btn btn-sm btn-primary" onclick="viewVendorCase('${c.id}','${vendorId}')">
