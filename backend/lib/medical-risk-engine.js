@@ -357,8 +357,11 @@ function scoreDocumentationQuality(extractedData) {
 // If no extractor exists for a factor id, the factor is scored at 50% (partial).
 //
 function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
-  if (!compConfig || !Array.isArray(compConfig.factors) || compConfig.factors.length === 0) {
-    return null; // No DB config — fall back to hardcoded scorer
+  if (!compConfig) return null; // No config at all — fall back to hardcoded scorer
+  // If component exists in DB with weight:0 and no factors (e.g. TeleMER medical),
+  // return zero score instead of null — prevents fallback to hardcoded scorer
+  if (!Array.isArray(compConfig.factors) || compConfig.factors.length === 0) {
+    return { score: 0, max: 0, breakdown: {}, weight: compConfig.weight || 0, zero_weight: true };
   }
 
   // ── Maps factor id → function that extracts the relevant value ─────────────
@@ -745,7 +748,13 @@ function calculateAll(extractedData, correlationData, dynamicConfig) {
     const dbComp = getDbComp(key);
     if (dbComp) {
       const dynResult = scoreComponentFromConfig(dbComp, extractedData, correlationData);
-      components[key] = dynResult || hardcodedScorers[key]();
+      if (dynResult && dynResult.zero_weight) {
+        // Component explicitly set to weight:0 with no factors (e.g. TeleMER medical)
+        // Use zero result — do NOT fall back to hardcoded scorer
+        components[key] = dynResult;
+      } else {
+        components[key] = dynResult || hardcodedScorers[key]();
+      }
     } else {
       components[key] = hardcodedScorers[key]();
     }
@@ -799,17 +808,23 @@ function calculateAll(extractedData, correlationData, dynamicConfig) {
   else if (normalizedScore >= 50) grade = 'C';
   else grade = 'D';
 
-  // Decision
+  // Decision — use Per-CAT thresholds from DB config if available
+  // Falls back to default thresholds if not provided
+  const thr = dynamicConfig?.score_thresholds || null;
+  const approveAt  = thr?.approve        || 80;
+  const referAt    = thr?.refer          || 65;
+  const declineAt  = thr?.decline_below  || 50;
+
   let decision, loading_percentage = 0;
-  if (normalizedScore >= 80) {
+  if (normalizedScore >= approveAt) {
     decision = 'accept_standard';
     loading_percentage = 0;
-  } else if (normalizedScore >= 65) {
+  } else if (normalizedScore >= referAt) {
     decision = 'accept_with_loading';
-    loading_percentage = Math.round((80 - normalizedScore) * 5); // 5% per point below 80
-  } else if (normalizedScore >= 50) {
+    loading_percentage = Math.round((approveAt - normalizedScore) * 5);
+  } else if (normalizedScore >= declineAt) {
     decision = 'refer';
-    loading_percentage = Math.round((80 - normalizedScore) * 5);
+    loading_percentage = Math.round((approveAt - normalizedScore) * 5);
   } else {
     decision = 'decline';
     loading_percentage = 0;

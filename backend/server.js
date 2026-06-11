@@ -1908,8 +1908,9 @@ async function runAIAnalysis(wf) {
     extractedData._proposer_age = wf.age;
     extractedData._proposer_gender = wf.gender;
     const riskResult = riskEngine.calculateAll(extractedData, correlationData, {
-      component_weights: riskParams._component_weights || null,
-      scoring_components: riskParams._scoring_components || null
+      component_weights:  riskParams._component_weights  || null,
+      scoring_components: riskParams._scoring_components || null,
+      score_thresholds:   riskParams._score_thresholds   || null
     });
 
     // EM-based scoring — scores ALL extracted parameters
