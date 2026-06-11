@@ -284,11 +284,8 @@ textarea.form-control{resize:vertical;min-height:60px}
     </div>
     <div style="font-size:13px;font-weight:600;color:var(--primary);margin:12px 0 8px;border-top:1px solid var(--border);padding-top:12px">Lifestyle & Medical History</div>
     <div class="grid-2">
-      <div class="form-group"><label>Smoking Status</label><select class="form-control" id="wf_smoking"><option value="never">Never Smoked</option><option value="former">Former Smoker</option><option value="current">Current Smoker</option></select></div>
-      <div class="form-group"><label>Alcohol Consumption</label><select class="form-control" id="wf_alcohol"><option value="never">Never</option><option value="occasional">Occasional</option><option value="regular">Regular</option><option value="heavy">Heavy</option></select></div>
-      <div class="form-group"><label>Tobacco Chewing</label><select class="form-control" id="wf_tobacco"><option value="never">Never</option><option value="former">Former</option><option value="current">Current</option></select></div>
       <div class="form-group"><label>Occupation Hazard</label><select class="form-control" id="wf_occupation"><option value="none">None</option><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option></select></div>
-      <div class="form-group"><label>Exercise Frequency</label><select class="form-control" id="wf_exercise"><option value="regular">Regular</option><option value="occasional">Occasional</option><option value="none">None</option><option value="daily">Daily</option></select></div>
+      <div style="padding:8px 12px;background:var(--info-bg,#e8f4fd);border-radius:6px;font-size:12px;color:var(--info,#1a6ea8);margin-bottom:8px"><b>Lifestyle data (smoking, alcohol, tobacco, exercise) is extracted automatically by AI from vendor-uploaded documents — no manual entry needed.</b></div>
       <div class="form-group"><label>Diet</label><select class="form-control" id="wf_diet"><option value="non_vegetarian">Non-Vegetarian</option><option value="vegetarian">Vegetarian</option><option value="vegan">Vegan</option></select></div>
     </div>
     <div class="form-group"><label>Pre-existing Conditions (select all that apply)</label>
@@ -2557,11 +2554,7 @@ async function createWorkflow() {
     observations: document.getElementById('wf_observations').value, required_tests: reqTests, vendor_id: vendorId,
     height_cm: height, weight_kg: weight, declared_bmi: bmi,
     lifestyle: {
-      smoking: document.getElementById('wf_smoking').value,
-      alcohol: document.getElementById('wf_alcohol').value,
-      tobacco_chewing: document.getElementById('wf_tobacco').value,
       occupation_hazard: document.getElementById('wf_occupation').value,
-      exercise: document.getElementById('wf_exercise').value,
       diet: document.getElementById('wf_diet').value
     },
     medical_history: {

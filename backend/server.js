@@ -1485,12 +1485,22 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         // Add extraction prompt
         converseContent.push({ text: `
 Customer Profile: ${wf.proposer_name}, Age: ${wf.age}, Gender: ${wf.gender}, Sum Assured: ₹${wf.sum_assured}
-Declared Lifestyle: Smoking: ${wf.lifestyle?.smoking||'unknown'}, Alcohol: ${wf.lifestyle?.alcohol||'unknown'}
 Declared Conditions: ${wf.medical_history?.pre_existing_conditions?.join(', ')||'None declared'}
+Occupation Hazard (declared): ${wf.lifestyle?.occupation_hazard||'unknown'}
 Observations: ${wf.observations || 'None'}
+
+IMPORTANT — LIFESTYLE EXTRACTION: Look for a Personal History, Habits, or Social History section in the document. Extract smoking, alcohol, tobacco, and exercise status from what the examining doctor recorded — NOT from what the patient declared on the form. If the document contains phrases like "smoker", "alcoholic", "tobacco chewer", "non-smoker", "teetotaller", "sedentary" etc, extract them. For TeleMER transcripts, look at Q7 (cigarette/beedi/pan/gutkha/alcohol) answer and follow-up detail.
 
 Extract ALL medical data from the above documents. Return ONLY valid JSON with this structure:
 {
+  "lifestyle": {
+    "smoking": { "status": "never|former|former_gt5|current", "years": null, "packs_per_day": null },
+    "alcohol": { "status": "never|occasional|regular|heavy", "units_per_week": null },
+    "tobacco_chewing": { "status": "never|former|current" },
+    "occupation_hazard": "none|low|moderate|high",
+    "exercise": { "frequency": "none|occasional|regular|daily" },
+    "source": "document_extracted"
+  },
   "blood_chemistry": { "fasting_glucose": {"value": null, "unit": "mg/dL", "flag": "normal|high|low"}, "hba1c": {"value": null, "unit": "%", "flag": ""}, "total_cholesterol": {"value": null, "unit": "mg/dL", "flag": ""}, "hdl": {"value": null, "unit": "mg/dL", "flag": ""}, "ldl": {"value": null, "unit": "mg/dL", "flag": ""}, "triglycerides": {"value": null, "unit": "mg/dL", "flag": ""}, "tc_hdl_ratio": {"value": null, "unit": "ratio", "flag": ""}, "sgot_ast": {"value": null, "unit": "U/L", "flag": ""}, "sgpt_alt": {"value": null, "unit": "U/L", "flag": ""}, "serum_creatinine": {"value": null, "unit": "mg/dL", "flag": ""}, "blood_urea": {"value": null, "unit": "mg/dL", "flag": ""}, "uric_acid": {"value": null, "unit": "mg/dL", "flag": ""}, "total_bilirubin": {"value": null, "unit": "mg/dL", "flag": ""}, "total_protein": {"value": null, "unit": "g/dL", "flag": ""}, "albumin": {"value": null, "unit": "g/dL", "flag": ""}, "hiv": {"value": "non_reactive", "flag": "normal"}, "hbsag": {"value": "non_reactive", "flag": "normal"} },
   "hematology": { "hemoglobin": {"value": null, "unit": "g/dL", "flag": ""}, "rbc_count": {"value": null, "unit": "million/cumm", "flag": ""}, "wbc_count": {"value": null, "unit": "/cumm", "flag": ""}, "platelet_count": {"value": null, "unit": "/cumm", "flag": ""}, "esr": {"value": null, "unit": "mm/hr", "flag": ""} },
   "physical_exam": { "bmi": {"value": null, "ref_range": "18.5-24.9", "flag": ""}, "blood_pressure": {"systolic": {"value": null, "unit": "mmHg", "flag": ""}, "diastolic": {"value": null, "unit": "mmHg", "flag": ""}} },
@@ -1691,7 +1701,8 @@ IMPORTANT: medications_found — list any medications found in documents. Set di
             const findingsText = (a.findings||[]).map(f => `${f.parameter}: ${f.value} (${f.status}) — ${f.implication}`).join('\n');
             const violationsText = (a.guidelines_compliance?.violations||[]).map(v => `${v.rule_name}: value ${v.value} vs threshold ${v.threshold} → ${v.action}`).join('\n');
             const loadingText = (a.loading_factors||[]).map(l => `${l.factor}: ${l.loading}`).join(', ');
-            const lifestyleText = wf.lifestyle ? `Smoking: ${wf.lifestyle.smoking||'unknown'}, Alcohol: ${wf.lifestyle.alcohol||'unknown'}, Tobacco: ${wf.lifestyle.tobacco_chewing||'unknown'}, Occupation hazard: ${wf.lifestyle.occupation_hazard||'unknown'}` : 'Not declared';
+            const _ls = extractedData?.lifestyle || extractedData?.telemer_data?.lifestyle || wf.lifestyle || {};
+            const lifestyleText = `Smoking: ${_ls.smoking?.status||_ls.smoking||'unknown'}, Alcohol: ${_ls.alcohol?.status||_ls.alcohol||'unknown'}, Tobacco: ${_ls.tobacco_chewing?.status||_ls.tobacco_chewing||'unknown'}, Occupation hazard: ${_ls.occupation_hazard||'unknown'}${_ls._source?' ('+_ls._source+')':''}`;
             const medHistText = wf.medical_history?.pre_existing_conditions?.length ? `Pre-existing: ${wf.medical_history.pre_existing_conditions.join(', ')}` : 'No pre-existing conditions declared';
             const compScores = Object.entries(a.component_analysis||{}).map(([n,c]) => `${n.replace(/_/g,' ')}: ${c.score}/${c.max} (${c.percentage}%)`).join(', ');
             let summaryText = '';
@@ -1868,19 +1879,35 @@ async function runAIAnalysis(wf) {
       }
     }
 
-    // Merge declared lifestyle data into extracted data so risk engine can score it
-    if (wf.lifestyle && Object.keys(wf.lifestyle).length > 0) {
-      if (!extractedData.telemer_data) extractedData.telemer_data = {};
+    // Merge lifestyle data — prefer Claude-extracted from document, fall back to declared occupation_hazard only
+    if (!extractedData.telemer_data) extractedData.telemer_data = {};
+    const _claudeLifestyle = extractedData.lifestyle;
+    const _hasClaudeLifestyle = _claudeLifestyle?.smoking?.status && _claudeLifestyle.smoking.status !== 'unknown';
+    if (_hasClaudeLifestyle) {
+      // Claude found lifestyle data in the document — use it directly
       extractedData.telemer_data.lifestyle = {
-        smoking: { status: wf.lifestyle.smoking || 'unknown' },
-        alcohol: { status: wf.lifestyle.alcohol || 'unknown' },
-        tobacco_chewing: { status: wf.lifestyle.tobacco_chewing || 'unknown' },
-        occupation_hazard: wf.lifestyle.occupation_hazard || 'unknown',
-        exercise: { frequency: wf.lifestyle.exercise || 'unknown' }
+        smoking:          _claudeLifestyle.smoking,
+        alcohol:          _claudeLifestyle.alcohol          || { status: 'unknown' },
+        tobacco_chewing:  _claudeLifestyle.tobacco_chewing  || { status: 'unknown' },
+        occupation_hazard: _claudeLifestyle.occupation_hazard || wf.lifestyle?.occupation_hazard || 'unknown',
+        exercise:         _claudeLifestyle.exercise          || { frequency: 'unknown' },
+        _source: 'document_extracted'
       };
-      // Also set at top level for risk engine compatibility
-      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+      console.log(`[Lifestyle] Document-extracted — Smoking: ${_claudeLifestyle.smoking?.status}, Alcohol: ${_claudeLifestyle.alcohol?.status}, Tobacco: ${_claudeLifestyle.tobacco_chewing?.status}`);
+    } else {
+      // Claude found nothing (doc has no habits section) — use occupation_hazard for STP gating, rest unknown
+      extractedData.telemer_data.lifestyle = {
+        smoking:          { status: 'unknown' },
+        alcohol:          { status: 'unknown' },
+        tobacco_chewing:  { status: 'unknown' },
+        occupation_hazard: wf.lifestyle?.occupation_hazard || 'unknown',
+        exercise:         { frequency: 'unknown' },
+        _source: 'declared_fallback'
+      };
+      console.log(`[Lifestyle] No lifestyle data in document — using declared fallback (occupation_hazard: ${wf.lifestyle?.occupation_hazard||'unknown'})`);
     }
+    // Always sync top-level for risk engine compatibility
+    extractedData.lifestyle = extractedData.telemer_data.lifestyle;
     // Merge declared medical history
     if (wf.medical_history && Object.keys(wf.medical_history).length > 0) {
       if (!extractedData.telemer_data) extractedData.telemer_data = {};
@@ -2408,7 +2435,8 @@ app.post('/api/workflow/:id/ai-summary', requireAuth, async (req, res) => {
     const findingsText = (a.findings||[]).map(f => `${f.parameter}: ${f.value} (${f.status}) — ${f.implication}`).join('\n');
     const violationsText = (a.guidelines_compliance?.violations||[]).map(v => `${v.rule_name}: value ${v.value} vs threshold ${v.threshold} → ${v.action}`).join('\n');
     const loadingText = (a.loading_factors||[]).map(l => `${l.factor}: ${l.loading}`).join(', ');
-    const lifestyleText = wf.lifestyle ? `Smoking: ${wf.lifestyle.smoking||'unknown'}, Alcohol: ${wf.lifestyle.alcohol||'unknown'}, Tobacco: ${wf.lifestyle.tobacco_chewing||'unknown'}, Occupation hazard: ${wf.lifestyle.occupation_hazard||'unknown'}` : 'Not declared';
+    const _ls2 = wf.extracted_data?.lifestyle || wf.extracted_data?.telemer_data?.lifestyle || wf.lifestyle || {};
+    const lifestyleText = `Smoking: ${_ls2.smoking?.status||_ls2.smoking||'unknown'}, Alcohol: ${_ls2.alcohol?.status||_ls2.alcohol||'unknown'}, Tobacco: ${_ls2.tobacco_chewing?.status||_ls2.tobacco_chewing||'unknown'}, Occupation hazard: ${_ls2.occupation_hazard||'unknown'}${_ls2._source?' ('+_ls2._source+')':''}`;
     const medHistText = wf.medical_history?.pre_existing_conditions?.length ? `Pre-existing: ${wf.medical_history.pre_existing_conditions.join(', ')}` : 'No pre-existing conditions declared';
     const compScores = Object.entries(a.component_analysis||{}).map(([n,c]) => `${n.replace(/_/g,' ')}: ${c.score}/${c.max} (${c.percentage}%)`).join(', ');
 
