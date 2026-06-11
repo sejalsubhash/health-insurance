@@ -9,11 +9,39 @@
 // Does NOT touch numeric scoring — that is handled by Per-CAT Scoring Config.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { BedrockRuntimeClient, ConverseCommand, AssumeRoleCommand: _AssumeRoleCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
 
-const __bedrockClient = new BedrockRuntimeClient({
-  region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1'
-});
+// ── Bedrock client with cross-account role support (same as server.js) ────────
+let __icmrClient = null;
+let __icmrClientExpiry = 0;
+
+async function getICMRBedrockClient() {
+  const now = Date.now();
+  if (__icmrClient && __icmrClientExpiry > now) return __icmrClient;
+  const region = process.env.BEDROCK_REGION || process.env.AWS_REGION || 'ap-south-1';
+  const roleArn = process.env.BEDROCK_CROSS_ACCOUNT_ROLE_ARN;
+  if (roleArn) {
+    try {
+      const sts = new STSClient({ region });
+      const r = await sts.send(new AssumeRoleCommand({ RoleArn: roleArn, RoleSessionName: 'icmr-analysis', DurationSeconds: 3600 }));
+      __icmrClient = new BedrockRuntimeClient({ region, credentials: {
+        accessKeyId: r.Credentials.AccessKeyId,
+        secretAccessKey: r.Credentials.SecretAccessKey,
+        sessionToken: r.Credentials.SessionToken
+      }});
+      __icmrClientExpiry = new Date(r.Credentials.Expiration).getTime() - 600000;
+    } catch(e) {
+      console.error('[ICMR] STS AssumeRole failed:', e.message, '— using instance credentials');
+      __icmrClient = new BedrockRuntimeClient({ region });
+      __icmrClientExpiry = now + 600000;
+    }
+  } else {
+    __icmrClient = new BedrockRuntimeClient({ region });
+    __icmrClientExpiry = now + 600000;
+  }
+  return __icmrClient;
+}
 
 // ── Default ICMR guidelines (seeded on first run, updatable via Masters UI) ──
 const DEFAULT_ICMR_GUIDELINES = `
@@ -197,6 +225,33 @@ function collectClinicalText(extractedData) {
     texts.push(`URINE PROTEIN: ${urine.protein.value} (flag: ${urine.protein.flag||''})`);
   }
 
+  // Physical exam — BMI + BP (important for ICMR Indian cut-off analysis)
+  const pe = extractedData?.physical_exam;
+  if (pe?.bmi?.value != null) {
+    texts.push(`BMI: ${pe.bmi.value} kg/m2 (ICMR Indian cut-off: ≥23 overweight, ≥25 obese — flag: ${pe.bmi.flag||'unknown'})`);
+  }
+  if (pe?.blood_pressure?.systolic?.value != null) {
+    texts.push(`BLOOD PRESSURE: ${pe.blood_pressure.systolic.value}/${pe.blood_pressure?.diastolic?.value||'?'} mmHg (flag: ${pe.blood_pressure.systolic.flag||'unknown'})`);
+  }
+
+  // Blood chemistry — include flagged values for ICMR context
+  const bc = extractedData?.blood_chemistry || {};
+  const flaggedValues = Object.entries(bc)
+    .filter(([k, v]) => v && v.value != null && v.flag && !['normal','non_reactive'].includes(v.flag))
+    .map(([k, v]) => `${k.replace(/_/g,' ')}: ${v.value} ${v.unit||''} (${v.flag})`);
+  if (flaggedValues.length > 0) {
+    texts.push(`FLAGGED LAB VALUES: ${flaggedValues.join(', ')}`);
+  }
+
+  // Hematology flagged values
+  const hem = extractedData?.hematology || {};
+  const flaggedHem = Object.entries(hem)
+    .filter(([k, v]) => v && v.value != null && v.flag && v.flag !== 'normal')
+    .map(([k, v]) => `${k.replace(/_/g,' ')}: ${v.value} ${v.unit||''} (${v.flag})`);
+  if (flaggedHem.length > 0) {
+    texts.push(`FLAGGED HAEMATOLOGY: ${flaggedHem.join(', ')}`);
+  }
+
   return texts;
 }
 
@@ -266,24 +321,21 @@ RULES:
 - Do not re-score numeric values — only analyse text/qualitative findings.`;
 
   try {
-    const params = {
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: 3000,
-      temperature: 0,
-      system: `You are a senior insurance medical officer trained in ICMR (Indian Council of Medical Research) guidelines for health insurance underwriting in India. You analyse clinical text findings from medical examination reports and classify risk using ICMR guidelines specific to the Indian population.\n\nICMR REFERENCE GUIDELINES:\n${icmrGuidelinesText || DEFAULT_ICMR_GUIDELINES}`,
-      messages: [{ role: 'user', content: prompt }]
-    };
+    const modelId = process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+    const client = await getICMRBedrockClient();
+    const systemText = `You are a senior insurance medical officer trained in ICMR (Indian Council of Medical Research) guidelines for health insurance underwriting in India. You analyse clinical text findings from medical examination reports and classify risk using ICMR guidelines specific to the Indian population.\n\nICMR REFERENCE GUIDELINES:\n${icmrGuidelinesText || DEFAULT_ICMR_GUIDELINES}`;
 
-    const cmd = new InvokeModelCommand({
-      modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
-      contentType: 'application/json',
-      accept: 'application/json',
-      body: JSON.stringify(params)
-    });
+    const converseRes = await client.send(new ConverseCommand({
+      modelId,
+      system: [{ text: systemText }],
+      messages: [{ role: 'user', content: [{ text: prompt }] }],
+      inferenceConfig: { maxTokens: 3000, temperature: 0 }
+    }));
 
-    const res = await __bedrockClient.send(cmd);
-    const responseText = JSON.parse(Buffer.from(res.body).toString('utf8'))
-      .content.filter(b => b.type === 'text').map(b => b.text).join('');
+    const responseText = converseRes.output?.message?.content
+      ?.filter(b => b.text)
+      ?.map(b => b.text)
+      ?.join('') || '';
 
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('No JSON in ICMR analysis response');
