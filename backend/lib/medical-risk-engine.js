@@ -131,80 +131,321 @@ function scoreMedicalParameters(extractedData) {
 }
 
 // Component 2: Lifestyle Risk (20 pts)
+// ─── Hybrid Lifestyle Risk Scorer (C1 — 25 pts normalised from raw 18) ───
+// occupation_hazard and exercise removed — not captured in TeleMER form.
+// Points redistributed: smoking 7→8, alcohol 5→6, tobacco 3→4. Raw max = 18.
+// Normalised to 25 pts using: (raw / 18) * 25
 function scoreLifestyleRisk(extractedData) {
   const results = {};
-  let totalScore = 0;
-  const maxTotal = 20;
+  const rawMax = 18;
+  const normalisedMax = 25;
 
   const lifestyle = extractedData?.telemer_data?.lifestyle || extractedData?.lifestyle || {};
 
-  // Smoking (7 pts) — highest impact
+  // Smoking (8 pts)
   const smoking = lifestyle?.smoking?.status || 'unknown';
-  const smokingScore = smoking === 'never' ? 7 : smoking === 'former' ? 4 : smoking === 'current' ? 1 : 3;
-  results.smoking = { score: smokingScore, max: 7, logic: `Smoking: ${smoking} → ${smokingScore}/7`, status: smoking };
+  let smokingScore;
+  if (smoking === 'never')       smokingScore = 8;
+  else if (smoking === 'former_gt5' || (smoking === 'former' && (lifestyle?.smoking?.years || 0) > 5)) smokingScore = 6;
+  else if (smoking === 'former') smokingScore = 3;
+  else if (smoking === 'current') smokingScore = 0;
+  else smokingScore = 5; // unknown — conservative partial
+  results.smoking = { score: smokingScore, max: 8, logic: `Smoking: ${smoking} → ${smokingScore}/8`, status: smoking };
 
-  // Alcohol (5 pts)
+  // Alcohol (6 pts)
   const alcohol = lifestyle?.alcohol?.status || 'unknown';
-  const alcoholScore = alcohol === 'never' ? 5 : alcohol === 'occasional' ? 4 : alcohol === 'regular' ? 2 : alcohol === 'heavy' ? 0.5 : 3;
-  results.alcohol = { score: alcoholScore, max: 5, logic: `Alcohol: ${alcohol} → ${alcoholScore}/5`, status: alcohol };
+  let alcoholScore;
+  if (alcohol === 'never')        alcoholScore = 6;
+  else if (alcohol === 'occasional') alcoholScore = 5;
+  else if (alcohol === 'regular')    alcoholScore = 2;
+  else if (alcohol === 'heavy')      alcoholScore = 0;
+  else alcoholScore = 4; // unknown — conservative partial
+  results.alcohol = { score: alcoholScore, max: 6, logic: `Alcohol: ${alcohol} → ${alcoholScore}/6`, status: alcohol };
 
-  // Tobacco Chewing (3 pts)
+  // Tobacco / Gutkha / Pan (4 pts)
   const tobacco = lifestyle?.tobacco_chewing?.status || 'unknown';
-  const tobaccoScore = tobacco === 'never' ? 3 : tobacco === 'former' ? 1.5 : tobacco === 'current' ? 0.5 : 2;
-  results.tobacco_chewing = { score: tobaccoScore, max: 3, logic: `Tobacco: ${tobacco} → ${tobaccoScore}/3`, status: tobacco };
+  let tobaccoScore;
+  if (tobacco === 'never')   tobaccoScore = 4;
+  else if (tobacco === 'former') tobaccoScore = 2;
+  else if (tobacco === 'current') tobaccoScore = 0;
+  else tobaccoScore = 3; // unknown — conservative partial
+  results.tobacco_chewing = { score: tobaccoScore, max: 4, logic: `Tobacco: ${tobacco} → ${tobaccoScore}/4`, status: tobacco };
 
-  // Occupation Hazard (3 pts)
-  const hazard = lifestyle?.occupation_hazard || 'unknown';
-  const hazardScore = hazard === 'none' ? 3 : hazard === 'low' ? 2.5 : hazard === 'moderate' ? 1.5 : hazard === 'high' ? 0.5 : 2;
-  results.occupation_hazard = { score: hazardScore, max: 3, logic: `Occupation Hazard: ${hazard} → ${hazardScore}/3`, status: hazard };
+  const rawTotal = results.smoking.score + results.alcohol.score + results.tobacco_chewing.score;
+  const normalisedScore = Math.round((rawTotal / rawMax) * normalisedMax * 100) / 100;
 
-  // Exercise (2 pts)
-  const exercise = lifestyle?.exercise?.frequency || 'unknown';
-  const exerciseScore = exercise === 'daily' ? 2 : exercise === 'regular' ? 1.5 : exercise === 'occasional' ? 1 : exercise === 'none' ? 0.5 : 1;
-  results.exercise = { score: exerciseScore, max: 2, logic: `Exercise: ${exercise} → ${exerciseScore}/2`, status: exercise };
-
-  for (const key in results) {
-    totalScore += results[key].score;
-  }
-
-  return { score: Math.min(totalScore, maxTotal), max: maxTotal, breakdown: results };
+  return {
+    score: Math.min(normalisedScore, normalisedMax),
+    max: normalisedMax,
+    raw_score: rawTotal,
+    raw_max: rawMax,
+    breakdown: results
+  };
 }
 
-// Component 3: Medical History (15 pts)
+// ─── Hybrid Medical History Scorer (C2 — 20 pts normalised from raw 13) ───
+// Family history extracted to its own domain (C7 — scoreHybridFamilyHistory).
+// PEC scoring is now severity-tier based, not count-based.
+// Normalised to 20 pts using: (raw / 13) * 20
 function scoreMedicalHistory(extractedData) {
   const results = {};
-  let totalScore = 0;
-  const maxTotal = 15;
+  const rawMax = 13;
+  const normalisedMax = 20;
 
   const history = extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
+  const callingDate = extractedData?.calling_date || extractedData?.telemer_data?.calling_date || null;
 
-  // Pre-existing Conditions (7 pts)
+  // ── PEC Severity Tier Scoring (9 pts) ───────────────────────────────────────
+  // Tiers: none=0 deduction | resolved/minor=-1 | active-controlled=-2to-3 |
+  //        active-uncontrolled=-4to-5 | acute/post-surgical=-8 + override flag
   const conditions = history?.pre_existing_conditions || [];
-  const activeConditions = conditions.filter(c => c.current_status === 'active' || c.current_status === 'poorly_controlled');
-  const condScore = conditions.length === 0 ? 7 : activeConditions.length === 0 ? 5 : activeConditions.length <= 2 ? 3 : 1;
-  results.pre_existing = { score: condScore, max: 7, logic: `${conditions.length} conditions (${activeConditions.length} active) → ${condScore}/7`, status: conditions.length === 0 ? 'none' : `${conditions.length} found` };
+  let pecScore = 9; // start at max, deduct per condition
 
-  // Family History (4 pts)
-  const family = history?.family_history || {};
-  const familyRisks = ['cardiac', 'diabetes', 'cancer', 'stroke'].filter(k => family[k] === true);
-  const famScore = familyRisks.length === 0 ? 4 : familyRisks.length === 1 ? 3 : familyRisks.length === 2 ? 2 : 1;
-  results.family_history = { score: famScore, max: 4, logic: `${familyRisks.length} family risk factors → ${famScore}/4`, status: familyRisks.length === 0 ? 'clean' : familyRisks.join(', ') };
+  for (const cond of conditions) {
+    const status   = (cond.current_status || '').toLowerCase();
+    const medName  = (cond.medication || '').trim();
+    const sinceYr  = cond.since_year || null;
 
-  // Hospitalizations (2 pts)
-  const hospitalizations = history?.hospitalizations || [];
-  const hospScore = hospitalizations.length === 0 ? 2 : hospitalizations.length <= 2 ? 1 : 0.5;
-  results.hospitalizations = { score: hospScore, max: 2, logic: `${hospitalizations.length} hospitalizations → ${hospScore}/2`, status: `${hospitalizations.length} events` };
+    // Check if post-surgical / acute
+    let surgeryDaysAgo = null;
+    if (cond.surgery_date && callingDate) {
+      const surgDate  = new Date(cond.surgery_date);
+      const callDate  = new Date(callingDate);
+      surgeryDaysAgo  = Math.floor((callDate - surgDate) / (1000 * 60 * 60 * 24));
+    }
+    const isAcute = surgeryDaysAgo !== null && surgeryDaysAgo < 90;
 
-  // Surgical History (2 pts)
-  const surgeries = history?.surgical_history || [];
-  const surgScore = surgeries.length === 0 ? 2 : surgeries.length <= 1 ? 1.5 : 1;
-  results.surgical_history = { score: surgScore, max: 2, logic: `${surgeries.length} surgeries → ${surgScore}/2`, status: `${surgeries.length} events` };
+    // Determine if controlled: check for known target readings
+    const bp = parseFloat(cond.last_reading_systolic || cond.bp_systolic || 0);
+    const hba1c = parseFloat(cond.hba1c || 0);
+    const ppbsl = parseFloat(cond.ppbsl || cond.post_prandial_glucose || 0);
+    const medicationUnknown = !medName || medName === '' || medName.toLowerCase() === 'unknown' || medName.toLowerCase() === 'not known';
 
-  for (const key in results) {
-    totalScore += results[key].score;
+    let tier, deduction;
+    if (isAcute) {
+      tier = 'acute_post_surgical';
+      deduction = 8;
+    } else if (status === 'resolved' || status === 'controlled') {
+      tier = 'resolved_minor';
+      deduction = 1;
+    } else if (status === 'active' || status === 'poorly_controlled' || status === 'uncontrolled') {
+      // Check readings to determine controlled vs uncontrolled
+      let isUncontrolled = false;
+      if (medicationUnknown) isUncontrolled = true;
+      if (bp > 0 && bp > 140) isUncontrolled = true;
+      if (hba1c > 0 && hba1c > 7.5) isUncontrolled = true;
+      if (ppbsl > 0 && ppbsl > 180) isUncontrolled = true;
+      if (status === 'poorly_controlled' || status === 'uncontrolled') isUncontrolled = true;
+
+      if (isUncontrolled) {
+        tier = 'active_uncontrolled';
+        deduction = 4;
+      } else {
+        tier = 'active_controlled';
+        deduction = 2;
+      }
+    } else {
+      // unknown status — treat as active controlled conservatively
+      tier = 'active_controlled';
+      deduction = 2;
+    }
+
+    pecScore = Math.max(0, pecScore - deduction);
+    cond._scored_tier = tier;
+    cond._scored_deduction = deduction;
   }
 
-  return { score: Math.min(totalScore, maxTotal), max: maxTotal, breakdown: results };
+  if (conditions.length === 0) pecScore = 9;
+  results.pre_existing_conditions = {
+    score: pecScore,
+    max: 9,
+    logic: `${conditions.length} condition(s) — severity-tier scoring → ${pecScore}/9`,
+    status: conditions.length === 0 ? 'none' : conditions.map(c => `${c.condition || 'unknown'}(${c._scored_tier})`).join(', ')
+  };
+
+  // ── Hospitalisation History (2 pts) ─────────────────────────────────────────
+  const hospitalizations = history?.hospitalizations || [];
+  let hospScore;
+  if (hospitalizations.length === 0)                          hospScore = 2;
+  else if (hospitalizations.length <= 2)                      hospScore = 1;
+  else                                                         hospScore = 0;
+  results.hospitalizations = { score: hospScore, max: 2, logic: `${hospitalizations.length} hospitalisation(s) → ${hospScore}/2`, status: `${hospitalizations.length} events` };
+
+  // ── Other Systemic Conditions (2 pts) ────────────────────────────────────────
+  // Count yes-answers in systemic question groups (respiratory, renal, neuro, haem, etc.)
+  const systemicFlags = extractedData?.telemer_data?.systemic_flags || extractedData?.systemic_flags || {};
+  const systemicCount = Object.values(systemicFlags).filter(v => v === true).length;
+  let systemicScore;
+  if (systemicCount === 0)      systemicScore = 2;
+  else if (systemicCount === 1) systemicScore = 1;
+  else                           systemicScore = 0;
+  results.systemic_conditions = { score: systemicScore, max: 2, logic: `${systemicCount} systemic flag(s) → ${systemicScore}/2`, status: systemicCount === 0 ? 'clear' : `${systemicCount} flags` };
+
+  const rawTotal = results.pre_existing_conditions.score + results.hospitalizations.score + results.systemic_conditions.score;
+  const normalisedScore = Math.round((rawTotal / rawMax) * normalisedMax * 100) / 100;
+
+  return {
+    score: Math.min(normalisedScore, normalisedMax),
+    max: normalisedMax,
+    raw_score: rawTotal,
+    raw_max: rawMax,
+    breakdown: results
+  };
+}
+
+// ─── Hybrid Cardiovascular Scorer (C4 — 15 pts direct) ───────────────────────
+// Standalone domain covering HTN and cardiac history extracted from Q10–Q14.
+function scoreHybridCardiovascular(extractedData) {
+  const maxTotal = 15;
+  let cvScore = 15;
+  let status = 'no_cardiac_history';
+
+  const history   = extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
+  const conditions = history?.pre_existing_conditions || [];
+  const answers    = extractedData?.telemer_data?.answers || extractedData?.answers || {};
+
+  // Find HTN condition in PEC list
+  const htnCond = conditions.find(c =>
+    (c.condition || '').toLowerCase().includes('hypertension') ||
+    (c.condition || '').toLowerCase().includes('htn') ||
+    (c.condition || '').toLowerCase().includes('blood pressure')
+  );
+
+  // Find cardiac condition
+  const cardiacCond = conditions.find(c =>
+    (c.condition || '').toLowerCase().includes('cardiac') ||
+    (c.condition || '').toLowerCase().includes('heart') ||
+    (c.condition || '').toLowerCase().includes('ischemic') ||
+    (c.condition || '').toLowerCase().includes('coronary') ||
+    (c.condition || '').toLowerCase().includes('stenting') ||
+    (c.condition || '').toLowerCase().includes('cabg')
+  );
+
+  if (cardiacCond) {
+    cvScore = Math.min(cvScore, 2);
+    status = 'cardiac_history';
+  } else if (htnCond) {
+    const bp          = parseFloat(htnCond.last_reading_systolic || htnCond.bp_systolic || 0);
+    const medUnknown  = !(htnCond.medication || '').trim() || (htnCond.medication || '').toLowerCase() === 'unknown' || (htnCond.medication || '').toLowerCase() === 'not known';
+    const sinceYr     = htnCond.since_year || null;
+    const callingYr   = extractedData?.calling_date ? new Date(extractedData.calling_date).getFullYear() : new Date().getFullYear();
+    const durationYrs = sinceYr ? callingYr - sinceYr : null;
+    const isRecentOnset = durationYrs !== null && durationYrs <= 1;
+
+    if (bp > 140 || medUnknown) {
+      cvScore = 5;
+      status = 'htn_uncontrolled';
+    } else if (isRecentOnset) {
+      cvScore = 8;
+      status = 'htn_controlled_recent_onset';
+    } else {
+      cvScore = 10;
+      status = 'htn_controlled';
+    }
+  } else if (answers?.prior_htn_self_stopped) {
+    // Prior HTN, self-discontinued medication, BP now reportedly normal
+    cvScore = 12;
+    status = 'htn_prior_self_stopped';
+  }
+
+  // HTN + DM comorbidity penalty — deduct additional 3 pts
+  const hasDM = conditions.some(c =>
+    (c.condition || '').toLowerCase().includes('diabetes') ||
+    (c.condition || '').toLowerCase().includes('dm') ||
+    (c.condition || '').toLowerCase().includes('blood sugar')
+  );
+  if (htnCond && hasDM) {
+    cvScore = Math.max(0, cvScore - 3);
+    status += '_plus_dm_comorbidity';
+  }
+
+  return {
+    score: Math.max(0, Math.min(cvScore, maxTotal)),
+    max: maxTotal,
+    breakdown: { htn_cardiac_status: { score: cvScore, max: maxTotal, logic: `CV status: ${status} → ${cvScore}/15`, status } }
+  };
+}
+
+// ─── Hybrid Surgical + GI Scorer (C6 — 5 pts direct) ────────────────────────
+function scoreHybridSurgicalGI(extractedData) {
+  const maxTotal = 5;
+  let score = 5;
+  let status = 'no_surgery';
+
+  const history      = extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
+  const surgeries    = history?.surgical_history || [];
+  const callingDate  = extractedData?.calling_date || extractedData?.telemer_data?.calling_date || null;
+
+  if (surgeries.length === 0) {
+    score = 5; status = 'no_surgery';
+  } else {
+    for (const surg of surgeries) {
+      let surgeryDaysAgo = null;
+      if (surg.surgery_date && callingDate) {
+        surgeryDaysAgo = Math.floor((new Date(callingDate) - new Date(surg.surgery_date)) / (1000 * 60 * 60 * 24));
+      }
+      const surgeryYrsAgo = surg.year ? (new Date(callingDate || Date.now()).getFullYear() - surg.year) : null;
+      const recordsAvailable = surg.records_available !== false; // default assume available
+
+      if (surgeryDaysAgo !== null && surgeryDaysAgo < 90) {
+        score = Math.min(score, 0); status = 'surgery_lt_90_days';
+      } else if (surgeryYrsAgo !== null && surgeryYrsAgo < 1) {
+        score = Math.min(score, 1); status = 'surgery_lt_1yr';
+      } else if (surgeryYrsAgo !== null && surgeryYrsAgo < 5 && !recordsAvailable) {
+        score = Math.min(score, 2); status = 'surgery_lt5yr_no_records';
+      } else if (surgeryYrsAgo !== null && surgeryYrsAgo < 5) {
+        score = Math.min(score, 3); status = 'surgery_lt5yr_records_available';
+      } else if (!recordsAvailable) {
+        score = Math.min(score, 3); status = 'surgery_gt5yr_no_records';
+      } else {
+        score = Math.min(score, 4); status = 'surgery_gt5yr_resolved';
+      }
+    }
+  }
+
+  return {
+    score: Math.max(0, score),
+    max: maxTotal,
+    breakdown: { surgical_gi_status: { score, max: maxTotal, logic: `Surgical/GI status: ${status} → ${score}/5`, status } }
+  };
+}
+
+// ─── Hybrid Family History Scorer (C7 — 5 pts direct) ───────────────────────
+function scoreHybridFamilyHistory(extractedData) {
+  const maxTotal = 5;
+  const history = extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
+  const family  = history?.family_history || {};
+
+  const hasCancer      = family.cancer === true || (family.details || '').toLowerCase().includes('cancer') || (family.details || '').toLowerCase().includes('leukaemia') || (family.details || '').toLowerCase().includes('lymphoma');
+  const hasBloodCancer = (family.details || '').toLowerCase().includes('blood cancer') || (family.details || '').toLowerCase().includes('leukaemia') || (family.details || '').toLowerCase().includes('lymphoma');
+  const hasStroke      = family.stroke === true;
+  const hasCardiac     = family.cardiac === true;
+  const hasDiabetes    = family.diabetes === true;
+  const hasHTN         = family.hypertension === true;
+
+  let score, status;
+  if (!hasCancer && !hasStroke && !hasCardiac && !hasDiabetes && !hasHTN && !hasBloodCancer) {
+    score = 5; status = 'none';
+  } else if (hasBloodCancer) {
+    score = 1; status = 'blood_cancer_first_degree';
+  } else if (hasCancer || hasStroke) {
+    score = 2; status = 'cancer_or_stroke_first_degree';
+  } else if (hasCardiac) {
+    score = 3; status = 'cardiac_first_degree';
+  } else if (hasDiabetes && hasHTN) {
+    score = 3; status = 'dm_and_htn_first_degree';
+  } else if (hasDiabetes || hasHTN) {
+    score = 4; status = 'dm_or_htn_first_degree';
+  } else {
+    score = 4; status = 'minor_family_risk';
+  }
+
+  return {
+    score,
+    max: maxTotal,
+    needs_senior_review: hasCancer || hasBloodCancer || hasStroke,
+    breakdown: { family_history_status: { score, max: maxTotal, logic: `Family history: ${status} → ${score}/5`, status } }
+  };
 }
 
 // Component 4: Clinical Correlation (15 pts)
@@ -357,11 +598,8 @@ function scoreDocumentationQuality(extractedData) {
 // If no extractor exists for a factor id, the factor is scored at 50% (partial).
 //
 function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
-  if (!compConfig) return null; // No config at all — fall back to hardcoded scorer
-  // If component exists in DB with weight:0 and no factors (e.g. TeleMER medical),
-  // return zero score instead of null — prevents fallback to hardcoded scorer
-  if (!Array.isArray(compConfig.factors) || compConfig.factors.length === 0) {
-    return { score: 0, max: 0, breakdown: {}, weight: compConfig.weight || 0, zero_weight: true };
+  if (!compConfig || !Array.isArray(compConfig.factors) || compConfig.factors.length === 0) {
+    return null; // No DB config — fall back to hardcoded scorer
   }
 
   // ── Maps factor id → function that extracts the relevant value ─────────────
@@ -748,13 +986,7 @@ function calculateAll(extractedData, correlationData, dynamicConfig) {
     const dbComp = getDbComp(key);
     if (dbComp) {
       const dynResult = scoreComponentFromConfig(dbComp, extractedData, correlationData);
-      if (dynResult && dynResult.zero_weight) {
-        // Component explicitly set to weight:0 with no factors (e.g. TeleMER medical)
-        // Use zero result — do NOT fall back to hardcoded scorer
-        components[key] = dynResult;
-      } else {
-        components[key] = dynResult || hardcodedScorers[key]();
-      }
+      components[key] = dynResult || hardcodedScorers[key]();
     } else {
       components[key] = hardcodedScorers[key]();
     }
@@ -808,23 +1040,17 @@ function calculateAll(extractedData, correlationData, dynamicConfig) {
   else if (normalizedScore >= 50) grade = 'C';
   else grade = 'D';
 
-  // Decision — use Per-CAT thresholds from DB config if available
-  // Falls back to default thresholds if not provided
-  const thr = dynamicConfig?.score_thresholds || null;
-  const approveAt  = thr?.approve        || 80;
-  const referAt    = thr?.refer          || 65;
-  const declineAt  = thr?.decline_below  || 50;
-
+  // Decision
   let decision, loading_percentage = 0;
-  if (normalizedScore >= approveAt) {
+  if (normalizedScore >= 80) {
     decision = 'accept_standard';
     loading_percentage = 0;
-  } else if (normalizedScore >= referAt) {
+  } else if (normalizedScore >= 65) {
     decision = 'accept_with_loading';
-    loading_percentage = Math.round((approveAt - normalizedScore) * 5);
-  } else if (normalizedScore >= declineAt) {
+    loading_percentage = Math.round((80 - normalizedScore) * 5); // 5% per point below 80
+  } else if (normalizedScore >= 50) {
     decision = 'refer';
-    loading_percentage = Math.round((approveAt - normalizedScore) * 5);
+    loading_percentage = Math.round((80 - normalizedScore) * 5);
   } else {
     decision = 'decline';
     loading_percentage = 0;
@@ -978,44 +1204,476 @@ function calculateBiometricRisk(biometricData) {
 
 // ─── TeleMER Risk Assessment (Module 2) ───
 
-function calculateTeleMERRisk(telemerData, voiceAnalysis) {
-  let score = 100;
-  const deductions = [];
+// ─── Contradiction Detection (runs before scoring) ────────────────────────────
+// Checks 8 cross-pairs between free-text answers (Q2/Q3) and structured Yes/No
+// answers (Q12, Q13, Q17, Q4, Q26, Q24/Q25, Q14, Q48).
+// Returns { contradiction_count, contradiction_list[] }
+function scoreContradictions(telemerData) {
+  const contradiction_list = [];
+  const answers  = telemerData?.answers || {};
+  const details  = telemerData?.detail_text || {};
+  const remarks  = (telemerData?.examiner_remarks || telemerData?.q48_remark || '').toLowerCase();
+  const q2_text  = (details?.q2 || telemerData?.free_text_q2 || '').toLowerCase();
+  const q3_text  = (details?.q3 || telemerData?.free_text_q3 || '').toLowerCase();
+  const q5_text  = (details?.q5 || telemerData?.free_text_q5 || '').toLowerCase();
 
-  // Voice consistency
-  const consistency = voiceAnalysis?.consistency_analysis?.overall_score || 100;
-  if (consistency < 70) {
-    const deduct = Math.round((100 - consistency) * 0.3);
-    score -= deduct;
-    deductions.push(`Low consistency score (${consistency}) — -${deduct}`);
+  const combined = q2_text + ' ' + q3_text + ' ' + q5_text + ' ' + remarks;
+
+  function hasKeywords(text, keywords) {
+    return keywords.some(k => text.includes(k));
   }
 
-  // Deception risk
-  const deceptionRisk = voiceAnalysis?.deception_risk_index || 0;
-  if (deceptionRisk > 60) {
-    score -= 20;
-    deductions.push(`High deception risk (${deceptionRisk}) — -20`);
+  // C-01: HTN confirmed in detail but Q12 = No
+  if (hasKeywords(combined, ['htn', 'hypertension', 'high bp', 'blood pressure', 'telmisartan', 'amlodipine', 'enalapril', 'ramipril', 'losartan', 'metoprolol']) &&
+      answers?.q12 === false) {
+    contradiction_list.push({ check_id: 'C-01', description: 'HTN confirmed in Q2/Q3/Q48 detail but Q12 denies hypertension' });
   }
 
-  // Medical conditions from interview
-  const conditions = telemerData?.medical_history?.pre_existing_conditions || [];
-  const activeCount = conditions.filter(c => c.current_status === 'active').length;
-  if (activeCount > 0) {
-    const deduct = Math.min(activeCount * 10, 30);
-    score -= deduct;
-    deductions.push(`${activeCount} active conditions — -${deduct}`);
+  // C-02: DM confirmed in detail but Q13 = No
+  if (hasKeywords(combined, ['diabetes', 'dm', 'blood sugar', 'bsl', 'hba1c', 'metformin', 'glimepiride', 'glipizide', 'insulin', 'dapagliflozin']) &&
+      answers?.q13 === false) {
+    contradiction_list.push({ check_id: 'C-02', description: 'Diabetes confirmed in Q2/Q3/Q48 detail but Q13 denies diabetes' });
   }
 
-  // Cooperativeness
-  if (telemerData?.interviewer_observations?.cooperativeness === 'evasive') {
-    score -= 15;
-    deductions.push('Evasive during interview — -15');
+  // C-03: Gallbladder surgery confirmed but Q17 = No
+  if (hasKeywords(combined, ['gall', 'gallstone', 'cholecyst', 'gallbladder']) &&
+      answers?.q17 === false) {
+    contradiction_list.push({ check_id: 'C-03', description: 'Gallbladder surgery confirmed in Q2/Q5 detail but Q17 denies gallbladder disorder' });
   }
 
-  score = Math.max(0, score);
-  const autoDecisionEligible = score >= 85 && conditions.length === 0;
+  // C-04: Active treatment declared but Q4 (treatment in last 5 yrs) = No
+  const hasActiveTreatment = hasKeywords(combined, ['tab ', 'tablet', 'medicine', 'medication', 'mg od', 'mg bd', 'mg tds', '1od', '1bd', 'once a day', 'twice a day', 'insulin']);
+  if (hasActiveTreatment && answers?.q4 === false) {
+    contradiction_list.push({ check_id: 'C-04', description: 'Active medication confirmed in Q2/Q3 but Q4 denies any treatment in last 5 years' });
+  }
 
-  return { score, deductions, auto_decision_eligible: autoDecisionEligible };
+  // C-05: DM or thyroid confirmed but Q26 (metabolic/endocrine) = No
+  if (hasKeywords(combined, ['diabetes', 'dm', 'blood sugar', 'hypothyroid', 'thyroid', 'levothyroxine', 'thyroxine']) &&
+      answers?.q26 === false) {
+    contradiction_list.push({ check_id: 'C-05', description: 'Metabolic/endocrine condition confirmed in Q2/Q3 but Q26 denies endocrine/metabolic disorder' });
+  }
+
+  // C-06: Spine/lumbar surgery confirmed but Q24/Q25 = No
+  if (hasKeywords(combined, ['spine', 'lumbar', 'sciatica', 'laminectomy', 'discectomy', 'back surgery', 'spinal surgery', 'mri spine']) &&
+      (answers?.q24 === false || answers?.q25 === false)) {
+    contradiction_list.push({ check_id: 'C-06', description: 'Spinal surgery confirmed in Q2/Q5 but Q24/Q25 denies musculoskeletal history' });
+  }
+
+  // C-07: Cardiac/HTN confirmed but Q14 (IHD history) = No
+  if (hasKeywords(combined, ['stenting', 'ptca', 'cabg', 'open heart', 'heart attack', 'myocardial', 'ischemic heart']) &&
+      answers?.q14 === false) {
+    contradiction_list.push({ check_id: 'C-07', description: 'Cardiac procedure/IHD confirmed in detail but Q14 denies IHD/cardiac history' });
+  }
+
+  // C-08: Q48 doctor remarks mention condition not in Q2/Q3 structured answers
+  if (remarks.length > 10) {
+    const remarksAddNew = hasKeywords(remarks, ['htn', 'dm', 'diabetes', 'spine', 'gallstone', 'cancer', 'thyroid', 'kidney', 'liver']) &&
+                          !hasKeywords(q2_text + q3_text, ['htn', 'dm', 'diabetes', 'spine', 'gallstone', 'cancer', 'thyroid', 'kidney', 'liver']);
+    if (remarksAddNew) {
+      contradiction_list.push({ check_id: 'C-08', description: 'Q48 doctor remarks mention condition not explicitly declared in Q2/Q3 responses' });
+    }
+  }
+
+  return {
+    contradiction_count: contradiction_list.length,
+    contradiction_list,
+    contradiction_penalty: Math.min(contradiction_list.length, 2) * 5
+  };
+}
+
+// ─── Hard Override Rules (run before scoring, highest priority) ──────────────
+// Returns { override_action, override_flags[], should_stop }
+// override_action values: AUTO_DEFER | AUTO_DECLINE | MANDATORY_RE_MER | null
+// should_stop: true means do not continue scoring
+function evaluateHardOverrides(telemerData, extractedData, contradictionResult) {
+  const override_flags = [];
+  let override_action  = null;
+  let should_stop      = false;
+
+  const callingDate  = telemerData?.calling_date || extractedData?.calling_date || null;
+  const history      = telemerData?.medical_history || extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
+  const surgeries    = history?.surgical_history || [];
+  const conditions   = history?.pre_existing_conditions || [];
+  const remarks      = (telemerData?.examiner_remarks || telemerData?.q48_remark || '').toLowerCase();
+  const answers      = telemerData?.answers || extractedData?.telemer_data?.answers || {};
+  const proposer     = extractedData?.proposer_name || '';
+  const insured      = extractedData?.insured_name  || extractedData?.telemer_data?.proposer_info?.name || '';
+
+  // PRIORITY 1 — Surgery within 90 days
+  for (const surg of surgeries) {
+    if (surg.surgery_date && callingDate) {
+      const daysAgo = Math.floor((new Date(callingDate) - new Date(surg.surgery_date)) / (1000 * 60 * 60 * 24));
+      if (daysAgo < 90) {
+        override_flags.push({
+          type: 'AUTO_DEFER',
+          priority: 1,
+          reason: `Surgery within 90 days of TeleMER call (${daysAgo} days ago — ${surg.procedure || 'procedure'})`,
+          source: 'surgical_history'
+        });
+        override_action = 'AUTO_DEFER';
+        should_stop     = true;
+      }
+    }
+  }
+
+  // PRIORITY 2 — Identity / voice mismatch flagged by doctor in Q48
+  const identityKeywords = ['voice younger', 'younger than age', 'younger one', 'voice mismatch', 'verify identity', 'identity concern', 'age mismatch'];
+  if (identityKeywords.some(k => remarks.includes(k))) {
+    override_flags.push({
+      type: 'AUTO_DEFER',
+      priority: 2,
+      reason: 'TeleMER doctor flagged identity/voice mismatch in Q48 remarks — mandatory video KYC required',
+      source: 'q48_remark'
+    });
+    if (!override_action) { override_action = 'AUTO_DEFER'; should_stop = true; }
+  }
+
+  // PRIORITY 3 — Active cancer, HIV, end-stage conditions
+  const cancerKeywords    = ['active cancer', 'malignancy', 'cancer treatment', 'chemotherapy', 'radiotherapy'];
+  const hivKeywords       = ['hiv positive', 'aids'];
+  const endStageKeywords  = ['esrd', 'dialysis', 'end stage renal', 'end stage liver', 'lvef below 30'];
+  const combined = remarks + JSON.stringify(conditions).toLowerCase();
+
+  if (answers?.q28 === true || cancerKeywords.some(k => combined.includes(k))) {
+    override_flags.push({ type: 'AUTO_DECLINE', priority: 3, reason: 'Active cancer / malignancy declared', source: 'Q28 or conditions' });
+    if (!override_action) { override_action = 'AUTO_DECLINE'; should_stop = true; }
+  }
+  if (answers?.q18 === true || hivKeywords.some(k => combined.includes(k))) {
+    override_flags.push({ type: 'AUTO_DECLINE', priority: 3, reason: 'HIV/AIDS declared', source: 'Q18' });
+    if (!override_action) { override_action = 'AUTO_DECLINE'; should_stop = true; }
+  }
+  if (endStageKeywords.some(k => combined.includes(k))) {
+    override_flags.push({ type: 'AUTO_DECLINE', priority: 3, reason: 'End-stage organ failure indicated', source: 'conditions' });
+    if (!override_action) { override_action = 'AUTO_DECLINE'; should_stop = true; }
+  }
+
+  // PRIORITY 4 — 3+ contradictions → mandatory re-MER
+  if (contradictionResult.contradiction_count >= 3) {
+    override_flags.push({
+      type: 'MANDATORY_RE_MER',
+      priority: 4,
+      reason: `${contradictionResult.contradiction_count} material contradictions found — TeleMER invalid, fresh call required`,
+      source: 'contradiction_matrix'
+    });
+    if (!override_action) { override_action = 'MANDATORY_RE_MER'; should_stop = true; }
+  }
+
+  // PRIORITY 5 — Medication name unknown for active condition (non-stopping flag)
+  for (const cond of conditions) {
+    const medName = (cond.medication || '').trim().toLowerCase();
+    const isActive = ['active', 'poorly_controlled', 'uncontrolled'].includes((cond.current_status || '').toLowerCase());
+    if (isActive && (!medName || medName === 'unknown' || medName === 'not known')) {
+      override_flags.push({
+        type: 'MANDATORY_DOCS',
+        priority: 5,
+        reason: `Medication name unknown for active condition: ${cond.condition || 'unnamed'}`,
+        source: 'current_medications',
+        action_required: 'Obtain medication name, dose and prescribing doctor details before binding'
+      });
+    }
+  }
+
+  // PRIORITY 6 — Surgery <5 years with records unavailable (non-stopping flag)
+  for (const surg of surgeries) {
+    const surgYrsAgo    = surg.year ? (new Date(callingDate || Date.now()).getFullYear() - surg.year) : null;
+    const recordsAvail  = surg.records_available !== false;
+    if (surgYrsAgo !== null && surgYrsAgo < 5 && !recordsAvail) {
+      override_flags.push({
+        type: 'MANDATORY_DOCS',
+        priority: 6,
+        reason: `Surgery within last 5 years with records unavailable: ${surg.procedure || 'unnamed procedure'} (${surg.year})`,
+        source: 'surgical_history',
+        action_required: 'Obtain discharge summary or statutory declaration'
+      });
+    }
+  }
+
+  // PRIORITY 7 — First-degree family history of cancer/blood cancer/stroke (non-stopping flag)
+  const familyHistory = history?.family_history || {};
+  const familyDetails = (familyHistory.details || '').toLowerCase();
+  if (familyHistory.cancer === true || familyHistory.stroke === true ||
+      familyDetails.includes('cancer') || familyDetails.includes('leukaemia') || familyDetails.includes('lymphoma') || familyDetails.includes('blood cancer')) {
+    override_flags.push({
+      type: 'SENIOR_REVIEW',
+      priority: 7,
+      reason: 'First-degree family history of cancer, blood disorder or stroke — senior underwriter review required',
+      source: 'family_history'
+    });
+  }
+
+  // PRIORITY 8 — Third-party proposal (proposer ≠ insured, non-stopping flag)
+  if (proposer && insured && proposer.toLowerCase().trim() !== insured.toLowerCase().trim()) {
+    override_flags.push({
+      type: 'SENIOR_REVIEW',
+      priority: 8,
+      reason: `Third-party proposal — proposer (${proposer}) ≠ insured (${insured}). Verify insurable interest.`,
+      source: 'proposer_vs_insured'
+    });
+  }
+
+  // Build mandatory docs list from MANDATORY_DOCS flags
+  const mandatory_docs = override_flags
+    .filter(f => f.type === 'MANDATORY_DOCS' && f.action_required)
+    .map(f => f.action_required);
+
+  return { override_action, override_flags, should_stop, mandatory_docs };
+}
+
+// ─── Hybrid TeleMER Risk Calculator — Main Entry Point ───────────────────────
+// Phase 1: C1(25) + C2(20) + C3(20) + C4(15) + C6(5) + C7(5) = 90 pts → scaled to 100
+// Phase 2: add C5 documentation quality (10 pts), remove scaling multiplier
+function calculateTeleMERRisk(telemerData, voiceAnalysis, correlationData) {
+  const extractedData = telemerData; // alias for compatibility with existing component scorers
+
+  // ── Step 1: Contradiction Detection ─────────────────────────────────────────
+  const contradictionResult = scoreContradictions(telemerData);
+
+  // ── Step 2: Hard Override Rules ──────────────────────────────────────────────
+  const overrideResult = evaluateHardOverrides(telemerData, extractedData, contradictionResult);
+
+  // If AUTO_DEFER, AUTO_DECLINE or MANDATORY_RE_MER fires → stop scoring, return override decision
+  if (overrideResult.should_stop) {
+    const overrideDecisionMap = {
+      'AUTO_DEFER':      'defer',
+      'AUTO_DECLINE':    'decline',
+      'MANDATORY_RE_MER':'mandatory_re_mer'
+    };
+    return {
+      risk_score: { total: 0, max: 100, normalized: 0, grade: 'N/A', components: {} },
+      decision: {
+        recommendation:   overrideDecisionMap[overrideResult.override_action] || 'refer',
+        loading_percentage: 0,
+        exclusions:         [],
+        rationale:          `Scoring stopped — override rule fired: ${overrideResult.override_action}. See override_flags for details.`
+      },
+      override_action:      overrideResult.override_action,
+      override_flags:       overrideResult.override_flags,
+      contradiction_count:  contradictionResult.contradiction_count,
+      contradiction_list:   contradictionResult.contradiction_list,
+      mandatory_docs:       overrideResult.mandatory_docs,
+      auto_decision_eligible: false,
+      calculated_at:        new Date().toISOString()
+    };
+  }
+
+  // ── Step 3: Score all 6 components (Phase 1) ────────────────────────────────
+  const C1 = scoreLifestyleRisk(extractedData);
+  const C2 = scoreMedicalHistory(extractedData);
+  const C3 = scoreClinicalCorrelation(correlationData || {}, extractedData);
+  const C4 = scoreHybridCardiovascular(extractedData);
+  const C6 = scoreHybridSurgicalGI(extractedData);
+  const C7 = scoreHybridFamilyHistory(extractedData);
+
+  const components = {
+    lifestyle_risk:       C1,
+    medical_history:      C2,
+    clinical_correlation: C3,
+    cardiovascular:       C4,
+    surgical_gi:          C6,
+    family_history:       C7
+  };
+
+  // ── Step 4: Aggregate — Phase 1 max = 90, scale to 100 ─────────────────────
+  const phase1Total = C1.score + C2.score + C3.score + C4.score + C6.score + C7.score;
+  const penaltyAdjusted = Math.max(0, phase1Total - contradictionResult.contradiction_penalty);
+  const scaledTotal = Math.min(100, Math.round((penaltyAdjusted / 90) * 100 * 100) / 100);
+
+  // ── Step 5: Grade ────────────────────────────────────────────────────────────
+  let grade;
+  if (scaledTotal >= 90) grade = 'A+';
+  else if (scaledTotal >= 80) grade = 'A';
+  else if (scaledTotal >= 70) grade = 'B+';
+  else if (scaledTotal >= 60) grade = 'B';
+  else if (scaledTotal >= 50) grade = 'C';
+  else grade = 'D';
+
+  // ── Step 6: Decision band ────────────────────────────────────────────────────
+  let recommendation, loading_percentage = 0;
+  if (scaledTotal >= 80) {
+    recommendation = 'accept_standard';
+    loading_percentage = 0;
+  } else if (scaledTotal >= 65) {
+    recommendation = 'accept_with_loading';
+    loading_percentage = computeHybridLoading(extractedData, C4, C6, C7);
+  } else if (scaledTotal >= 50) {
+    recommendation = 'refer';
+    loading_percentage = computeHybridLoading(extractedData, C4, C6, C7);
+  } else {
+    recommendation = 'decline';
+    loading_percentage = 0;
+  }
+
+  // Senior review flag from override results
+  const seniorReviewRequired = overrideResult.override_flags.some(f => f.type === 'SENIOR_REVIEW') || C7.needs_senior_review;
+
+  // Build PED list per condition
+  const ped_per_condition = buildPEDList(extractedData);
+
+  // Build pre-policy tests list
+  const pre_policy_tests = buildPrePolicyTests(scaledTotal);
+
+  return {
+    risk_score: {
+      total:      Math.round(penaltyAdjusted * 100) / 100,
+      max:        90,
+      normalized: scaledTotal,
+      grade,
+      components,
+      phase: 1,
+      phase1_note: 'Score scaled from 90-pt base to 100. Phase 2 adds documentation quality (10 pts).'
+    },
+    decision: {
+      recommendation,
+      loading_percentage,
+      exclusions:  [],
+      rationale:   generateHybridRationale(components, scaledTotal, grade, recommendation, contradictionResult, overrideResult)
+    },
+    override_action:       overrideResult.override_action,
+    override_flags:        overrideResult.override_flags,
+    contradiction_count:   contradictionResult.contradiction_count,
+    contradiction_list:    contradictionResult.contradiction_list,
+    contradiction_penalty: contradictionResult.contradiction_penalty,
+    mandatory_docs:        overrideResult.mandatory_docs,
+    pre_policy_tests,
+    ped_per_condition,
+    senior_review_required: seniorReviewRequired,
+    auto_decision_eligible: scaledTotal >= 80 && contradictionResult.contradiction_count === 0 && overrideResult.override_flags.length === 0,
+    calculated_at:          new Date().toISOString()
+  };
+}
+
+// ─── Helper: compute additive loading % from conditions (capped at 50%) ──────
+function computeHybridLoading(extractedData, C4, C6, C7) {
+  let total = 0;
+  const history    = extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
+  const conditions = history?.pre_existing_conditions || [];
+
+  for (const cond of conditions) {
+    const name   = (cond.condition || '').toLowerCase();
+    const status = (cond._scored_tier || cond.current_status || '').toLowerCase();
+    const sinceYr = cond.since_year || null;
+    const callingYr = new Date().getFullYear();
+    const durationYrs = sinceYr ? callingYr - sinceYr : null;
+
+    if (name.includes('hypertension') || name.includes('htn') || name.includes('blood pressure')) {
+      if (status.includes('uncontrolled'))     total += 25;
+      else if (durationYrs && durationYrs <= 1) total += 10;
+      else                                      total += 15;
+    } else if (name.includes('diabetes') || name.includes('dm')) {
+      if (status.includes('uncontrolled'))          total += 35;
+      else if (durationYrs && durationYrs <= 3)     total += 15;
+      else if (durationYrs && durationYrs <= 7)     total += 20;
+      else                                           total += 25;
+    }
+  }
+
+  // BMI loading
+  const bmi = parseFloat(extractedData?.physical_exam?.bmi?.value || extractedData?.bmi || 0);
+  if (bmi >= 35)      total += 20;
+  else if (bmi >= 30) total += 10;
+  else if (bmi >= 25) total += 5;
+
+  // Family history cancer/stroke loading
+  if (C7?.needs_senior_review) total += 5;
+
+  // Multi-PEC comorbidity loading
+  const activePECCount = conditions.filter(c => ['active_controlled','active_uncontrolled'].includes(c._scored_tier || '')).length;
+  if (activePECCount >= 2) total += 5;
+
+  return Math.min(50, total);
+}
+
+// ─── Helper: build PED per condition list ────────────────────────────────────
+function buildPEDList(extractedData) {
+  const ped = [];
+  const history    = extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
+  const conditions = history?.pre_existing_conditions || [];
+  const surgeries  = history?.surgical_history || [];
+
+  for (const cond of conditions) {
+    const name   = (cond.condition || '').toLowerCase();
+    const tier   = cond._scored_tier || cond.current_status || '';
+    const sinceYr = cond.since_year;
+    const callingYr = new Date().getFullYear();
+    const durationYrs = sinceYr ? callingYr - sinceYr : null;
+
+    if (name.includes('hypertension') || name.includes('htn')) {
+      const yrs = tier === 'active_uncontrolled' ? 4 : (durationYrs && durationYrs <= 1) ? 2 : 3;
+      ped.push({ condition: cond.condition || 'Hypertension', ped_years: yrs, exclusion_type: 'time_limited', scope: 'Hypertension and cardiovascular events' });
+    } else if (name.includes('diabetes') || name.includes('dm')) {
+      ped.push({ condition: cond.condition || 'Diabetes', ped_years: 4, exclusion_type: 'time_limited', scope: 'Diabetes and related complications' });
+    } else if (name.includes('thyroid')) {
+      ped.push({ condition: cond.condition || 'Thyroid disorder', ped_years: 2, exclusion_type: 'time_limited', scope: 'Thyroid disorders' });
+    } else if (name.includes('asthma') || name.includes('copd')) {
+      ped.push({ condition: cond.condition || 'Asthma/COPD', ped_years: 2, exclusion_type: 'time_limited', scope: 'Respiratory conditions' });
+    } else if (tier && tier !== 'none') {
+      ped.push({ condition: cond.condition || 'Pre-existing condition', ped_years: 3, exclusion_type: 'time_limited', scope: 'Standard PED per IRDAI' });
+    }
+  }
+
+  for (const surg of surgeries) {
+    const proc = (surg.procedure || '').toLowerCase();
+    const yr   = surg.year || null;
+    const callingYr = new Date().getFullYear();
+    const yrsAgo = yr ? callingYr - yr : null;
+
+    if (proc.includes('spine') || proc.includes('lumbar') || proc.includes('sciatica')) {
+      const pedYrs = yrsAgo && yrsAgo < 1 ? 4 : 3;
+      ped.push({ condition: surg.procedure || 'Spinal surgery', ped_years: pedYrs, exclusion_type: 'time_limited_plus_spine_exclusion', scope: 'Spinal/back conditions' });
+    } else if (proc.includes('gall') || proc.includes('cholecyst')) {
+      const pedYrs = yrsAgo && yrsAgo < 5 ? 3 : 2;
+      ped.push({ condition: surg.procedure || 'Gallbladder surgery', ped_years: pedYrs, exclusion_type: 'time_limited', scope: 'Gallbladder and GI conditions' });
+    }
+  }
+
+  return ped;
+}
+
+// ─── Helper: build pre-policy tests list based on decision band ───────────────
+function buildPrePolicyTests(scaledTotal) {
+  if (scaledTotal >= 80)      return [];
+  if (scaledTotal >= 65)      return ['FBS', 'Urine R/E'];
+  if (scaledTotal >= 50)      return ['FBS', 'HbA1c', 'Lipid profile', 'ECG', 'Urine R/E'];
+  return ['FBS', 'HbA1c', 'Lipid profile', 'ECG', 'Urine R/E', 'Full blood panel', 'Specialist report'];
+}
+
+// ─── Helper: generate plain-English rationale ────────────────────────────────
+function generateHybridRationale(components, score, grade, decision, contradictionResult, overrideResult) {
+  const parts = [];
+  parts.push(`TeleMER Hybrid Score: ${score}/100 (Grade: ${grade})`);
+
+  const compLabels = {
+    lifestyle_risk:       'Lifestyle Risk',
+    medical_history:      'Medical History',
+    clinical_correlation: 'Clinical Correlation',
+    cardiovascular:       'Cardiovascular',
+    surgical_gi:          'Surgical / GI',
+    family_history:       'Family History'
+  };
+  for (const [key, comp] of Object.entries(components)) {
+    parts.push(`${compLabels[key] || key}: ${Math.round(comp.score)}/${comp.max}`);
+  }
+
+  if (contradictionResult.contradiction_count > 0) {
+    parts.push(`Contradictions detected: ${contradictionResult.contradiction_count} (penalty: -${contradictionResult.contradiction_penalty} pts)`);
+  }
+
+  const nonStopFlags = overrideResult.override_flags.filter(f => f.type === 'MANDATORY_DOCS' || f.type === 'SENIOR_REVIEW');
+  for (const flag of nonStopFlags) {
+    parts.push(`${flag.type}: ${flag.reason}`);
+  }
+
+  const decisionText = {
+    accept_standard:    'Recommendation: Accept at standard rates.',
+    accept_with_loading:'Recommendation: Accept with premium loading. Risk factors identified.',
+    refer:              'Recommendation: Refer to senior underwriter. Multiple risk factors require manual review.',
+    decline:            'Recommendation: Decline. Risk profile exceeds acceptable thresholds.',
+    defer:              'Recommendation: Defer. Cannot underwrite until blocking condition is resolved.',
+    mandatory_re_mer:   'Recommendation: Mandatory re-TeleMER. Current TeleMER is invalid due to material contradictions.'
+  };
+  parts.push(decisionText[decision] || `Decision: ${decision}`);
+
+  return parts.join('\n');
 }
 
 // ─── EM (Extra Mortality) Scoring — Scores ALL extracted parameters ───
@@ -1239,6 +1897,11 @@ module.exports = {
   scoreMedicalHistory,
   scoreClinicalCorrelation,
   scoreDocumentationQuality,
+  scoreHybridCardiovascular,
+  scoreHybridSurgicalGI,
+  scoreHybridFamilyHistory,
+  scoreContradictions,
+  evaluateHardOverrides,
   calculateFullEM,
   EM_TABLES
 };

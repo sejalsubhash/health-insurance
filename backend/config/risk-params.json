@@ -1,54 +1,78 @@
 {
-  "version": "2.0.0",
-  "description": "Risk Parameters — Insurance Underwriting (Enhanced)",
+  "version": "2.1.0",
+  "description": "Risk Parameters — Insurance Underwriting (Hybrid TeleMER Update)",
   "loading_table": {
-    "bmi_overweight": { "min_bmi": 25, "max_bmi": 30, "loading_pct": 15 },
-    "bmi_obese_1": { "min_bmi": 30, "max_bmi": 35, "loading_pct": 50 },
-    "bmi_obese_2": { "min_bmi": 35, "max_bmi": 40, "loading_pct": 100 },
-    "bmi_obese_3": { "min_bmi": 40, "loading_pct": -1, "action": "decline" },
-    "smoker_current": { "loading_pct": 75 },
-    "smoker_former_lt5": { "loading_pct": 25 },
-    "hypertension_controlled": { "loading_pct": 25 },
-    "hypertension_uncontrolled": { "loading_pct": 75 },
-    "diabetes_controlled": { "loading_pct": 50 },
-    "diabetes_uncontrolled": { "loading_pct": 100 },
-    "cardiac_history": { "loading_pct": 100 },
-    "cancer_remission_gt5yr": { "loading_pct": 50 },
-    "cancer_remission_lt5yr": { "loading_pct": -1, "action": "decline" }
+    "bmi_overweight":               { "min_bmi": 25, "max_bmi": 30, "loading_pct": 5 },
+    "bmi_obese_1":                  { "min_bmi": 30, "max_bmi": 35, "loading_pct": 10 },
+    "bmi_obese_2":                  { "min_bmi": 35, "max_bmi": 40, "loading_pct": 20 },
+    "bmi_obese_3":                  { "min_bmi": 40, "loading_pct": -1, "action": "decline" },
+    "smoker_current":               { "loading_pct": 75 },
+    "smoker_former_lt5":            { "loading_pct": 25 },
+    "hypertension_controlled_lt1yr":{ "loading_pct": 10 },
+    "hypertension_controlled_gt1yr":{ "loading_pct": 15 },
+    "hypertension_uncontrolled":    { "loading_pct": 25 },
+    "diabetes_controlled_lt3yr":    { "loading_pct": 15 },
+    "diabetes_controlled_3to7yr":   { "loading_pct": 20 },
+    "diabetes_uncontrolled":        { "loading_pct": 35 },
+    "cardiac_history":              { "loading_pct": 100 },
+    "family_history_cancer_stroke": { "loading_pct": 5 },
+    "multiple_pec_comorbidity":     { "loading_pct": 5 },
+    "cancer_remission_gt5yr":       { "loading_pct": 50 },
+    "cancer_remission_lt5yr":       { "loading_pct": -1, "action": "decline" }
   },
   "age_loading": {
-    "18-35": { "loading_pct": 0, "label": "Young adult — standard rates" },
-    "36-45": { "loading_pct": 0, "label": "Adult — standard rates" },
-    "46-50": { "loading_pct": 10, "label": "Middle-aged — minor age loading" },
-    "51-55": { "loading_pct": 25, "label": "Senior — moderate age loading" },
-    "56-60": { "loading_pct": 50, "label": "Pre-retirement — significant age loading" },
+    "18-35": { "loading_pct": 0,   "label": "Young adult — standard rates" },
+    "36-45": { "loading_pct": 0,   "label": "Adult — standard rates" },
+    "46-50": { "loading_pct": 10,  "label": "Middle-aged — minor age loading" },
+    "51-55": { "loading_pct": 25,  "label": "Senior — moderate age loading" },
+    "56-60": { "loading_pct": 50,  "label": "Pre-retirement — significant age loading" },
     "61-65": { "loading_pct": 100, "label": "Elderly — high age loading" },
-    "66+": { "loading_pct": -1, "action": "decline", "label": "Beyond entry age limit" }
+    "66+":   { "loading_pct": -1,  "action": "decline", "label": "Beyond entry age limit" }
   },
   "sum_assured_tiers": {
-    "tier_1": { "max_sum": 2500000, "label": "Up to 25L", "scrutiny": "basic", "required_tests": ["blood_work"], "reinsurance": false },
-    "tier_2": { "max_sum": 10000000, "label": "25L-1Cr", "scrutiny": "enhanced", "required_tests": ["blood_work", "ecg", "urine_analysis"], "reinsurance": false },
-    "tier_3": { "max_sum": 50000000, "label": "1Cr-5Cr", "scrutiny": "full_pphc", "required_tests": ["blood_work", "ecg", "echo", "tmt", "urine_analysis", "chest_xray", "physical_exam"], "reinsurance": false },
-    "tier_4": { "max_sum": 999999999, "label": "Above 5Cr", "scrutiny": "full_medical_reinsurance", "required_tests": ["blood_work", "ecg", "echo", "tmt", "usg_abdomen", "urine_analysis", "chest_xray", "physical_exam"], "reinsurance": true }
+    "tier_1": { "max_sum": 2500000,   "label": "Up to 25L",    "scrutiny": "basic",                    "required_tests": ["blood_work"],                                                                           "reinsurance": false },
+    "tier_2": { "max_sum": 10000000,  "label": "25L-1Cr",      "scrutiny": "enhanced",                 "required_tests": ["blood_work", "ecg", "urine_analysis"],                                                  "reinsurance": false },
+    "tier_3": { "max_sum": 50000000,  "label": "1Cr-5Cr",      "scrutiny": "full_pphc",                "required_tests": ["blood_work", "ecg", "echo", "tmt", "urine_analysis", "chest_xray", "physical_exam"],    "reinsurance": false },
+    "tier_4": { "max_sum": 999999999, "label": "Above 5Cr",    "scrutiny": "full_medical_reinsurance", "required_tests": ["blood_work", "ecg", "echo", "tmt", "usg_abdomen", "urine_analysis", "chest_xray", "physical_exam"], "reinsurance": true }
   },
-  "loading_cap": { "max_loading_pct": 200, "action_above_cap": "decline" },
+  "loading_cap": { "max_loading_pct": 50, "action_above_cap": "refer" },
   "waiting_periods": {
-    "diabetes": { "years": 4, "description": "Diabetes and related complications" },
-    "hypertension": { "years": 4, "description": "Hypertension and cardiovascular events" },
-    "cardiac": { "years": 4, "description": "All cardiac conditions and procedures" },
-    "asthma": { "years": 2, "description": "Asthma and COPD related claims" },
-    "thyroid": { "years": 2, "description": "Thyroid disorders" },
-    "kidney": { "years": 4, "description": "Renal conditions" },
-    "liver": { "years": 4, "description": "Hepatic conditions" },
-    "cancer": { "years": 4, "description": "All cancer related claims" },
-    "standard_ped": { "years": 3, "description": "Standard PED waiting period per IRDAI" }
+    "diabetes":                      { "years": 4, "description": "Diabetes and related complications" },
+    "hypertension":                  { "years": 4, "description": "Hypertension and cardiovascular events" },
+    "cardiac":                       { "years": 4, "description": "All cardiac conditions and procedures" },
+    "asthma":                        { "years": 2, "description": "Asthma and COPD related claims" },
+    "thyroid":                       { "years": 2, "description": "Thyroid disorders" },
+    "kidney":                        { "years": 4, "description": "Renal conditions" },
+    "liver":                         { "years": 4, "description": "Hepatic conditions" },
+    "cancer":                        { "years": 4, "description": "All cancer related claims" },
+    "standard_ped":                  { "years": 3, "description": "Standard PED waiting period per IRDAI" },
+    "hypertension_controlled_lt1yr": { "years": 2, "type": "time_limited",                        "description": "HTN controlled, onset under 1 year" },
+    "hypertension_controlled_gt1yr": { "years": 3, "type": "time_limited",                        "description": "HTN controlled, onset over 1 year" },
+    "hypertension_uncontrolled":     { "years": 4, "type": "time_limited",                        "description": "HTN uncontrolled" },
+    "diabetes_no_complications":     { "years": 4, "type": "time_limited",                        "description": "T2DM with no complications" },
+    "spinal_surgery_resolved":       { "years": 3, "type": "time_limited",                        "description": "Post spinal surgery, resolved" },
+    "spinal_surgery_active":         { "years": 4, "type": "time_limited_plus_spine_exclusion",   "description": "Post spinal surgery, active recovery" },
+    "gallbladder_surgery_gt5yr":     { "years": 2, "type": "time_limited",                        "description": "Cholecystectomy over 5 years ago" },
+    "gallbladder_surgery_lt5yr":     { "years": 3, "type": "time_limited",                        "description": "Cholecystectomy under 5 years ago" },
+    "family_history_cancer_stroke":  { "years": 0, "type": "senior_review_only",                  "description": "No PED — senior review flag only" }
   },
   "gender_thresholds": {
     "hemoglobin": { "male": { "low": 13.0, "normal_min": 13.5, "normal_max": 17.5 }, "female": { "low": 11.5, "normal_min": 12.0, "normal_max": 15.5 } },
     "creatinine": { "male": { "normal_max": 1.3 }, "female": { "normal_max": 1.1 } }
   },
-  "age_bands": { "18-30": { "base_multiplier": 1.0 }, "31-40": { "base_multiplier": 1.1 }, "41-50": { "base_multiplier": 1.3 }, "51-60": { "base_multiplier": 1.6 }, "61-65": { "base_multiplier": 2.0 } },
-  "sum_assured_thresholds": { "non_medical": { "max_age": 45, "max_sum": 2500000 }, "telemer_only": { "max_age": 50, "max_sum": 10000000 }, "pphc_required": { "min_sum": 10000001 }, "full_medical": { "min_sum": 50000000 } },
+  "age_bands": {
+    "18-30": { "base_multiplier": 1.0 },
+    "31-40": { "base_multiplier": 1.1 },
+    "41-50": { "base_multiplier": 1.3 },
+    "51-60": { "base_multiplier": 1.6 },
+    "61-65": { "base_multiplier": 2.0 }
+  },
+  "sum_assured_thresholds": {
+    "non_medical":    { "max_age": 45, "max_sum": 2500000 },
+    "telemer_only":   { "max_age": 50, "max_sum": 10000000 },
+    "pphc_required":  { "min_sum": 10000001 },
+    "full_medical":   { "min_sum": 50000000 }
+  },
   "stp_eligibility_rules": {
     "version": "1.0.0",
     "description": "Hard knockouts and soft flags for STP fast-lane evaluation. Hard knockouts route to NSTP. Soft flags route to telemer. All clean → STP eligible.",
@@ -81,6 +105,15 @@
     "lightweight_score_min_for_stp": 85,
     "max_findings_severity_for_stp": "low"
   },
-  "auto_decline_rules": [ { "condition": "hiv_positive", "action": "decline" }, { "condition": "active_cancer", "action": "decline" }, { "condition": "esrd_dialysis", "action": "decline" }, { "condition": "lvef_below_30", "action": "decline" }, { "condition": "fraud_detected", "action": "decline" } ],
-  "retention_limits": { "life": { "per_life": 20000000, "catastrophe": 100000000 }, "health": { "per_life": 5000000, "catastrophe": 50000000 } }
+  "auto_decline_rules": [
+    { "condition": "hiv_positive",   "action": "decline" },
+    { "condition": "active_cancer",  "action": "decline" },
+    { "condition": "esrd_dialysis",  "action": "decline" },
+    { "condition": "lvef_below_30",  "action": "decline" },
+    { "condition": "fraud_detected", "action": "decline" }
+  ],
+  "retention_limits": {
+    "life":   { "per_life": 20000000,  "catastrophe": 100000000 },
+    "health": { "per_life": 5000000,   "catastrophe": 50000000 }
+  }
 }

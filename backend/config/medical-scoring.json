@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "description": "Medical Risk Scoring Configuration — Insurance Underwriting",
+  "version": "2.0.0",
+  "description": "Medical Risk Scoring Configuration — Hybrid TeleMER Underwriting (Phase 1)",
   "components": {
     "medical_parameters": {
       "weight": 35,
@@ -18,53 +18,79 @@
       }
     },
     "lifestyle_risk": {
-      "weight": 20,
+      "weight": 25,
+      "raw_max": 18,
+      "note": "occupation_hazard and exercise removed — not captured in TeleMER form. Points redistributed to extractable sub-factors.",
       "metrics": {
-        "smoking": { "weight": 7, "type": "categorical", "scores": { "never": 7, "former": 4, "current": 1 } },
-        "alcohol": { "weight": 5, "type": "categorical", "scores": { "never": 5, "occasional": 4, "regular": 2, "heavy": 0.5 } },
-        "tobacco_chewing": { "weight": 3, "type": "categorical", "scores": { "never": 3, "former": 1.5, "current": 0.5 } },
-        "occupation_hazard": { "weight": 3, "type": "categorical", "scores": { "none": 3, "low": 2.5, "moderate": 1.5, "high": 0.5 } },
-        "exercise": { "weight": 2, "type": "categorical", "scores": { "daily": 2, "regular": 1.5, "occasional": 1, "none": 0.5 } }
+        "smoking":         { "weight": 8, "type": "categorical", "scores": { "never": 8, "former_gt5": 6, "former_lt5": 3, "current": 0 } },
+        "alcohol":         { "weight": 6, "type": "categorical", "scores": { "never": 6, "occasional": 5, "regular": 2, "heavy": 0 } },
+        "tobacco_chewing": { "weight": 4, "type": "categorical", "scores": { "never": 4, "former": 2, "current": 0 } }
       }
     },
     "medical_history": {
-      "weight": 15,
+      "weight": 20,
+      "raw_max": 13,
       "metrics": {
-        "pre_existing_conditions": { "weight": 7 },
-        "family_history": { "weight": 4 },
-        "hospitalizations": { "weight": 2 },
-        "surgical_history": { "weight": 2 }
+        "pre_existing_conditions": { "weight": 9, "note": "Severity-tier based — see engine" },
+        "hospitalizations":        { "weight": 2 },
+        "systemic_conditions":     { "weight": 2 }
       }
     },
     "clinical_correlation": {
-      "weight": 15,
+      "weight": 20,
+      "raw_max": 15,
       "metrics": {
-        "drug_condition_match": { "weight": 5 },
+        "drug_condition_match":  { "weight": 5 },
         "multi_system_findings": { "weight": 5 },
-        "cardiovascular_risk": { "weight": 5 }
+        "cardiovascular_risk":   { "weight": 5 }
+      }
+    },
+    "cardiovascular": {
+      "weight": 15,
+      "note": "Standalone domain — HTN and cardiac history. Direct score, no normalisation needed.",
+      "metrics": {
+        "htn_cardiac_status": { "weight": 15 }
+      }
+    },
+    "surgical_gi": {
+      "weight": 5,
+      "note": "Surgical history and GI disorders. Direct score.",
+      "metrics": {
+        "surgical_gi_status": { "weight": 5 }
+      }
+    },
+    "family_history": {
+      "weight": 5,
+      "note": "First-degree family history of hereditary conditions. Direct score.",
+      "metrics": {
+        "family_history_status": { "weight": 5 }
       }
     },
     "documentation_quality": {
-      "weight": 15,
+      "weight": 10,
+      "phase": 2,
+      "note": "Phase 2 — deferred. Contradiction matrix result will feed into consistency sub-factor.",
       "metrics": {
-        "completeness": { "weight": 8 },
-        "module_coverage": { "weight": 4 },
-        "consistency": { "weight": 3 }
+        "completeness":    { "weight": 4 },
+        "module_coverage": { "weight": 2 },
+        "consistency":     { "weight": 4 }
       }
     }
   },
+  "phase1_max": 90,
+  "phase1_scale_multiplier": 1.1111,
   "grade_mapping": {
     "A+": { "min": 90 },
-    "A": { "min": 80 },
+    "A":  { "min": 80 },
     "B+": { "min": 70 },
-    "B": { "min": 60 },
-    "C": { "min": 50 },
-    "D": { "min": 0 }
+    "B":  { "min": 60 },
+    "C":  { "min": 50 },
+    "D":  { "min": 0 }
   },
   "decision_mapping": {
-    "accept_standard": { "min_score": 80 },
-    "accept_with_loading": { "min_score": 65, "loading_per_point": 5 },
-    "refer": { "min_score": 50 },
-    "decline": { "min_score": 0 }
+    "accept_standard":    { "min_score": 80 },
+    "accept_with_loading":{ "min_score": 65, "loading_per_point": 5 },
+    "refer":              { "min_score": 50 },
+    "decline":            { "min_score": 0 }
   }
 }
