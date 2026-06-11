@@ -565,7 +565,7 @@ function updateRequiredTests() {
 
   // Check and highlight mandatory tests
   if (mandatory.length > 0) {
-    hint.textContent = `(${product} policy requires: ${mandatory.map(t => (t||'').toString().replace(/_/g, ' ')).join(', ')})`;
+    hint.textContent = `(${product} policy requires: ${mandatory.map(t => t.replace(/_/g, ' ')).join(', ')})`;
     hint.style.color = 'var(--info)';
     checkboxes.forEach(cb => {
       if (mandatory.includes(cb.value)) {
@@ -596,7 +596,7 @@ function removeCustomTest(test) {
 }
 function renderCustomTests() {
   const el = document.getElementById('customTestsList');
-  el.innerHTML = window._customTests.map(t => `<span class="badge badge-info" style="font-size:12px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" onclick="removeCustomTest('${t}')">${(t||'').toString().replace(/_/g,' ')} <i data-lucide="x"></i></span>`).join('');
+  el.innerHTML = window._customTests.map(t => `<span class="badge badge-info" style="font-size:12px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" onclick="removeCustomTest('${t}')">${t.replace(/_/g,' ')} <i data-lucide="x"></i></span>`).join('');
 }
 
 function stateLabel(state) { const map = { created:['Created','badge-neutral'], stp_evaluating:['STP Evaluating','badge-info'], auto_issued:['<i data-lucide="zap"></i> Auto-Issued','badge-success'], nstp_flagged:['NSTP Flagged','badge-warning'], vendor_assigned:['Vendor Assigned','badge-info'], pphc_scheduled:['PPHC Scheduled','badge-info'], pphc_completed:['PPHC Done','badge-info'], extraction_in_progress:['Extracting','badge-info'], extraction_done:['Extracted','badge-info'], rule_engine_processing:['Processing','badge-info'], auto_approved:['Auto Approved','badge-success'], auto_rejected:['Auto Rejected','badge-danger'], counter_offered:['Counter Offer','badge-warning'], referred:['Referred to UW','badge-warning'], uw_reviewing:['UW Reviewing','badge-info'], uw_approved:['UW Approved','badge-success'], uw_rejected:['UW Rejected','badge-danger'], policy_issued:['Policy Issued','badge-success'], customer_notified:['Notified','badge-neutral'], awaiting_additional_info:['<i data-lucide="hourglass"></i> Awaiting Info','badge-warning'], counter_offer_accepted:['<i data-lucide="check-circle-2"></i> CO Accepted','badge-success'], counter_offer_rejected:['<i data-lucide="x-circle"></i> CO Rejected','badge-danger'], counter_offer_expired:['<i data-lucide="alarm-clock"></i> CO Expired','badge-neutral'], payment_confirmed:['<i data-lucide="indian-rupee"></i> Payment OK','badge-success'] }; const [label, cls] = map[state]||[state,'badge-neutral']; return `<span class="badge ${cls}" style="gap:4px">${label}</span>`; }
@@ -736,6 +736,7 @@ function parseSBIJson(text, fileName) {
     return {
       _file: fileName,
       _status: category === 'STP' ? 'stp' : 'ready',
+      _selected: true,  // STP cases are selected by default (same as ready cases)
       _selected: category !== 'STP',
       name, age, gender, sumAssured, sumLacs, plan, category,
       vendor, quotationNo, nstpReason, hasPED, pedConditions,
@@ -890,7 +891,7 @@ function renderBulkPreview(parsed) {
 
   const statusBadge = (p) => {
     if (p._status === 'ready')     return '<span class="badge badge-success">Ready</span>';
-    if (p._status === 'stp')       return '<span class="badge badge-neutral" title="STP — no PPHC needed, skipped">STP — Skip</span>';
+    if (p._status === 'stp')       return '<span class="badge" style="background:#EFF6FF;color:#1D4ED8;border:1px solid #93C5FD" title="STP — Straight Through Processing, no PPHC required">⚡ STP Case</span>';
     if (p._status === 'duplicate') return `<span class="badge badge-warning" title="${p._dupReason||'Duplicate'}">⚠ Duplicate</span>`;
     if (p._status === 'error')     return `<span class="badge badge-danger" title="${p._error||'Parse error'}">Error</span>`;
     return '';
@@ -899,10 +900,10 @@ function renderBulkPreview(parsed) {
   const catBadgeColor = { 'STP':'var(--text-muted)', 'Tele MER':'#b45309', 'CAT 1':'#1d4ed8', 'CAT 2':'#15803d', 'CAT 3':'#d97706', 'CAT 4':'#b91c1c' };
 
   const rows = parsed.map((p, i) => {
-    const disabled  = p._status === 'stp' || p._status === 'error';
+    const disabled  = p._status === 'error'; // STP cases are now selectable — only errors are disabled
     const rowBg     = p._status === 'error'     ? 'background:var(--danger-bg)'
                     : p._status === 'duplicate'  ? 'background:var(--warning-bg)'
-                    : p._status === 'stp'        ? 'background:var(--surface-alt)'
+                    : p._status === 'stp'        ? 'background:#EFF6FF'  // light blue for STP
                     : '';
     const catColor  = catBadgeColor[p.category] || 'var(--text-muted)';
 
@@ -938,14 +939,14 @@ function renderBulkPreview(parsed) {
   <div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
     <div style="display:flex;gap:8px">
       <span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--success-bg);color:var(--success)">${ready} Ready</span>
-      <span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--surface-alt);color:var(--text-muted)">${stp} STP (skip)</span>
+      <span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:#EFF6FF;color:#1D4ED8;border:1px solid #93C5FD">⚡ ${stp} STP Cases</span>
       ${dups  ? `<span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--warning-bg);color:var(--warning)">${dups} Duplicate</span>` : ''}
       ${errors? `<span style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--danger-bg);color:var(--danger)">${errors} Error</span>` : ''}
     </div>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
       <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:4px;cursor:pointer">
-        <input type="checkbox" id="bulk_select_all" ${selected===ready?'checked':''} onchange="bulkSelectAll(this.checked)">
-        Select all ready
+        <input type="checkbox" id="bulk_select_all" ${selected===(ready+stp)?'checked':''} onchange="bulkSelectAll(this.checked)">
+        Select all
       </label>
       <button class="btn btn-outline btn-sm" onclick="renderBulkUpload()">← Upload Different Files</button>
       <button class="btn btn-accent" id="bulkCreateBtn" onclick="executeBulkCreate()" ${selected===0?'disabled':''}>
@@ -983,7 +984,7 @@ function renderBulkPreview(parsed) {
 function bulkSelectAll(checked) {
   const parsed = window._bulkParsed || [];
   parsed.forEach((p, i) => {
-    if (p._status === 'ready') {
+    if (p._status === 'ready' || p._status === 'stp') {
       p._selected = checked;
       const chk = document.getElementById('bulk_chk_' + i);
       if (chk) chk.checked = checked;
@@ -999,9 +1000,9 @@ function updateBulkSummary() {
   const btn      = document.getElementById('bulkCreateBtn');
   if (countEl) countEl.textContent = selected;
   if (btn)     btn.disabled = selected === 0;
-  const allChk = document.getElementById('bulk_select_all');
-  const ready  = parsed.filter(p => p._status === 'ready').length;
-  if (allChk)  allChk.checked = selected === ready && ready > 0;
+  const allChk   = document.getElementById('bulk_select_all');
+  const selectable = parsed.filter(p => p._status === 'ready' || p._status === 'stp').length;
+  if (allChk)  allChk.checked = selected === selectable && selectable > 0;
 }
 
 // ─── Execute bulk create ──────────────────────────────────────────────────────
@@ -1057,9 +1058,11 @@ async function executeBulkCreate() {
       const res = await api('/api/workflow/create', { method:'POST', body: JSON.stringify(payload) });
 
       if (res.success) {
-        results.created.push({ name: p.name, proposal_id: res.workflow?.proposal_id, vendor: res.vendor_assigned });
+        const isSTP = p._status === 'stp';
+        results.created.push({ name: p.name, proposal_id: res.workflow?.proposal_id, vendor: res.vendor_assigned, is_stp: isSTP });
         resultList.innerHTML += `<div style="font-size:12px;padding:4px 0;color:var(--success)">
-          ✅ ${p.name} → ${res.workflow?.proposal_id} → ${res.vendor_assigned}</div>`;
+          ✅ ${p.name} → ${res.workflow?.proposal_id}${isSTP ? ' <span style="color:#1D4ED8;font-weight:600">⚡ STP</span>' : ' → ' + (res.vendor_assigned||'')}
+          </div>`;
       } else {
         results.failed.push({ name: p.name, error: res.error });
         resultList.innerHTML += `<div style="font-size:12px;padding:4px 0;color:var(--danger)">
@@ -1341,10 +1344,10 @@ function showWfTab(tab, wfId) {
             </div>
             <div style="display:none">
               ${analysis.em_scoring.param_details?.length ? `<table class="data-table" style="margin:0"><thead><tr><th>Parameter</th><th>Value</th><th>Section</th><th>Level</th><th style="text-align:right">EM</th></tr></thead><tbody>
-              ${analysis.em_scoring.param_details.map(p => `<tr><td style="font-weight:500">${(p.param||'').toString().replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.value} ${p.unit||''}</td><td style="font-size:11px;color:var(--text-muted)">${(p.section||'').toString().replace(/_/g,' ')}</td><td><span class="badge ${p.level==='severe'||p.level==='crisis'?'badge-danger':p.level==='moderate'||p.level==='high'?'badge-warning':'badge-info'}">${p.level}</span></td><td style="text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--danger)">+${p.em}</td></tr>`).join('')}
+              ${analysis.em_scoring.param_details.map(p => `<tr><td style="font-weight:500">${p.param.replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.value} ${p.unit||''}</td><td style="font-size:11px;color:var(--text-muted)">${p.section.replace(/_/g,' ')}</td><td><span class="badge ${p.level==='severe'||p.level==='crisis'?'badge-danger':p.level==='moderate'||p.level==='high'?'badge-warning':'badge-info'}">${p.level}</span></td><td style="text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--danger)">+${p.em}</td></tr>`).join('')}
               </tbody></table>` : '<div style="padding:12px;text-align:center;color:var(--text-muted);font-size:13px">No adverse parameters detected — all values within normal range</div>'}
               ${analysis.em_scoring.interactions?.length ? `<div style="padding:8px 14px;background:var(--danger-bg)">
-              ${analysis.em_scoring.interactions.map(i => `<div style="font-size:12px;color:var(--danger);padding:3px 0"><strong><i data-lucide="alert-triangle"></i> ${i.name}</strong> — +${i.em} EM interaction (${(i.system||'').toString().replace(/_/g,' ')})</div>`).join('')}
+              ${analysis.em_scoring.interactions.map(i => `<div style="font-size:12px;color:var(--danger);padding:3px 0"><strong><i data-lucide="alert-triangle"></i> ${i.name}</strong> — +${i.em} EM interaction (${i.system.replace(/_/g,' ')})</div>`).join('')}
               </div>` : ''}
             </div>
           </div>` : ''}
@@ -1420,115 +1423,14 @@ function showWfTab(tab, wfId) {
       const emS = analysis.em_scoring;
       // Extract actual values for display
       const calcEd = wf.extracted_data || {};
-      const bc  = calcEd.blood_chemistry  || {};
-      const hem = calcEd.hematology       || {};
-      const pe  = calcEd.physical_exam    || {};
-      const ur  = calcEd.urine_analysis   || {};
-      const ca  = calcEd.cardiac          || {};
-      const ce  = calcEd.cardiac_extended || {};
-
-      // getRawValue: returns { val, unit } — the actual numeric/text value from the report
-      // Maps Per-CAT factor IDs → exact extracted_data path
-      function getRawValue(factorId) {
-        const map = {
-          // ── Medical Parameters ──────────────────────────────────────────
-          bmi_bp: () => {
-            const bmi = pe.bmi?.value;
-            const sys = pe.blood_pressure?.systolic?.value || pe.blood_pressure_systolic?.value;
-            const dia = pe.blood_pressure?.diastolic?.value || pe.blood_pressure_diastolic?.value;
-            if (bmi && sys) return { val: bmi + ' / ' + sys + (dia?'/'+dia:''), unit: 'kg/m² | mmHg' };
-            if (bmi)        return { val: bmi, unit: 'kg/m²' };
-            if (sys)        return { val: sys + (dia?'/'+dia:''), unit: 'mmHg' };
-            return null;
-          },
-          ecg: () => {
-            const v = ca.ecg?.overall_interpretation || ca.ecg?.findings;
-            return v ? { val: v, unit: '' } : null;
-          },
-          urine_routine: () => {
-            const p = ur.protein?.value; const g = ur.glucose?.value;
-            if (p || g) return { val: [p&&('Protein:'+p), g&&('Glucose:'+g)].filter(Boolean).join(', '), unit: '' };
-            return null;
-          },
-          cbc: () => {
-            const hb  = hem.hemoglobin?.value;
-            const wbc = hem.wbc_count?.value;
-            const plt = hem.platelet_count?.value;
-            if (hb || wbc) return { val: [hb&&('Hb:'+hb), wbc&&('WBC:'+wbc), plt&&('Plt:'+plt)].filter(Boolean).join(', '), unit: 'g/dL | /cumm' };
-            return null;
-          },
-          esr:              () => hem.esr?.value != null ? { val: hem.esr.value, unit: 'mm/hr' } : null,
-          hba1c:            () => bc.hba1c?.value != null ? { val: bc.hba1c.value, unit: '%' } : null,
-          sgpt:             () => (bc.sgpt_alt?.value ?? bc.sgpt?.value) != null ? { val: bc.sgpt_alt?.value ?? bc.sgpt?.value, unit: 'U/L' } : null,
-          serum_creatinine: () => bc.serum_creatinine?.value != null ? { val: bc.serum_creatinine.value, unit: 'mg/dL' } : null,
-          total_cholesterol:() => bc.total_cholesterol?.value != null ? { val: bc.total_cholesterol.value, unit: 'mg/dL' } : null,
-          triglyceride:     () => (bc.triglycerides?.value ?? bc.triglyceride?.value) != null ? { val: bc.triglycerides?.value ?? bc.triglyceride?.value, unit: 'mg/dL' } : null,
-          urine_microalbumin:() => {
-            const v = ur.microalbumin?.value ?? ur.albumin_creatinine_ratio?.value;
-            return v != null ? { val: v, unit: 'mg/g' } : null;
-          },
-          lipid_profile: () => {
-            const ldl = bc.ldl?.value; const hdl = bc.hdl?.value;
-            const tc  = bc.total_cholesterol?.value; const tg = bc.triglycerides?.value;
-            if (!ldl && !hdl && !tc && !tg) return null;
-            return { val: [ldl&&('LDL:'+ldl), hdl&&('HDL:'+hdl), tc&&('TC:'+tc), tg&&('TG:'+tg)].filter(Boolean).join(' | '), unit: 'mg/dL' };
-          },
-          lft: () => {
-            const s = bc.sgpt_alt?.value ?? bc.sgpt?.value;
-            const b = bc.total_bilirubin?.value; const a = bc.albumin?.value;
-            if (!s && !b && !a) return null;
-            return { val: [s&&('SGPT:'+s), b&&('Bili:'+b), a&&('Alb:'+a)].filter(Boolean).join(' | '), unit: 'U/L | mg/dL | g/dL' };
-          },
-          kft: () => {
-            const cr = bc.serum_creatinine?.value;
-            const bu = bc.blood_urea?.value ?? bc.bun?.value;
-            const ua = bc.uric_acid?.value;
-            if (!cr && !bu) return null;
-            return { val: [cr&&('Cr:'+cr), bu&&('BUN:'+bu), ua&&('UA:'+ua)].filter(Boolean).join(' | '), unit: 'mg/dL' };
-          },
-          echo_2d: () => {
-            const lvef = ce.lvef?.value ?? ca.echo?.lvef_percent?.value;
-            return lvef != null ? { val: lvef, unit: '% LVEF' } : null;
-          },
-          psa_pap: () => {
-            const psa = bc.psa?.value;
-            return psa != null ? { val: psa, unit: 'ng/mL' } : null;
-          },
-          // Tele MER
-          smoking:    () => calcEd.lifestyle?.smoking    ? { val: calcEd.lifestyle.smoking, unit: '' }    : null,
-          alcohol:    () => calcEd.lifestyle?.alcohol    ? { val: calcEd.lifestyle.alcohol, unit: '' }    : null,
-          tobacco:    () => calcEd.lifestyle?.tobacco    ? { val: calcEd.lifestyle.tobacco, unit: '' }    : null,
-          occupation: () => calcEd.lifestyle?.occupation ? { val: calcEd.lifestyle.occupation, unit: '' } : null,
-          exercise:   () => calcEd.lifestyle?.exercise   ? { val: calcEd.lifestyle.exercise, unit: '' }   : null,
-          pre_existing:() => {
-            const v = calcEd.medical_history?.pre_existing_conditions;
-            return v?.length ? { val: v.join(', '), unit: '' } : null;
-          },
-          drug_condition: () => {
-            const meds = calcEd.correlation_data?.medications_found;
-            return meds?.length ? { val: meds.map(m=>m.name).join(', '), unit: '' } : null;
-          },
-          cv_risk: () => {
-            const v = calcEd.correlation_data?.cardiovascular_risk?.framingham_risk_category;
-            return v ? { val: v, unit: '' } : null;
-          }
-        };
-        const fn = map[factorId];
-        return fn ? fn() : null;
-      }
-
-      // Keep old actualValues for legacy display sections
       const actualValues = {
-        bmi: pe.bmi?.value, blood_pressure: pe.blood_pressure?.systolic?.value,
-        fasting_glucose: bc.fasting_glucose?.value, hba1c: bc.hba1c?.value,
-        tc_hdl_ratio: bc.tc_hdl_ratio?.value, sgpt: bc.sgpt_alt?.value ?? bc.sgpt?.value,
-        creatinine: bc.serum_creatinine?.value, ecg: ca.ecg?.overall_interpretation,
-        hemoglobin: hem.hemoglobin?.value, urine_protein: ur.protein?.value
+        bmi: calcEd.physical_exam?.bmi?.value, blood_pressure: calcEd.physical_exam?.blood_pressure_systolic?.value || calcEd.physical_exam?.blood_pressure?.systolic?.value,
+        fasting_glucose: calcEd.blood_chemistry?.fasting_glucose?.value, hba1c: calcEd.blood_chemistry?.hba1c?.value,
+        tc_hdl_ratio: calcEd.blood_chemistry?.tc_hdl_ratio?.value, sgpt: calcEd.blood_chemistry?.sgpt_alt?.value,
+        creatinine: calcEd.blood_chemistry?.serum_creatinine?.value, ecg: calcEd.cardiac?.ecg?.overall_interpretation,
+        hemoglobin: calcEd.hematology?.hemoglobin?.value, urine_protein: calcEd.urine_analysis?.protein?.value
       };
-      const paramUnits = {
-        bmi:'kg/m²', blood_pressure:'mmHg', fasting_glucose:'mg/dL', hba1c:'%',
-        tc_hdl_ratio:'ratio', sgpt:'U/L', creatinine:'mg/dL', hemoglobin:'g/dL'
-      };
+      const paramUnits = { bmi:'kg/m²', blood_pressure:'mmHg', fasting_glucose:'mg/dL', hba1c:'%', tc_hdl_ratio:'ratio', sgpt:'U/L', creatinine:'mg/dL', hemoglobin:'g/dL' };
 
       el.innerHTML = `
       <!-- Summary Card -->
@@ -1563,12 +1465,8 @@ function showWfTab(tab, wfId) {
             const emParam = emS?.param_details?.find(p => p.param === pk || p.param === pk.replace(/\s/g,'_'));
             const ranges = {bmi:'18.5-24.9',blood_pressure:'<120 mmHg',fasting_glucose:'<100 mg/dL',hba1c:'<5.7%',tc_hdl_ratio:'<3.5',sgpt:'<40 U/L',creatinine:'<1.3 mg/dL',ecg:'Normal',hemoglobin:'>13 g/dL (M), >12 (F)',urine_protein:'Nil'};
             return `<tr>
-              <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
-              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${(() => {
-                const rv = getRawValue(pk);
-                if (!rv) return '<span style="color:var(--text-muted)">—</span>';
-                return String(rv.val) + (rv.unit ? ' <span style="font-weight:400;font-size:10px;color:var(--text-muted)">' + rv.unit + '</span>' : '');
-              })()}</td>
+              <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${actualValues[pk] !== null && actualValues[pk] !== undefined ? actualValues[pk] + (paramUnits[pk] ? ' <span style="font-weight:400;color:var(--text-muted)">'+paramUnits[pk]+'</span>' : '') : '<span style="color:var(--text-muted)">—</span>'}</td>
               <td style="font-size:11px;color:var(--text-muted)">${ranges[pk]||''}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
               <td><span class="badge ${pv.status==='excellent'||pv.status==='normal'?'badge-success':pv.status==='good'?'badge-info':pv.status==='fair'||pv.status==='borderline'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
@@ -1587,7 +1485,7 @@ function showWfTab(tab, wfId) {
         <div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Section</th><th>Level</th><th style="text-align:right">EM Impact</th></tr></thead><tbody>
           ${emS.param_details.filter(p => !['bmi','systolic_bp','diastolic_bp','fasting_glucose','hba1c','tc_hdl_ratio','sgpt_alt','serum_creatinine','hemoglobin'].includes(p.param)).map(p => `<tr>
-            <td style="font-weight:500">${(p.param||'').toString().replace(/_/g,' ')}</td>
+            <td style="font-weight:500">${p.param.replace(/_/g,' ')}</td>
             <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${p.value} ${p.unit||''}</td>
             <td style="font-size:11px;color:var(--text-muted)">${(p.section||'').replace(/_/g,' ')}</td>
             <td><span class="badge ${p.level==='severe'||p.level==='crisis'?'badge-danger':p.level==='moderate'||p.level==='high'?'badge-warning':'badge-info'}">${p.level}</span></td>
@@ -1603,7 +1501,7 @@ function showWfTab(tab, wfId) {
         <div class="card-header"><h3><i data-lucide="alert-triangle"></i> Risk Interactions <span style="font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--danger)">+${emS.interaction_em} EM</span></h3><span style="font-size:11px;color:var(--text-muted)">Multiple adverse values in same system amplify risk</span></div>
         <div class="card-body" style="padding:0">
           ${emS.interactions.map(i => `<div style="padding:10px 16px;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:flex-start">
-            <div><div style="font-size:13px;font-weight:700;color:var(--danger)">${i.name}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px">System: ${(i.system||'').replace(/_/g,' ')} — conditions: ${i.conditions.map(c=>(c||'').toString().replace(/_/g,' ')).join(' + ')}</div></div>
+            <div><div style="font-size:13px;font-weight:700;color:var(--danger)">${i.name}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px">System: ${(i.system||'').replace(/_/g,' ')} — conditions: ${i.conditions.map(c=>c.replace(/_/g,' ')).join(' + ')}</div></div>
             <div style="font-size:16px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--danger)">+${i.em}</div>
           </div>`).join('')}
         </div>
@@ -1618,7 +1516,7 @@ function showWfTab(tab, wfId) {
         <div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
           ${Object.entries(compA.lifestyle_risk?.breakdown||{}).map(([pk,pv])=>`<tr>
-            <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
+            <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='never'||pv.status==='none'?'badge-success':pv.status==='former'||pv.status==='occasional'||pv.status==='low'?'badge-info':pv.status==='current'||pv.status==='heavy'||pv.status==='high'?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
@@ -1636,7 +1534,7 @@ function showWfTab(tab, wfId) {
         <div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
           ${Object.entries(compA.medical_history?.breakdown||{}).map(([pk,pv])=>`<tr>
-            <td style="font-weight:500">${(pk||'').toString().replace(/_/g,' ')}</td>
+            <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='none'||pv.status==='clean'||pv.status==='0 events'?'badge-success':pv.status?.includes('found')||pv.status?.includes('active')?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
@@ -1688,7 +1586,7 @@ function showWfTab(tab, wfId) {
               <div style="display:flex;align-items:center;gap:8px">
                 <span style="font-size:14px">${icon}</span>
                 <div>
-                  <div style="font-size:13px;font-weight:600">${(pk||'').toString().replace(/_/g,' ')}</div>
+                  <div style="font-size:13px;font-weight:600">${pk.replace(/_/g,' ')}</div>
                   <div style="font-size:11px;color:var(--text-muted)">${pv.logic||''}</div>
                 </div>
               </div>
@@ -1710,7 +1608,7 @@ function showWfTab(tab, wfId) {
 
     case 'processing':
       el.innerHTML = `<div class="card"><div class="card-header"><h3>Processing Timeline</h3></div><div class="card-body">
-        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div><div class="step-label">${(s.state||'').toString().replace(/_/g,' ')}</div><div style="font-size:11px;color:var(--text-muted)">${s.note||''} — by ${s.actor||'system'}</div></div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div></div>`).join('')}
+        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div style="font-size:11px;color:var(--text-muted)">${s.note||''} — by ${s.actor||'system'}</div></div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div></div>`).join('')}
       </div></div>
       <div class="card"><div class="card-header"><h3>Documents (${docs.length})</h3><span style="font-size:11px;color:var(--text-muted)">${wf.docs_submitted?'<i data-lucide="check"></i> Final submitted':'Pending'}</span></div><div class="card-body">
         ${docs.length===0?'<div style="color:var(--text-muted);font-size:13px;text-align:center">No documents</div>':docs.map(d=>{
@@ -1897,7 +1795,7 @@ function showWfTab(tab, wfId) {
           else if (flagged > 0) statusBadge = `<span class="badge badge-danger">${flagged} flagged</span>`;
           else statusBadge = '<span class="badge badge-success">OK</span>';
           return `<div style="margin-bottom:6px;padding:8px 12px;background:var(--surface-alt);border-radius:6px;display:flex;align-items:center;gap:12px">
-            <div style="font-size:13px;font-weight:500;text-transform:capitalize;width:140px">${(section||'').toString().replace(/_/g,' ')}</div>
+            <div style="font-size:13px;font-weight:500;text-transform:capitalize;width:140px">${section.replace(/_/g,' ')}</div>
             <div style="flex:1;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${params.length?Math.round(filled/params.length*100):0}%;background:${filled===0&&params.length>0?'var(--warning)':'var(--success)'};border-radius:3px"></div></div>
             <div style="font-size:12px;color:var(--text-muted);min-width:50px">${filled}/${params.length}</div>
             ${statusBadge}
@@ -1941,7 +1839,7 @@ function showHILSubTab(subtab, wfId) {
       if (skipKeys.includes(section) || !data || typeof data !== 'object') continue;
       const params = Object.entries(data).filter(([k,v]) => v && typeof v === 'object' && 'value' in v);
       if (params.length === 0) continue;
-      html += `<div class="card"><div class="card-header"><h3 style="text-transform:capitalize">${(section||'').toString().replace(/_/g,' ')}</h3></div><div class="card-body">
+      html += `<div class="card"><div class="card-header"><h3 style="text-transform:capitalize">${section.replace(/_/g,' ')}</h3></div><div class="card-body">
         <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Unit</th><th>Reference</th><th>Flag</th></tr></thead><tbody>
         ${params.map(([k,v]) => {
           const fp = `${section}.${k}.value`;
@@ -3088,7 +2986,7 @@ async function viewVendorCase(wfId, vendorId) {
           <div><span style="color:var(--text-muted)">Gender:</span> ${wf.gender}</div>
         </div>
         ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:4px">Observations / Instructions</div><div style="font-size:13px">${esc(wf.observations)}</div></div>` : ''}
-        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${(t||'').toString().replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
+        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${t.replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
         <div style="margin-top:10px;padding:10px;background:${wf.pphc_biometrics?'var(--success-bg)':'var(--surface-alt)'};border-radius:8px;border-left:3px solid ${wf.pphc_biometrics?'var(--success)':'var(--warning)'}">
           <div style="font-size:11px;font-weight:600;color:${wf.pphc_biometrics?'var(--success)':'var(--warning)'};text-transform:uppercase;margin-bottom:6px">Identity Verification — Face Capture</div>
           ${wf.pphc_biometrics
@@ -3097,7 +2995,7 @@ async function viewVendorCase(wfId, vendorId) {
         </div>
       </div></div>
       <div class="card"><div class="card-header"><h3>Workflow Timeline</h3></div><div class="card-body" style="max-height:250px;overflow-y:auto">
-        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${(s.state||'').toString().replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
+        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
       </div></div>
     </div>
 
@@ -3340,8 +3238,11 @@ async function startTeleMERInterview(wfId, vendorId) {
     window._telemerVendorId = vendorId;
     window._telemerStartTime = Date.now();
 
+    // Section accent colours by scoring component
+    const compAccent = { lifestyle:'#1D9E75', history:'#185FA5', clinical:'#D85A30', documentation:'#7F77DD' };
+
     el.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
       <button class="btn btn-outline btn-sm" onclick="viewVendorCase('${wfId}','${vendorId}')">← Back</button>
       <h3><i data-lucide="phone"></i> Tele-MER Interview — ${esc(p.name)}</h3>
       <span class="badge badge-info">${p.age}/${p.gender} | ${p.product} | ₹${(p.sa||0).toLocaleString('en-IN')}</span>
@@ -3352,34 +3253,57 @@ async function startTeleMERInterview(wfId, vendorId) {
     <div class="card" style="margin-bottom:12px">
       <div class="card-header"><h3><i data-lucide="microscope"></i> Diagnostic Triggers Activated</h3><span class="badge badge-warning">${t.total_triggers} trigger(s)</span></div>
       <div class="card-body" style="padding:0"><table class="data-table"><thead><tr><th>Trigger</th><th>Reason</th><th>Additional Tests</th></tr></thead><tbody>
-      ${t.triggered_rules.map(r => `<tr><td style="font-size:11px;font-family:'JetBrains Mono',monospace">${r.id}</td><td style="font-size:12px">${r.reason}</td><td>${r.tests.map(t=>`<span class="badge badge-info" style="font-size:10px;margin:1px">${(t||'').toString().replace(/_/g,' ')}</span>`).join(' ')}</td></tr>`).join('')}
+      ${t.triggered_rules.map(r => `<tr><td style="font-size:11px;font-family:'JetBrains Mono',monospace">${r.id}</td><td style="font-size:12px">${r.reason}</td><td>${(r.tests||[]).map(tt=>`<span class="badge badge-info" style="font-size:10px;margin:1px">${tt.replace(/_/g,' ')}</span>`).join(' ')}</td></tr>`).join('')}
       </tbody></table></div>
     </div>` : ''}
 
     <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
       ${q.total_questions} questions across ${q.sections.length} sections | Estimated duration: ${q.estimated_duration_minutes} minutes
+      ${q.sections.some(s=>s.questions.some(qq=>qq.critical)) ? ' &nbsp;|&nbsp; <span style="color:#C00000;font-weight:500">⚠ Red border = critical question — auto-escalates if answered Yes</span>' : ''}
     </div>
 
-    ${q.sections.map((sec, si) => `
-    <div class="card" style="margin-bottom:12px">
-      <div class="card-header" style="background:var(--surface-alt)"><h3>${sec.section}</h3><span style="font-size:11px;color:var(--text-muted)">${sec.questions.length} question(s)</span></div>
-      <div class="card-body">
+    ${q.sections.map((sec, si) => {
+      const accent = compAccent[sec.component] || 'var(--accent)';
+      return `
+    <div class="card" style="margin-bottom:12px;border-top:3px solid ${accent}">
+      <div class="card-header" style="background:var(--surface-alt);cursor:pointer" onclick="tmToggleSec('tmsec${si}','tmarr${si}')">
+        <h3 style="margin:0">${sec.section}</h3>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--text-muted)">${sec.questions.length} question(s)</span>
+          <span id="tmarr${si}" style="color:var(--text-muted)">▼</span>
+        </div>
+      </div>
+      <div id="tmsec${si}" class="card-body">
         ${sec.questions.map((question, qi) => `
-        <div style="margin-bottom:14px;padding-bottom:14px;${qi < sec.questions.length - 1 ? 'border-bottom:1px solid var(--border-light)':''}">
-          <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px">
-            <span style="font-size:11px;font-weight:700;color:var(--accent);min-width:50px">${question.id}</span>
+        <div style="margin-bottom:14px;padding:10px 12px;border-radius:6px;background:var(--surface-alt);
+          ${question.critical ? 'border-left:3px solid #C00000' : 'border-left:3px solid var(--border-light)'};
+          ${qi < sec.questions.length - 1 ? 'margin-bottom:8px':''}">
+          <div style="display:flex;gap:8px;align-items:flex-start">
+            <span style="font-size:10px;font-weight:700;color:${accent};min-width:64px;padding-top:3px">${question.id}</span>
             <div style="flex:1">
-              <div style="font-size:13px;font-weight:500">${question.q}</div>
+              <div style="font-size:13px;line-height:1.5;${question.critical?'color:#C00000;font-weight:500':''}">${question.critical?'⚠ ':''}${esc(question.q)}</div>
               ${question.type === 'yesno' ? `
-                <div style="display:flex;gap:8px;margin-top:6px">
-                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="tm_${question.id}" value="yes" onchange="document.getElementById('fu_${question.id}').style.display=this.value==='yes'&&'${question.followup||''}'?'block':'none'"> Yes</label>
-                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px"><input type="radio" name="tm_${question.id}" value="no" onchange="document.getElementById('fu_${question.id}').style.display='none'"> No</label>
+                <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+                  <button type="button" id="btnY_${question.id}"
+                    onclick="tmSetAnswer('${question.id}','yes')"
+                    style="min-width:68px;padding:5px 14px;border-radius:6px;border:2px solid var(--border);background:var(--surface);color:var(--text-primary);font-weight:600;cursor:pointer;font-size:12px;transition:all 0.15s">
+                    ✓ Yes
+                  </button>
+                  <button type="button" id="btnN_${question.id}"
+                    onclick="tmSetAnswer('${question.id}','no')"
+                    style="min-width:68px;padding:5px 14px;border-radius:6px;border:2px solid var(--border);background:var(--surface);color:var(--text-primary);font-weight:600;cursor:pointer;font-size:12px;transition:all 0.15s">
+                    ✗ No
+                  </button>
+                  <input type="hidden" id="ans_${question.id}" value="">
                 </div>
-                ${question.followup ? `<div id="fu_${question.id}" style="display:none;margin-top:6px"><textarea class="form-control" id="fv_${question.id}" rows="2" style="font-size:12px" placeholder="${esc(question.followup)}"></textarea></div>` : ''}
+                <div id="fu_${question.id}" style="display:none;margin-top:8px">
+                  <textarea class="form-control" id="fv_${question.id}" rows="2" style="font-size:12px;${question.critical?'border-color:#C00000':''}"
+                    placeholder="${question.followup || 'Please provide details — duration, medication, current status, last follow-up...'}"></textarea>
+                </div>
               ` : question.type === 'choice' ? `
                 <select class="form-control" id="ans_${question.id}" style="margin-top:6px;font-size:12px;max-width:300px">
                   <option value="">— Select —</option>
-                  ${question.options.map(o => `<option value="${o}">${o}</option>`).join('')}
+                  ${(question.options||[]).map(o => `<option value="${o}">${o}</option>`).join('')}
                 </select>
               ` : `
                 <input class="form-control" id="ans_${question.id}" style="margin-top:6px;font-size:12px" placeholder="Enter response">
@@ -3394,16 +3318,44 @@ async function startTeleMERInterview(wfId, vendorId) {
           </div>
         </div>`).join('')}
       </div>
-    </div>`).join('')}
+    </div>`;
+    }).join('')}
 
-    <div class="card" style="margin-bottom:12px;border-left:3px solid var(--warning)">
-      <div class="card-header"><h3><i data-lucide="eye"></i> Examiner Observations</h3></div>
+    <div class="card" style="margin-bottom:12px;border:2px solid var(--accent)">
+      <div class="card-header" style="background:var(--info-bg)"><h3><i data-lucide="clipboard-pen"></i> Examiner Observations & Vendor Remarks</h3></div>
       <div class="card-body">
-        <div class="form-group" style="margin-bottom:10px"><label>Overall Cooperativeness</label>
-          <select class="form-control" id="tm_cooperativeness"><option value="cooperative">Cooperative — answered willingly</option><option value="hesitant">Hesitant — required prompting</option><option value="evasive">Evasive — avoided direct answers</option><option value="hostile">Hostile — uncooperative</option></select>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="font-weight:600">Overall Cooperativeness</label>
+          <select class="form-control" id="tm_cooperativeness" style="margin-top:6px;max-width:380px">
+            <option value="cooperative">✅ Cooperative — answered willingly and clearly</option>
+            <option value="hesitant">⚠ Hesitant — required prompting on some questions</option>
+            <option value="evasive">🔴 Evasive — consistently avoided direct answers</option>
+            <option value="hostile">🔴 Hostile — uncooperative / refused to answer</option>
+          </select>
         </div>
-        <div class="form-group" style="margin-bottom:10px"><label>Additional Notes</label>
-          <textarea class="form-control" id="tm_notes" rows="3" placeholder="Any observations about the proposer's health, demeanor, background noises, coaching, etc."></textarea>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="font-weight:600">Voice Consistency</label>
+          <select class="form-control" id="tm_voice_consistency" style="margin-top:6px;max-width:380px">
+            <option value="100">Consistent throughout — voice and answers aligned</option>
+            <option value="80">Mostly consistent — minor hesitations noted</option>
+            <option value="60">Inconsistent — noticeable stress/hesitation signals</option>
+            <option value="40">Highly inconsistent — significant anomalies detected</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="font-weight:600">Clinical Observations <span style="font-weight:400;color:var(--text-muted)">(background noise, coaching, demeanor)</span></label>
+          <textarea class="form-control" id="tm_clinical_obs" rows="2" style="margin-top:6px"
+            placeholder="e.g. Applicant appeared to be reading answers, coaching voice detected, slurred speech noted..."></textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="font-weight:600">Vendor Remarks — Final Summary <span style="font-weight:400;color:var(--text-muted)">(visible to UW team)</span></label>
+          <textarea class="form-control" id="tm_vendor_remarks" rows="4" style="margin-top:6px;border-color:var(--accent)"
+            placeholder="Summarise key findings. Include any concerns about non-disclosure, contradictions between answers and medications, or flags the UW team should be aware of."></textarea>
+        </div>
+        <div class="form-group">
+          <label style="font-weight:600">Dr. Final Remark</label>
+          <input class="form-control" id="tm_dr_remark" style="margin-top:6px"
+            placeholder="e.g. k/c/o parkinsons, proteinuria, no complication at present.">
         </div>
       </div>
     </div>
@@ -3413,7 +3365,7 @@ async function startTeleMERInterview(wfId, vendorId) {
       <button class="btn btn-outline" onclick="viewVendorCase('${wfId}','${vendorId}')">Cancel</button>
     </div>`;
 
-    // Start timer
+    // Start timer (unchanged)
     window._telemerTimerInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - window._telemerStartTime) / 1000);
       const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
@@ -3423,7 +3375,30 @@ async function startTeleMERInterview(wfId, vendorId) {
       else clearInterval(window._telemerTimerInterval);
     }, 1000);
 
+    renderIcons();
   } catch(e) { el.innerHTML = `<div class="empty-state"><p>Error: ${e.message}</p></div>`; }
+}
+
+// Toggle Yes/No button styles and show/hide remark textarea
+function tmSetAnswer(qId, val) {
+  const hidden = document.getElementById('ans_' + qId);
+  const btnY   = document.getElementById('btnY_' + qId);
+  const btnN   = document.getElementById('btnN_' + qId);
+  const fu     = document.getElementById('fu_'  + qId);
+  if (hidden) hidden.value = val;
+  if (btnY) { btnY.style.background = val==='yes'?'#217346':'var(--surface)'; btnY.style.color = val==='yes'?'#fff':'var(--text-primary)'; btnY.style.borderColor = val==='yes'?'#217346':'var(--border)'; }
+  if (btnN) { btnN.style.background = val==='no' ?'#C00000':'var(--surface)'; btnN.style.color = val==='no' ?'#fff':'var(--text-primary)'; btnN.style.borderColor = val==='no' ?'#C00000':'var(--border)'; }
+  if (fu)   fu.style.display = val==='yes' ? 'block' : 'none';
+}
+
+// Toggle section collapse
+function tmToggleSec(secId, arrId) {
+  const sec = document.getElementById(secId);
+  const arr = document.getElementById(arrId);
+  if (!sec) return;
+  const open = sec.style.display !== 'none';
+  sec.style.display = open ? 'none' : '';
+  if (arr) arr.textContent = open ? '▶' : '▼';
 }
 
 async function submitTeleMER() {
@@ -3432,22 +3407,26 @@ async function submitTeleMER() {
   const duration = Math.floor((Date.now() - (window._telemerStartTime || Date.now())) / 1000);
   clearInterval(window._telemerTimerInterval);
 
-  // Collect all answers
+  // Collect all answers — yes/no from hidden inputs (new Yes/No buttons)
   const answers = {};
+  document.querySelectorAll('[id^="ans_"]').forEach(el => {
+    const qId = el.id.replace('ans_', '');
+    if (!qId || !el.value) return;
+    if (!answers[qId]) answers[qId] = {};
+    answers[qId].value = el.value;
+    const fuEl = document.getElementById('fv_' + qId);
+    if (fuEl?.value?.trim()) answers[qId].followup = fuEl.value.trim();
+  });
+  // Also collect old-style radio answers (fallback for any remaining radio inputs)
   document.querySelectorAll('[name^="tm_"]').forEach(el => {
     if (el.name === 'tm_cooperativeness') return;
     const qId = el.name.replace('tm_', '');
     if (el.type === 'radio' && el.checked) {
       if (!answers[qId]) answers[qId] = {};
-      answers[qId].value = el.value;
+      if (!answers[qId].value) answers[qId].value = el.value;
       const fuEl = document.getElementById('fv_' + qId);
-      if (fuEl?.value) answers[qId].followup = fuEl.value;
+      if (fuEl?.value && !answers[qId].followup) answers[qId].followup = fuEl.value;
     }
-  });
-  // Collect text/select answers
-  document.querySelectorAll('[id^="ans_"]').forEach(el => {
-    const qId = el.id.replace('ans_', '');
-    if (el.value) answers[qId] = { value: el.value };
   });
   // Collect confidence
   document.querySelectorAll('[name^="conf_"]').forEach(el => {
@@ -3460,17 +3439,35 @@ async function submitTeleMER() {
 
   if (Object.keys(answers).length < 3) { showToast('Please answer at least the key questions before submitting', 'error'); return; }
 
+  const voiceConsistency = parseInt(document.getElementById('tm_voice_consistency')?.value || '100', 10);
+
   const observations = {
-    cooperativeness: document.getElementById('tm_cooperativeness')?.value || 'cooperative',
-    notes: document.getElementById('tm_notes')?.value || ''
+    cooperativeness:  document.getElementById('tm_cooperativeness')?.value  || 'cooperative',
+    notes:            document.getElementById('tm_clinical_obs')?.value     || document.getElementById('tm_notes')?.value || '',
+    vendor_remarks:   document.getElementById('tm_vendor_remarks')?.value   || '',
+    dr_final_remark:  document.getElementById('tm_dr_remark')?.value        || '',
+    clinical_notes:   document.getElementById('tm_clinical_obs')?.value     || '',
+    voice_consistency: voiceConsistency
   };
 
   try {
-    const res = await api(`/api/workflow/${wfId}/telemer-submit`, { method: 'POST', body: JSON.stringify({ answers, examiner_observations: observations, call_duration_seconds: duration }) });
+    const res = await api(`/api/workflow/${wfId}/telemer-submit`, {
+      method: 'POST',
+      body: JSON.stringify({
+        answers,
+        examiner_observations: observations,
+        call_duration_seconds: duration,
+        voice_analysis: { consistency_analysis: { overall_score: voiceConsistency } }
+      })
+    });
     if (res.success) {
       let msg = 'Tele-MER interview submitted. ';
-      if (res.recommendation === 'proceed_to_scoring') msg += 'Proceeding to AI scoring.';
-      else msg += 'Escalation to full PPHC recommended: ' + (res.escalation_reasons || []).join(', ');
+      if (res.recommendation === 'proceed_to_scoring') {
+        if (res.score) msg += `Score: ${res.score.score}/100 (Grade ${res.score.grade}) → ${(res.score.decision||'').replace(/_/g,' ')}`;
+        else msg += 'Proceeding to AI scoring.';
+      } else {
+        msg += 'Escalation to full PPHC recommended: ' + (res.escalation_reasons || []).join(', ');
+      }
       showToast(msg, res.recommendation === 'proceed_to_scoring' ? 'success' : 'warning');
       viewVendorCase(wfId, vendorId);
     } else showToast(res.error || 'Submission failed', 'error');
@@ -3751,7 +3748,9 @@ async function viewVendorCases(vendorId) {
   const el = document.getElementById('mainContent'); el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
   try {
     const data = await api(`/api/vendors/${vendorId}/cases`);
-    const v = data.vendor; const cases = data.cases;
+    if (!data || data.error) throw new Error(data?.error || 'Vendor not found');
+    const v = data.vendor; const cases = data.cases || [];
+    if (!v) throw new Error(`Vendor ${vendorId} not found — check vendor configuration`);
     const pending = cases.filter(c => !c.docs_submitted);
     const submitted = cases.filter(c => c.docs_submitted);
     document.getElementById('pageTitle').textContent = `${v.name} — Cases`;
@@ -3775,7 +3774,14 @@ async function viewVendorCases(vendorId) {
     </div>
     <div id="vendorCaseTabContent"></div>`;
     showVendorCaseTab('pending');
-  } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading vendor cases</p></div>'; }
+  } catch(e) {
+    console.error('viewVendorCases error:', e.message);
+    el.innerHTML = `<div class="empty-state">
+      <p style="color:var(--danger);font-weight:500">Error loading vendor cases</p>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:6px">${esc(e.message)}</p>
+      <button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="showPage('vendors')">← Back to Vendors</button>
+    </div>`;
+  }
 }
 
 function showVendorCaseTab(tab) {
@@ -3804,7 +3810,7 @@ function showVendorCaseTab(tab) {
     <td><span class="badge ${c.docs_submitted?'badge-success':'badge-neutral'}">${(c.documents||[]).length} file(s)</span></td>
     <td style="max-width:120px;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.observations||'—'}</td>
     <td style="font-size:11px">${tab==='pending'
-      ? (c.required_tests?.length ? c.required_tests.map(t=>`<span class="badge badge-info" style="font-size:9px;margin:1px">${(t||'').toString().replace(/_/g,' ')}</span>`).join(' ') : '—')
+      ? (c.required_tests?.length ? c.required_tests.map(t=>`<span class="badge badge-info" style="font-size:9px;margin:1px">${t.replace(/_/g,' ')}</span>`).join(' ') : '—')
       : (c.docs_submitted_at ? new Date(c.docs_submitted_at).toLocaleString('en-IN') : '—')}</td>
     <td style="white-space:nowrap">
       <button class="btn btn-sm btn-primary" onclick="viewVendorCase('${c.id}','${vendorId}')">
@@ -3816,7 +3822,7 @@ function showVendorCaseTab(tab) {
 }
 
 // ─── Communications ───
-async function renderComms() { const el=document.getElementById('mainContent'); try { const stats=await api('/api/communications/stats'); const log=await api('/api/communications'); el.innerHTML=`<div class="grid-4" style="margin-bottom:16px"><div class="stat-card"><div class="stat-label">Total Sent</div><div class="stat-value">${stats.total_sent||0}</div></div><div class="stat-card"><div class="stat-label">Email</div><div class="stat-value">${stats.by_channel?.email||0}</div></div><div class="stat-card"><div class="stat-label">SMS</div><div class="stat-value">${stats.by_channel?.sms||0}</div></div><div class="stat-card"><div class="stat-label">Last 24h</div><div class="stat-value">${stats.last_24h||0}</div></div></div><div class="card"><div class="card-header"><h3>Communication Log</h3></div><div class="card-body">${log.length===0?'<div style="color:var(--text-muted);font-size:13px">No communications yet.</div>':log.slice(0,30).map(c=>`<div style="padding:8px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:6px"><div style="display:flex;justify-content:space-between"><div><span class="badge ${c.channel==='email'?'badge-info':'badge-success'}" style="font-size:9px">${c.channel}</span> <strong style="font-size:12px">${(c.template||'').toString().replace(/_/g,' ')}</strong></div><span style="font-size:11px;color:var(--text-muted)">${new Date(c.sent_at).toLocaleString('en-IN')}</span></div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">To: ${c.recipient_name} (${c.recipient})</div></div>`).join('')}</div></div>`; } catch(e) { el.innerHTML='<div class="empty-state"><p>Error</p></div>'; } }
+async function renderComms() { const el=document.getElementById('mainContent'); try { const stats=await api('/api/communications/stats'); const log=await api('/api/communications'); el.innerHTML=`<div class="grid-4" style="margin-bottom:16px"><div class="stat-card"><div class="stat-label">Total Sent</div><div class="stat-value">${stats.total_sent||0}</div></div><div class="stat-card"><div class="stat-label">Email</div><div class="stat-value">${stats.by_channel?.email||0}</div></div><div class="stat-card"><div class="stat-label">SMS</div><div class="stat-value">${stats.by_channel?.sms||0}</div></div><div class="stat-card"><div class="stat-label">Last 24h</div><div class="stat-value">${stats.last_24h||0}</div></div></div><div class="card"><div class="card-header"><h3>Communication Log</h3></div><div class="card-body">${log.length===0?'<div style="color:var(--text-muted);font-size:13px">No communications yet.</div>':log.slice(0,30).map(c=>`<div style="padding:8px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:6px"><div style="display:flex;justify-content:space-between"><div><span class="badge ${c.channel==='email'?'badge-info':'badge-success'}" style="font-size:9px">${c.channel}</span> <strong style="font-size:12px">${c.template.replace(/_/g,' ')}</strong></div><span style="font-size:11px;color:var(--text-muted)">${new Date(c.sent_at).toLocaleString('en-IN')}</span></div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">To: ${c.recipient_name} (${c.recipient})</div></div>`).join('')}</div></div>`; } catch(e) { el.innerHTML='<div class="empty-state"><p>Error</p></div>'; } }
 
 // ─── Rules ───
 // ─── Masters Configuration ───
@@ -4105,7 +4111,7 @@ async function renderMasters() {
             document.getElementById('calibrationSection').innerHTML = `
             <div class="card" style="margin-top:16px"><div class="card-header"><h3><i data-lucide="refresh-cw"></i> Calibration Offsets (${keys.length} profile types)</h3><span style="font-size:11px;color:var(--text-muted)">Auto-adjustments based on UW override patterns</span></div><div class="card-body" style="padding:0">
             <table class="data-table"><thead><tr><th>Profile Type</th><th>Samples</th><th>Override Rate</th><th>Score Adj.</th><th>Loading Adj.</th><th>Dominant Override</th></tr></thead><tbody>
-            ${keys.map(k => { const o = offsets[k]; return `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${k.replace(/_/g,' ')}</td><td style="font-weight:600">${o.sample_size}</td><td><span class="badge ${o.override_rate>=40?'badge-warning':o.override_rate>=20?'badge-info':'badge-neutral'}">${o.override_rate}%</span></td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.score_adjustment>0?'var(--success)':o.score_adjustment<0?'var(--danger)':'var(--text-muted)'}">${o.score_adjustment>0?'+':''}${o.score_adjustment}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.loading_adjustment<0?'var(--success)':o.loading_adjustment>0?'var(--danger)':'var(--text-muted)'}">${o.loading_adjustment>0?'+':''}${o.loading_adjustment}%</td><td>${o.dominant_override?`<span class="badge ${o.dominant_override==='accept_standard'?'badge-success':o.dominant_override==='decline'?'badge-danger':'badge-warning'}">${(o.dominant_override||'').toString().replace(/_/g,' ')}</span>`:'—'}</td></tr>`; }).join('')}
+            ${keys.map(k => { const o = offsets[k]; return `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${k.replace(/_/g,' ')}</td><td style="font-weight:600">${o.sample_size}</td><td><span class="badge ${o.override_rate>=40?'badge-warning':o.override_rate>=20?'badge-info':'badge-neutral'}">${o.override_rate}%</span></td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.score_adjustment>0?'var(--success)':o.score_adjustment<0?'var(--danger)':'var(--text-muted)'}">${o.score_adjustment>0?'+':''}${o.score_adjustment}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:${o.loading_adjustment<0?'var(--success)':o.loading_adjustment>0?'var(--danger)':'var(--text-muted)'}">${o.loading_adjustment>0?'+':''}${o.loading_adjustment}%</td><td>${o.dominant_override?`<span class="badge ${o.dominant_override==='accept_standard'?'badge-success':o.dominant_override==='decline'?'badge-danger':'badge-warning'}">${o.dominant_override.replace(/_/g,' ')}</span>`:'—'}</td></tr>`; }).join('')}
             </tbody></table></div></div>`;
           }
         } catch(e) { /* Calibration data not available yet */ }
@@ -5638,7 +5644,7 @@ async function renderSTP() {
       <div class="stat-card"><div class="stat-label">Pass Rate</div><div class="stat-value" style="color:${(analytics.pass_rate_pct||0)>=30?'var(--success)':'var(--warning)'}">${analytics.pass_rate_pct||0}%</div></div>
       <div class="stat-card"><div class="stat-label">Avg Eval Time</div><div class="stat-value">${analytics.avg_evaluation_ms||0}<span style="font-size:14px;color:var(--text-muted)">ms</span></div></div>
     </div>
-    ${analytics.top_rejection_reasons?.length ? `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>Top STP Rejection Reasons</h3></div><div class="card-body">${analytics.top_rejection_reasons.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>${(r.code||'').toString().replace(/_/g,' ')}</span><strong>${r.count}</strong></div>`).join('')}</div></div>` : ''}
+    ${analytics.top_rejection_reasons?.length ? `<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>Top STP Rejection Reasons</h3></div><div class="card-body">${analytics.top_rejection_reasons.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>${r.code.replace(/_/g,' ')}</span><strong>${r.count}</strong></div>`).join('')}</div></div>` : ''}
     <div class="card">
       <div class="card-header"><h3><i data-lucide="zap"></i> New Proposal — Smart Routing</h3><span style="font-size:11px;color:var(--text-muted)">Evaluates STP eligibility first. Clean profiles auto-issue instantly.</span></div>
       <div class="card-body">
@@ -5722,25 +5728,52 @@ async function submitSTPEval(previewOnly) {
         </div>`;
     } else {
       const isAutoIssued = data.route === 'stp_auto_issued';
-      const bannerColor = isAutoIssued ? 'var(--success)' : 'var(--warning)';
+      const isSTPCase    = isAutoIssued || (data.workflow?.cat_level === 'STP') || (data.route && data.route.includes('stp'));
+      const bannerColor  = isAutoIssued ? 'var(--success)' : 'var(--warning)';
       const wf = data.workflow || {};
-      resultEl.innerHTML = `
-        <div class="card" style="border-color:${bannerColor}">
-          <div style="background:${bannerColor};color:#fff;padding:12px 18px;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:space-between">
-            <span>${isAutoIssued ? '<i data-lucide="zap"></i> AUTO-ISSUED — Policy ' + esc(data.policy_number) : '<i data-lucide="clipboard-list"></i> Routed to ' + (data.route||'').replace(/_/g,' ').toUpperCase()}</span>
-            ${stateLabel(wf.state)}
-          </div>
-          <div class="card-body">
-            <div style="font-size:13px;margin-bottom:8px">${esc(data.message)}</div>
-            ${isAutoIssued ? `<div style="font-size:12px;color:var(--text-muted)">Score: ${data.lightweight_analysis?.score}/100 (${data.lightweight_analysis?.grade})</div>` : ''}
-            ${data.evaluation?.blocking_factors?.length ? '<div style="margin-top:8px;font-size:12px;color:var(--text-muted)">' + data.evaluation.blocking_factors.map(b=>`• ${esc(b.detail)}`).join('<br>') + '</div>' : ''}
-            <div style="margin-top:10px;display:flex;gap:8px">
-              <button class="btn btn-outline btn-sm" onclick="viewWorkflow('${wf.id}')">View Workflow</button>
-              ${isAutoIssued ? `<button class="btn btn-success btn-sm" onclick="exportWorkflowPdf('${wf.id}','${wf.proposal_id}')"><i data-lucide="file-text"></i> Export PDF</button>` : ''}
+
+      // ── STP Notification banner — shown for any STP case ─────────────────
+      const stpNotification = isSTPCase ? `
+        <div style="display:flex;align-items:flex-start;gap:14px;padding:14px 18px;
+          background:#EFF6FF;border:2px solid #3B82F6;border-radius:10px;margin-bottom:14px">
+          <div style="font-size:28px;flex-shrink:0">⚡</div>
+          <div>
+            <div style="font-size:15px;font-weight:700;color:#1D4ED8;margin-bottom:4px">
+              STP Case Detected
+            </div>
+            <div style="font-size:13px;color:#1e40af;line-height:1.5">
+              This proposal qualifies as a <strong>Straight Through Processing (STP)</strong> case
+              based on Age, Sum Assured and Product parameters.
+              No medical examination (PPHC) is required.
+              ${isAutoIssued ? 'The policy has been <strong>auto-issued</strong> instantly.' : 'The case has been routed via the STP fast lane.'}
+            </div>
+            <div style="font-size:11px;color:#3B82F6;margin-top:6px">
+              CAT Level: ${wf.cat_level || 'STP'} &nbsp;|&nbsp; Route: ${(data.route||'').replace(/_/g,' ')}
             </div>
           </div>
-        </div>`;
-      showToast(isAutoIssued ? `Policy ${data.policy_number} auto-issued!` : `Routed to ${data.route}`, isAutoIssued ? 'success' : 'info');
+        </div>` : '';
+
+      resultEl.innerHTML = stpNotification +
+        '<div class="card" style="border-color:' + bannerColor + '">' +
+          '<div style="background:' + bannerColor + ';color:#fff;padding:12px 18px;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:space-between">' +
+            '<span>' + (isAutoIssued ? '<i data-lucide="zap"></i> AUTO-ISSUED — Policy ' + esc(data.policy_number) : '<i data-lucide="clipboard-list"></i> Routed to ' + (data.route||'').replace(/_/g,' ').toUpperCase()) + '</span>' +
+            stateLabel(wf.state) +
+          '</div>' +
+          '<div class="card-body">' +
+            '<div style="font-size:13px;margin-bottom:8px">' + esc(data.message) + '</div>' +
+            (isAutoIssued ? '<div style="font-size:12px;color:var(--text-muted)">Score: ' + (data.lightweight_analysis?.score||'—') + '/100 (' + (data.lightweight_analysis?.grade||'') + ')</div>' : '') +
+            (data.evaluation?.blocking_factors?.length ? '<div style="margin-top:8px;font-size:12px;color:var(--text-muted)">' + data.evaluation.blocking_factors.map(b => '• ' + esc(b.detail)).join('<br>') + '</div>' : '') +
+            '<div style="margin-top:10px;display:flex;gap:8px">' +
+              '<button class="btn btn-outline btn-sm" onclick="viewWorkflow(\'' + wf.id + '\')">View Workflow</button>' +
+              (isAutoIssued ? '<button class="btn btn-success btn-sm" onclick="exportWorkflowPdf(\'' + wf.id + '\',\'' + wf.proposal_id + '\')"><i data-lucide="file-text"></i> Export PDF</button>' : '') +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      if (isSTPCase) {
+        showToast('STP Case — ' + (isAutoIssued ? 'Policy auto-issued!' : 'Routed via STP fast lane'), 'success');
+      } else {
+        showToast(isAutoIssued ? 'Policy ' + (data.policy_number||'') + ' auto-issued!' : 'Routed to ' + (data.route||''), isAutoIssued ? 'success' : 'info');
+      }
     }
   } catch(e) { resultEl.innerHTML = `<div style="color:var(--danger);padding:12px">Error: ${esc(e.message)}</div>`; }
 }
