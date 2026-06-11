@@ -1494,7 +1494,7 @@ Extract smoking, alcohol, tobacco, exercise from what the examining doctor recor
 For TeleMER: read Q7 (cigarette/beedi/pan/gutkha/alcohol) follow-up detail.
 
 Return ONLY valid JSON — no markdown, no explanation, no code fences.
-Structure:
+Structure (use compact form — for each lab value give ONLY {"v": value, "f": "normal|high|low|borderline"}; do NOT output units, server knows them):
 {
   "lifestyle": {
     "smoking": { "status": "never|former|former_gt5|current", "years": null, "packs_per_day": null },
@@ -1504,22 +1504,20 @@ Structure:
     "exercise": { "frequency": "none|occasional|regular|daily" },
     "source": "document_extracted"
   },
-  "blood_chemistry": { "fasting_glucose": {"value": null, "unit": "mg/dL", "flag": "normal|high|low"}, "hba1c": {"value": null, "unit": "%", "flag": ""}, "total_cholesterol": {"value": null, "unit": "mg/dL", "flag": ""}, "hdl": {"value": null, "unit": "mg/dL", "flag": ""}, "ldl": {"value": null, "unit": "mg/dL", "flag": ""}, "triglycerides": {"value": null, "unit": "mg/dL", "flag": ""}, "tc_hdl_ratio": {"value": null, "unit": "ratio", "flag": ""}, "sgot_ast": {"value": null, "unit": "U/L", "flag": ""}, "sgpt_alt": {"value": null, "unit": "U/L", "flag": ""}, "serum_creatinine": {"value": null, "unit": "mg/dL", "flag": ""}, "blood_urea": {"value": null, "unit": "mg/dL", "flag": ""}, "uric_acid": {"value": null, "unit": "mg/dL", "flag": ""}, "total_bilirubin": {"value": null, "unit": "mg/dL", "flag": ""}, "total_protein": {"value": null, "unit": "g/dL", "flag": ""}, "albumin": {"value": null, "unit": "g/dL", "flag": ""}, "hiv": {"value": "non_reactive", "flag": "normal"}, "hbsag": {"value": "non_reactive", "flag": "normal"} },
-  "hematology": { "hemoglobin": {"value": null, "unit": "g/dL", "flag": ""}, "rbc_count": {"value": null, "unit": "million/cumm", "flag": ""}, "wbc_count": {"value": null, "unit": "/cumm", "flag": ""}, "platelet_count": {"value": null, "unit": "/cumm", "flag": ""}, "esr": {"value": null, "unit": "mm/hr", "flag": ""} },
-  "physical_exam": { "bmi": {"value": null, "ref_range": "18.5-24.9", "flag": ""}, "blood_pressure": {"systolic": {"value": null, "unit": "mmHg", "flag": ""}, "diastolic": {"value": null, "unit": "mmHg", "flag": ""}} },
-  "urine_analysis": { "protein": {"value": "nil", "flag": "normal"}, "glucose": {"value": "nil", "flag": "normal"} },
-  "cardiac": { "ecg": {"overall_interpretation": "normal", "findings": ""} },
-  "liver_extended": { "ggt": {"value": null, "unit": "U/L", "flag": ""}, "alp": {"value": null, "unit": "U/L", "flag": ""} },
-  "thyroid": { "tsh": {"value": null, "unit": "mIU/L", "flag": ""} },
-  "cardiac_extended": { "lvef": {"value": null, "unit": "%", "flag": ""}, "tmt": {"result": "not_done", "findings": ""} },
-  "chest_xray": { "interpretation": "normal", "findings": "" },
+  "blood_chemistry": { "fasting_glucose": {"v": null, "f": ""}, "hba1c": {"v": null, "f": ""}, "total_cholesterol": {"v": null, "f": ""}, "hdl": {"v": null, "f": ""}, "ldl": {"v": null, "f": ""}, "triglycerides": {"v": null, "f": ""}, "tc_hdl_ratio": {"v": null, "f": ""}, "sgot_ast": {"v": null, "f": ""}, "sgpt_alt": {"v": null, "f": ""}, "serum_creatinine": {"v": null, "f": ""}, "blood_urea": {"v": null, "f": ""}, "uric_acid": {"v": null, "f": ""}, "total_bilirubin": {"v": null, "f": ""}, "total_protein": {"v": null, "f": ""}, "albumin": {"v": null, "f": ""}, "hiv": {"v": "non_reactive", "f": "normal"}, "hbsag": {"v": "non_reactive", "f": "normal"} },
+  "hematology": { "hemoglobin": {"v": null, "f": ""}, "rbc_count": {"v": null, "f": ""}, "wbc_count": {"v": null, "f": ""}, "platelet_count": {"v": null, "f": ""}, "esr": {"v": null, "f": ""} },
+  "physical_exam": { "bmi": {"v": null, "f": ""}, "blood_pressure": {"systolic": {"v": null, "f": ""}, "diastolic": {"v": null, "f": ""}} },
+  "urine_analysis": { "protein": {"v": "nil", "f": "normal"}, "glucose": {"v": "nil", "f": "normal"} },
+  "cardiac": { "ecg": {"v": "normal", "f": ""} },
+  "liver_extended": { "ggt": {"v": null, "f": ""}, "alp": {"v": null, "f": ""} },
+  "thyroid": { "tsh": {"v": null, "f": ""} },
+  "cardiac_extended": { "lvef": {"v": null, "f": ""}, "tmt": {"v": "not_done", "f": ""} },
+  "chest_xray": { "v": "normal", "f": "" },
   "correlation_data": {
     "medications_found": [],
     "drug_condition_mismatches": [],
-    "multi_system_correlations": [],
-    "cardiovascular_risk": { "framingham_risk_category": "low|moderate|high|very_high", "risk_factors_count": 0, "rationale": "" }
+    "cardiovascular_risk": { "framingham_risk_category": "low|moderate|high|very_high", "risk_factors_count": 0 }
   },
-  "summary": "Brief summary of all findings",
   "parameters_found": 0
 }
 
@@ -1551,7 +1549,7 @@ SPECIFIC RULES:
           modelId,
           system: [{ text: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown, no explanation, no code fences.' }],
           messages: [{ role: 'user', content: converseContent }],
-          inferenceConfig: { maxTokens: 8192, temperature: 0 }
+          inferenceConfig: { maxTokens: 4096, temperature: 0 }
         }));
 
         const elapsed = Date.now() - invokeStart;
@@ -1572,6 +1570,45 @@ SPECIFIC RULES:
           try {
             extractedData = JSON.parse(jsonMatch[0]);
             extractionMethod = 'ai_extraction';
+
+            // ── Normalize compact {v,f} form back to {value,unit,flag} the scoring engine expects ──
+            // Claude now returns compact keys to fit the 4096-token output limit; server re-expands
+            // and adds back the units it already knows. Scoring engine sees identical structure as before.
+            const _UNITS = {
+              fasting_glucose:'mg/dL', hba1c:'%', total_cholesterol:'mg/dL', hdl:'mg/dL', ldl:'mg/dL',
+              triglycerides:'mg/dL', tc_hdl_ratio:'ratio', sgot_ast:'U/L', sgpt_alt:'U/L', serum_creatinine:'mg/dL',
+              blood_urea:'mg/dL', uric_acid:'mg/dL', total_bilirubin:'mg/dL', total_protein:'g/dL', albumin:'g/dL',
+              hemoglobin:'g/dL', rbc_count:'million/cumm', wbc_count:'/cumm', platelet_count:'/cumm', esr:'mm/hr',
+              systolic:'mmHg', diastolic:'mmHg', ggt:'U/L', alp:'U/L', tsh:'mIU/L', lvef:'%'
+            };
+            const _expand = (node, key) => {
+              if (!node || typeof node !== 'object') return node;
+              // leaf node with compact keys
+              if ('v' in node || 'f' in node) {
+                return { value: node.v !== undefined ? node.v : (node.value ?? null),
+                         unit: _UNITS[key] || node.unit || '',
+                         flag: node.f !== undefined ? node.f : (node.flag || '') };
+              }
+              // recurse into nested objects (e.g. blood_pressure.systolic)
+              for (const k of Object.keys(node)) {
+                if (node[k] && typeof node[k] === 'object') node[k] = _expand(node[k], k);
+              }
+              return node;
+            };
+            for (const section of ['blood_chemistry','hematology','physical_exam','urine_analysis','liver_extended','thyroid','cardiac_extended']) {
+              if (extractedData[section]) {
+                for (const k of Object.keys(extractedData[section])) {
+                  extractedData[section][k] = _expand(extractedData[section][k], k);
+                }
+              }
+            }
+            // ecg / chest_xray: map compact {v,f} → expected shape
+            if (extractedData.cardiac?.ecg && 'v' in extractedData.cardiac.ecg) {
+              extractedData.cardiac.ecg = { overall_interpretation: extractedData.cardiac.ecg.v || 'normal', findings: '' };
+            }
+            if (extractedData.chest_xray && 'v' in extractedData.chest_xray) {
+              extractedData.chest_xray = { interpretation: extractedData.chest_xray.v || 'normal', findings: '' };
+            }
 
             // Server-side recount — Claude sometimes returns parameters_found:0 even when values exist
             // Count every non-null value across all medical sections
