@@ -1810,21 +1810,28 @@ async function runAIAnalysis(wf) {
     riskParams._cat_level = catForAI.cat;
 
     // ── Dynamic per-CAT scoring: pass full component/factor config to engine ────
+    console.log('[CAT Scoring Debug] wf.cat_level:', wf.cat_level);
+    console.log('[CAT Scoring Debug] catForAI.cat:', catForAI.cat);
+    console.log('[CAT Scoring Debug] catScoringConfig keys:', Object.keys(catScoringConfig || {}));
+    console.log('[CAT Scoring Debug] config exists for catForAI.cat:', !!(catScoringConfig && catScoringConfig[catForAI.cat]));
+
     if (catScoringConfig && catScoringConfig[catForAI.cat]) {
       const catCfg = catScoringConfig[catForAI.cat];
       if (catCfg.thresholds) riskParams._score_thresholds = catCfg.thresholds;
       if (catCfg.components) {
         riskParams._scoring_components = catCfg.components;
-        // Derive component weights map for the engine
         const w = {};
         for (const [k, c] of Object.entries(catCfg.components)) w[k] = c.weight;
         riskParams._component_weights = w;
-        // Medical tests = factor ids in the medical component
         riskParams._cat_medical_tests = (catCfg.components.medical?.factors || []).map(f => f.id);
+        console.log('[CAT Scoring Debug] ✅ Loaded config for', catForAI.cat, '| components:', Object.keys(catCfg.components).join(','));
       }
-      console.log(`[CAT Scoring] ${catForAI.cat} → weights:`, JSON.stringify(riskParams._component_weights), '| thresholds:', JSON.stringify(catCfg.thresholds));
+      console.log('[CAT Scoring] ' + catForAI.cat + ' → weights:', JSON.stringify(riskParams._component_weights), '| thresholds:', JSON.stringify(catCfg.thresholds));
+    } else {
+      console.warn('[CAT Scoring Debug] ❌ No config found for:', catForAI.cat, '— falling back to hardcoded scorer');
+      console.warn('[CAT Scoring Debug] Available keys:', JSON.stringify(Object.keys(catScoringConfig || {})));
     }
-    console.log(`[resolveCAT AI] ${wf.product_name} | Age ${wf.age} | SA ₹${wf.sum_assured} | PED: ${hasPED_ai} → ${catForAI.cat}`);
+    console.log('[resolveCAT AI] ' + wf.product_name + ' | Age ' + wf.age + ' | SA ₹' + wf.sum_assured + ' | PED: ' + hasPED_ai + ' → ' + catForAI.cat);
   }
 
   // Build document summary for AI
