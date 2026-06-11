@@ -1489,9 +1489,12 @@ Declared Conditions: ${wf.medical_history?.pre_existing_conditions?.join(', ')||
 Occupation Hazard (declared): ${wf.lifestyle?.occupation_hazard||'unknown'}
 Observations: ${wf.observations || 'None'}
 
-IMPORTANT — LIFESTYLE EXTRACTION: Look for a Personal History, Habits, or Social History section in the document. Extract smoking, alcohol, tobacco, and exercise status from what the examining doctor recorded — NOT from what the patient declared on the form. If the document contains phrases like "smoker", "alcoholic", "tobacco chewer", "non-smoker", "teetotaller", "sedentary" etc, extract them. For TeleMER transcripts, look at Q7 (cigarette/beedi/pan/gutkha/alcohol) answer and follow-up detail.
+LIFESTYLE EXTRACTION: Look for Personal History / Habits / Social History section in the document.
+Extract smoking, alcohol, tobacco, exercise from what the examining doctor recorded.
+For TeleMER: read Q7 (cigarette/beedi/pan/gutkha/alcohol) follow-up detail.
 
-Extract ALL medical data from the above documents. Return ONLY valid JSON with this structure:
+Return ONLY valid JSON — no markdown, no explanation, no code fences.
+Structure:
 {
   "lifestyle": {
     "smoking": { "status": "never|former|former_gt5|current", "years": null, "packs_per_day": null },
@@ -1520,7 +1523,25 @@ Extract ALL medical data from the above documents. Return ONLY valid JSON with t
   "parameters_found": 0
 }
 
-IMPORTANT: medications_found — list any medications found in documents. Set disclosed=false if the condition it treats was NOT in declared conditions. drug_condition_mismatches — flag if medication implies undeclared condition. Set values to null if not found. Count non-null values in parameters_found.` });
+YOUR JOB — READ CAREFULLY BEFORE FILLING THE JSON:
+You are looking at a medical document (lab report / PPHC form / TeleMER report / examination report).
+These documents ALWAYS contain values — your job is to find every number and fill it in.
+
+STEP 1 — Scan the ENTIRE document first. Read every table row, every column, every header, every remarks section, every printed value.
+STEP 2 — For each field in the JSON schema below, ask yourself: "Did I see this value anywhere in the document?" If YES — fill it. If genuinely not present — leave null.
+STEP 3 — Common places values hide: remarks column, summary box at top/bottom, printed reference range rows, doctor's handwritten notes, footers.
+
+SPECIFIC RULES:
+- BMI: if you see height + weight, calculate it. If BMI is printed anywhere, use it. Fill physical_exam.bmi.value.
+- Blood pressure: if you see any BP reading (e.g. 120/80), fill systolic AND diastolic.
+- HbA1c: this is also written as "Glycated Haemoglobin" or "A1C" — fill blood_chemistry.hba1c.value.
+- Hemoglobin: also written as "Hb" or "Haemoglobin" — fill hematology.hemoglobin.value.
+- ECG: if it says "Normal sinus rhythm" or "Normal" — fill cardiac.ecg_interpretation = "normal".
+- Urine protein: if it says "Nil" or "Negative" — fill urine_analysis.protein.value = "nil", flag = "normal".
+- For flags: use "normal" if within range, "high" if above, "low" if below, "borderline" if near limit.
+- medications_found — list any medications mentioned anywhere. Set disclosed=false if condition not in declared list.
+- drug_condition_mismatches — flag if a medication implies an undeclared condition.
+- parameters_found — count EVERY field you filled with a non-null value (excluding default non_reactive). Must be accurate.` });
 
         // ── Call Bedrock using ConverseCommand ───────────────────────────────
         const __client = await getBedrockClient();
@@ -1530,7 +1551,7 @@ IMPORTANT: medications_found — list any medications found in documents. Set di
           modelId,
           system: [{ text: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown, no explanation, no code fences.' }],
           messages: [{ role: 'user', content: converseContent }],
-          inferenceConfig: { maxTokens: 4096, temperature: 0 }
+          inferenceConfig: { maxTokens: 8192, temperature: 0 }
         }));
 
         const elapsed = Date.now() - invokeStart;
@@ -1551,6 +1572,26 @@ IMPORTANT: medications_found — list any medications found in documents. Set di
           try {
             extractedData = JSON.parse(jsonMatch[0]);
             extractionMethod = 'ai_extraction';
+
+            // Server-side recount — Claude sometimes returns parameters_found:0 even when values exist
+            // Count every non-null value across all medical sections
+            const _countNonNull = (obj, depth=0) => {
+              if (!obj || typeof obj !== 'object' || depth > 4) return 0;
+              let n = 0;
+              for (const v of Object.values(obj)) {
+                if (v === null || v === '' || v === 'null') continue;
+                if (typeof v === 'object') n += _countNonNull(v, depth+1);
+                else if (v !== 'non_reactive' && v !== 'normal' && v !== 'not_done' && v !== 0) n++;
+              }
+              return n;
+            };
+            const _medSections = ['blood_chemistry','hematology','physical_exam','urine_analysis','cardiac','liver_extended','thyroid','cardiac_extended','chest_xray'];
+            const _recounted = _medSections.reduce((sum, k) => sum + _countNonNull(extractedData[k] || {}), 0);
+            if (_recounted > (extractedData.parameters_found || 0)) {
+              console.log(`[Extraction] parameters_found recounted: ${extractedData.parameters_found} → ${_recounted}`);
+              extractedData.parameters_found = _recounted;
+            }
+
             console.log('[Extraction] JSON parsed OK — parameters_found:', extractedData.parameters_found);
             console.log('[Extraction] Keys found:', Object.keys(extractedData).join(', '));
             // Log non-null blood chemistry values
@@ -1934,11 +1975,31 @@ async function runAIAnalysis(wf) {
     // Inject proposer demographics for CV risk calculation in clinical correlation
     extractedData._proposer_age = wf.age;
     extractedData._proposer_gender = wf.gender;
-    const riskResult = riskEngine.calculateAll(extractedData, correlationData, {
-      component_weights:  riskParams._component_weights  || null,
-      scoring_components: riskParams._scoring_components || null,
-      score_thresholds:   riskParams._score_thresholds   || null
-    });
+
+    // ── Route to correct scoring function based on CAT level ──────────────────
+    // tele_mer has medical weight=0 and uses the 6-component hybrid engine.
+    // All PPHC CATs (CAT_1–4) use calculateAll with the lab-results engine.
+    const isTeleMER = wf.cat_level === 'tele_mer';
+    console.log(`[Scoring] cat_level=${wf.cat_level} → routing to ${isTeleMER ? 'calculateTeleMERRisk' : 'calculateAll'}`);
+
+    let riskResult;
+    if (isTeleMER) {
+      // TeleMER: medical=0, lifestyle=35, history=30, clinical=25, docs=10
+      // Pass extracted lifestyle + medical_history + correlation into TeleMER engine
+      const teleMERInput = {
+        ...extractedData,
+        telemer_data: extractedData.telemer_data || {},
+        interview_answers: {},   // no interview answers at doc-upload time
+        non_disclosures: []
+      };
+      riskResult = riskEngine.calculateTeleMERRisk(teleMERInput, null, correlationData);
+    } else {
+      riskResult = riskEngine.calculateAll(extractedData, correlationData, {
+        component_weights:  riskParams._component_weights  || null,
+        scoring_components: riskParams._scoring_components || null,
+        score_thresholds:   riskParams._score_thresholds   || null
+      });
+    }
 
     // EM-based scoring — scores ALL extracted parameters
     let emResult = null;
