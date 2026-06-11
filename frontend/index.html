@@ -1314,8 +1314,8 @@ function showWfTab(tab, wfId) {
         return;
       }
       const score = analysis.risk_score?.normalized||0;
-      const recColors = { accept_standard:'var(--success)', accept_with_loading:'var(--warning)', refer:'var(--info)', decline:'var(--danger)' };
-      const recBgs = { accept_standard:'var(--success-bg)', accept_with_loading:'var(--warning-bg)', refer:'var(--info-bg)', decline:'var(--danger-bg)' };
+      const recColors = { accept_standard:'var(--success)', accept_with_loading:'var(--warning)', refer:'var(--info)', decline:'var(--danger)', defer:'var(--danger)', mandatory_re_mer:'var(--danger)' };
+      const recBgs = { accept_standard:'var(--success-bg)', accept_with_loading:'var(--warning-bg)', refer:'var(--info-bg)', decline:'var(--danger-bg)', defer:'var(--danger-bg)', mandatory_re_mer:'var(--danger-bg)' };
       const rec = analysis.recommendation;
       el.innerHTML = `
       <div class="card" style="border-color:${recColors[rec]||'var(--border)'};border-width:2px">
@@ -1354,6 +1354,55 @@ function showWfTab(tab, wfId) {
           ${analysis.findings?.length?`<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;margin-bottom:8px">Key Medical Findings</div><table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Status</th><th>Implication</th></tr></thead><tbody>${analysis.findings.map(f=>`<tr><td style="font-weight:500">${f.parameter}</td><td style="font-family:'JetBrains Mono',monospace;font-size:12px">${f.value}</td><td><span class="badge ${f.status==='high'||f.status==='abnormal'?'badge-danger':f.status==='borderline'?'badge-warning':'badge-info'}">${f.status}</span></td><td style="font-size:12px;color:var(--text-muted)">${f.implication}</td></tr>`).join('')}</tbody></table></div>`:''}
           ${analysis.guidelines_compliance?.violations?.length?`<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--danger)">UW Guideline Violations</div>${analysis.guidelines_compliance.violations.map(v=>`<div style="padding:8px 12px;background:var(--danger-bg);border-radius:6px;margin-bottom:6px;font-size:13px"><strong>${v.rule_name}</strong> — Value: ${v.value}, Threshold: ${v.threshold} → <span class="badge badge-danger">${v.action}</span></div>`).join('')}</div>`:''}
           <div style="font-size:11px;color:var(--text-muted);text-align:right">Rules: ${analysis.guidelines_compliance?.total_rules_checked||0} | Docs: ${analysis.documents_analyzed||0} | ${wf.extraction_method||'N/A'}</div>
+
+          <!-- ── HYBRID: Override Flags Panel ── -->
+          ${analysis.override_flags?.length ? `<div style="margin-top:16px;margin-bottom:12px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--danger);margin-bottom:8px"><i data-lucide="shield-x"></i> Override Flags</div>
+            ${analysis.override_flags.map(f => `<div style="padding:10px 14px;background:${f.type==='AUTO_DEFER'||f.type==='AUTO_DECLINE'||f.type==='MANDATORY_RE_MER'?'var(--danger-bg)':f.type==='MANDATORY_DOCS'?'var(--warning-bg)':'var(--info-bg)'};border-radius:8px;margin-bottom:6px;border-left:3px solid ${f.type==='AUTO_DEFER'||f.type==='AUTO_DECLINE'||f.type==='MANDATORY_RE_MER'?'var(--danger)':f.type==='MANDATORY_DOCS'?'var(--warning)':'var(--info)'}">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <span style="font-size:11px;font-weight:700;color:${f.type==='AUTO_DEFER'||f.type==='AUTO_DECLINE'||f.type==='MANDATORY_RE_MER'?'var(--danger)':f.type==='MANDATORY_DOCS'?'var(--warning)':'var(--info)'};text-transform:uppercase;letter-spacing:0.5px">${f.type.replace(/_/g,' ')}</span>
+                  <div style="font-size:12px;color:var(--text);margin-top:3px">${f.reason}</div>
+                  ${f.action_required?`<div style="font-size:11px;color:var(--text-muted);margin-top:2px">Action: ${f.action_required}</div>`:''}
+                </div>
+                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap;margin-left:8px">Priority ${f.priority}</span>
+              </div>
+            </div>`).join('')}
+          </div>` : ''}
+
+          <!-- ── HYBRID: Contradiction List Panel ── -->
+          ${analysis.contradiction_list?.length ? `<div style="margin-top:12px;margin-bottom:12px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--warning);margin-bottom:8px"><i data-lucide="alert-triangle"></i> Contradictions Detected (${analysis.contradiction_count}) — Penalty: -${analysis.contradiction_penalty} pts</div>
+            ${analysis.contradiction_list.map(c => `<div style="padding:8px 12px;background:var(--warning-bg);border-radius:6px;margin-bottom:6px;font-size:12px;border-left:3px solid var(--warning)">
+              <span style="font-weight:700;color:var(--warning)">${c.check_id}</span> — <span style="color:var(--text)">${c.description}</span>
+            </div>`).join('')}
+          </div>` : ''}
+
+          <!-- ── HYBRID: Mandatory Docs Panel ── -->
+          ${analysis.mandatory_docs?.length ? `<div style="margin-top:12px;margin-bottom:12px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--warning);margin-bottom:8px"><i data-lucide="file-warning"></i> Mandatory Documents — Issuance on hold</div>
+            ${analysis.mandatory_docs.map(d => `<div style="padding:8px 12px;background:var(--warning-bg);border-radius:6px;margin-bottom:6px;font-size:12px;display:flex;align-items:center;gap:8px"><i data-lucide="circle"></i> ${d}</div>`).join('')}
+          </div>` : ''}
+
+          <!-- ── HYBRID: PED Per Condition Table ── -->
+          ${analysis.ped_per_condition?.length ? `<div style="margin-top:12px;margin-bottom:12px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:8px"><i data-lucide="clock"></i> Pre-Existing Disease Waiting Periods</div>
+            <table class="data-table" style="margin:0"><thead><tr><th>Condition</th><th>PED Years</th><th>Exclusion Type</th><th>Scope</th></tr></thead><tbody>
+            ${analysis.ped_per_condition.map(p => `<tr>
+              <td style="font-weight:500">${p.condition}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--warning)">${p.ped_years} yr${p.ped_years!==1?'s':''}</td>
+              <td><span class="badge ${p.exclusion_type==='permanent'||p.exclusion_type?.includes('permanent')?'badge-danger':p.exclusion_type?.includes('spine')?'badge-warning':'badge-info'}">${(p.exclusion_type||'').replace(/_/g,' ')}</span></td>
+              <td style="font-size:11px;color:var(--text-muted)">${p.scope||''}</td>
+            </tr>`).join('')}
+            </tbody></table>
+          </div>` : ''}
+
+          <!-- ── HYBRID: Pre-Policy Tests ── -->
+          ${analysis.pre_policy_tests?.length ? `<div style="margin-top:12px;margin-bottom:4px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:6px"><i data-lucide="test-tube"></i> Pre-Policy Tests Required</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">${analysis.pre_policy_tests.map(t=>`<span style="padding:3px 10px;background:var(--info-bg);color:var(--info);border-radius:20px;font-size:12px;font-weight:500">${t}</span>`).join('')}</div>
+          </div>` : ''}
+
         </div></div>`;
       renderBiometricCard(wf);
       break;
@@ -1514,7 +1563,7 @@ function showWfTab(tab, wfId) {
       <!-- Component 2: Lifestyle -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="activity"></i> Lifestyle Risk <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.lifestyle_risk?.score||0}/${compA.lifestyle_risk?.max||20} (${compA.lifestyle_risk?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="activity"></i> Lifestyle Risk <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.lifestyle_risk?.score||0}/${compA.lifestyle_risk?.max||25} (${compA.lifestyle_risk?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.lifestyle_risk?.percentage||0}%;background:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
@@ -1602,6 +1651,64 @@ function showWfTab(tab, wfId) {
           }).join('')}
         </div>
       </div>
+
+      <!-- ── HYBRID Component: Cardiovascular + HTN (C4) ── -->
+      ${compA.cardiovascular ? `<div class="card" style="margin-bottom:12px">
+        <div class="card-header">
+          <h3><i data-lucide="heart-pulse"></i> Cardiovascular + HTN <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.cardiovascular?.score>=12?'var(--success)':compA.cardiovascular?.score>=8?'var(--warning)':'var(--danger)'}">${compA.cardiovascular?.score||0}/${compA.cardiovascular?.max||15}</span></h3>
+          <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${Math.round(((compA.cardiovascular?.score||0)/(compA.cardiovascular?.max||15))*100)}%;background:${compA.cardiovascular?.score>=12?'var(--success)':compA.cardiovascular?.score>=8?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
+        </div>
+        <div class="card-body" style="padding:0">
+          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          ${Object.entries(compA.cardiovascular?.breakdown||{}).map(([pk,pv])=>`<tr>
+            <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+            <td><span class="badge ${pv.status?.includes('no_cardiac')?'badge-success':pv.status?.includes('uncontrolled')||pv.status?.includes('cardiac_history')?'badge-danger':'badge-warning'}">${(pv.status||'—').replace(/_/g,' ')}</span></td>
+            <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${Math.round(pv.score||0)}/${pv.max}</td>
+            <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+          </tr>`).join('')}
+          </tbody></table>
+        </div>
+      </div>` : ''}
+
+      <!-- ── HYBRID Component: Surgical + GI (C6) ── -->
+      ${compA.surgical_gi ? `<div class="card" style="margin-bottom:12px">
+        <div class="card-header">
+          <h3><i data-lucide="scissors"></i> Surgical + GI History <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.surgical_gi?.score>=4?'var(--success)':compA.surgical_gi?.score>=2?'var(--warning)':'var(--danger)'}">${compA.surgical_gi?.score||0}/${compA.surgical_gi?.max||5}</span></h3>
+          <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${Math.round(((compA.surgical_gi?.score||0)/(compA.surgical_gi?.max||5))*100)}%;background:${compA.surgical_gi?.score>=4?'var(--success)':compA.surgical_gi?.score>=2?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
+        </div>
+        <div class="card-body" style="padding:0">
+          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          ${Object.entries(compA.surgical_gi?.breakdown||{}).map(([pk,pv])=>`<tr>
+            <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+            <td><span class="badge ${pv.status==='no_surgery'?'badge-success':pv.status?.includes('lt_90')||pv.status?.includes('lt_1yr')?'badge-danger':'badge-warning'}">${(pv.status||'—').replace(/_/g,' ')}</span></td>
+            <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${Math.round(pv.score||0)}/${pv.max}</td>
+            <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+          </tr>`).join('')}
+          </tbody></table>
+        </div>
+      </div>` : ''}
+
+      <!-- ── HYBRID Component: Family History (C7) ── -->
+      ${compA.family_history ? `<div class="card" style="margin-bottom:12px">
+        <div class="card-header">
+          <h3><i data-lucide="users"></i> Family History <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.family_history?.score>=4?'var(--success)':compA.family_history?.score>=2?'var(--warning)':'var(--danger)'}">${compA.family_history?.score||0}/${compA.family_history?.max||5}</span></h3>
+          <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${Math.round(((compA.family_history?.score||0)/(compA.family_history?.max||5))*100)}%;background:${compA.family_history?.score>=4?'var(--success)':compA.family_history?.score>=2?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
+        </div>
+        <div class="card-body" style="padding:0">
+          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          ${Object.entries(compA.family_history?.breakdown||{}).map(([pk,pv])=>`<tr>
+            <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+            <td><span class="badge ${pv.status==='none'?'badge-success':pv.status?.includes('cancer')||pv.status?.includes('blood_cancer')||pv.status?.includes('stroke')?'badge-danger':'badge-warning'}">${(pv.status||'—').replace(/_/g,' ')}</span></td>
+            <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${Math.round(pv.score||0)}/${pv.max}</td>
+            <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+          </tr>`).join('')}
+          </tbody></table>
+          ${compA.family_history?.needs_senior_review ? `<div style="padding:8px 14px;background:var(--warning-bg);border-left:3px solid var(--warning);font-size:12px;color:var(--warning)"><i data-lucide="alert-triangle"></i> Senior underwriter review required — first-degree cancer/stroke history</div>` : ''}
+        </div>
+      </div>` : ''}
+
+      <!-- ── HYBRID: Phase 1 scaling note ── -->
+      ${analysis.risk_score?.phase === 1 ? `<div style="padding:8px 14px;background:var(--surface-alt);border-radius:6px;font-size:11px;color:var(--text-muted);margin-bottom:12px"><i data-lucide="info"></i> Phase 1 scoring — 6 components totalling 90 pts scaled to 100. Documentation Quality (10 pts) will be added in Phase 2.</div>` : ''}
 
       <!-- Loading Factors -->
       ${analysis.loading_factors?.length?`<div class="card"><div class="card-header"><h3><i data-lucide="indian-rupee"></i> Premium Loading Factors</h3></div><div class="card-body">
