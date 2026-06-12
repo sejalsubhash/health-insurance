@@ -2251,11 +2251,21 @@ async function runAIAnalysis(wf) {
     // Build detailed component analysis
     const componentAnalysis = {};
     for (const [name, comp] of Object.entries(riskResult.risk_score.components)) {
+      // ── Use per-CAT WEIGHTED values for display when the weighting path ran ──
+      // calculateAll's weighting loop sets comp.weight (the CAT component weight, e.g. medical=45
+      // for CAT_4) and comp.weighted_score (the score rescaled onto that weight). The raw comp.score
+      // and comp.max are the hardcoded scorer's internal scale (medical=35, lifestyle=25) and must
+      // NOT be shown when per-CAT weights exist — otherwise the UI shows /35 instead of the
+      // configured /45. Falls back to raw score/max only when no per-CAT weight was applied.
+      const hasWeight = comp.weight != null && comp.weighted_score != null;
+      const dispScore = hasWeight ? comp.weighted_score : comp.score;
+      const dispMax   = hasWeight ? comp.weight         : comp.max;
       componentAnalysis[name] = {
-        score: comp.score, max: comp.max,
-        percentage: Math.round((comp.score / comp.max) * 100),
-        status: comp.score >= comp.max * 0.8 ? 'good' : comp.score >= comp.max * 0.5 ? 'moderate' : 'poor',
-        breakdown: comp.breakdown || {}
+        score: dispScore, max: dispMax,
+        percentage: dispMax > 0 ? Math.round((dispScore / dispMax) * 100) : 0,
+        status: dispScore >= dispMax * 0.8 ? 'good' : dispScore >= dispMax * 0.5 ? 'moderate' : 'poor',
+        breakdown: comp.breakdown || {},
+        raw_score: comp.score, raw_max: comp.max, weight: comp.weight ?? null
       };
       if (comp.breakdown && Object.keys(comp.breakdown).length > 0) {
         for (const [fid, fb] of Object.entries(comp.breakdown)) {
