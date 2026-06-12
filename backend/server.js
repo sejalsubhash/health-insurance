@@ -1721,10 +1721,27 @@ This is ONE page from a medical document bundle. Extract every medical value vis
                       }
                     }
                   }
+                  // ── CRITICAL: normalize the merged lab values from compact {v,f} → {value,unit,flag} ──
+                  // The _expand normalizer ran earlier on physical sections only; the lab values were
+                  // merged in AFTER that, still in compact form. Without this step the scoring engine
+                  // and the frontend read `.value` (undefined) and show every lab param as "missing"/blank.
+                  for (const section of ['blood_chemistry','hematology']) {
+                    if (extractedData[section]) {
+                      for (const k of Object.keys(extractedData[section])) {
+                        extractedData[section][k] = _expand(extractedData[section][k], k);
+                      }
+                    }
+                  }
+                  // Recount parameters now that lab values are present and normalized
+                  const _med2 = ['blood_chemistry','hematology','physical_exam','urine_analysis','cardiac','liver_extended','thyroid','cardiac_extended','chest_xray'];
+                  const _rc2 = _med2.reduce((sum, k) => sum + _countNonNull(extractedData[k] || {}), 0);
+                  extractedData.parameters_found = Math.max(extractedData.parameters_found || 0, _rc2);
+
                   console.log('[Extraction] Lab merge complete — blood_chemistry non-null after merge:',
-                    Object.entries(extractedData.blood_chemistry||{}).filter(([k,v])=>v&&v.v!=null).map(([k,v])=>k+'='+v.v).join(', ') || 'NONE');
+                    Object.entries(extractedData.blood_chemistry||{}).filter(([k,v])=>v&&v.value!=null).map(([k,v])=>k+'='+v.value).join(', ') || 'NONE');
                   console.log('[Extraction] Hematology non-null after merge:',
-                    Object.entries(extractedData.hematology||{}).filter(([k,v])=>v&&v.v!=null).map(([k,v])=>k+'='+v.v).join(', ') || 'NONE');
+                    Object.entries(extractedData.hematology||{}).filter(([k,v])=>v&&v.value!=null).map(([k,v])=>k+'='+v.value).join(', ') || 'NONE');
+                  console.log('[Extraction] parameters_found after lab normalize:', extractedData.parameters_found);
                 } catch(labErr) {
                   console.error('[Extraction] Lab merge parse error:', labErr.message);
                   console.error('[Extraction] Lab raw:', labResponseText.substring(0, 300));

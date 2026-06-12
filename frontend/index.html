@@ -1530,14 +1530,39 @@ function showWfTab(tab, wfId) {
       const emS = analysis.em_scoring;
       // Extract actual values for display
       const calcEd = wf.extracted_data || {};
+      const _bc = calcEd.blood_chemistry || {};
+      const _hem = calcEd.hematology || {};
+      const _pe = calcEd.physical_exam || {};
+      const _bpSys = _pe.blood_pressure_systolic?.value || _pe.blood_pressure?.systolic?.value;
+      const _bpDia = _pe.blood_pressure_diastolic?.value || _pe.blood_pressure?.diastolic?.value;
       const actualValues = {
-        bmi: calcEd.physical_exam?.bmi?.value, blood_pressure: calcEd.physical_exam?.blood_pressure_systolic?.value || calcEd.physical_exam?.blood_pressure?.systolic?.value,
-        fasting_glucose: calcEd.blood_chemistry?.fasting_glucose?.value, hba1c: calcEd.blood_chemistry?.hba1c?.value,
-        tc_hdl_ratio: calcEd.blood_chemistry?.tc_hdl_ratio?.value, sgpt: calcEd.blood_chemistry?.sgpt_alt?.value,
-        creatinine: calcEd.blood_chemistry?.serum_creatinine?.value, ecg: calcEd.cardiac?.ecg?.overall_interpretation,
-        hemoglobin: calcEd.hematology?.hemoglobin?.value, urine_protein: calcEd.urine_analysis?.protein?.value
+        // physical
+        bmi: _pe.bmi?.value,
+        bmi_bp: (_pe.bmi?.value!=null || _bpSys!=null) ? `${_pe.bmi?.value??'—'} / ${_bpSys!=null?_bpSys+'/'+( _bpDia??'—'):'—'}` : undefined,
+        blood_pressure: _bpSys!=null ? `${_bpSys}/${_bpDia??'—'}` : undefined,
+        ecg: calcEd.cardiac?.ecg?.overall_interpretation,
+        urine_protein: calcEd.urine_analysis?.protein?.value,
+        urine_routine: calcEd.urine_analysis?.protein?.value,
+        // blood chemistry
+        fasting_glucose: _bc.fasting_glucose?.value,
+        hba1c: _bc.hba1c?.value,
+        tc_hdl_ratio: _bc.tc_hdl_ratio?.value,
+        sgpt: _bc.sgpt_alt?.value,
+        sgpt_alt: _bc.sgpt_alt?.value,
+        creatinine: _bc.serum_creatinine?.value,
+        serum_creatinine: _bc.serum_creatinine?.value,
+        total_cholesterol: _bc.total_cholesterol?.value,
+        triglycerides: _bc.triglycerides?.value,
+        hdl: _bc.hdl?.value,
+        ldl: _bc.ldl?.value,
+        // hematology
+        hemoglobin: _hem.hemoglobin?.value,
+        cbc: _hem.hemoglobin?.value!=null ? `Hb ${_hem.hemoglobin.value}` + (_hem.wbc_count?.value!=null?`, WBC ${_hem.wbc_count.value}`:'') : undefined,
+        wbc_count: _hem.wbc_count?.value,
+        platelet_count: _hem.platelet_count?.value,
+        esr: _hem.esr?.value
       };
-      const paramUnits = { bmi:'kg/m²', blood_pressure:'mmHg', fasting_glucose:'mg/dL', hba1c:'%', tc_hdl_ratio:'ratio', sgpt:'U/L', creatinine:'mg/dL', hemoglobin:'g/dL' };
+      const paramUnits = { bmi:'kg/m²', blood_pressure:'mmHg', fasting_glucose:'mg/dL', hba1c:'%', tc_hdl_ratio:'ratio', sgpt:'U/L', sgpt_alt:'U/L', creatinine:'mg/dL', serum_creatinine:'mg/dL', hemoglobin:'g/dL', total_cholesterol:'mg/dL', triglycerides:'mg/dL', hdl:'mg/dL', ldl:'mg/dL', esr:'mm/hr', wbc_count:'/cumm' };
 
       el.innerHTML = `
       <!-- Summary Card -->
