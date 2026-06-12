@@ -1802,7 +1802,29 @@ This is ONE page from a medical document bundle. Extract every medical value vis
     wf.extraction_method = extractionMethod;
     wf.api_log = apiLog;
 
-    // Step 2: Run AI analysis against rules
+    // ── Step 1B: ICMR Clinical Text Analysis ─────────────────────────────────
+    // Auto-runs after extraction. Analyses non-numeric clinical text from
+    // extracted_data (ECG findings, BMI, BP, flagged labs, medications) against
+    // ICMR Indian-population guidelines using Bedrock.
+    // Does NOT re-score numeric values — Per-CAT Scoring Config handles those.
+    socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'icmr_analysis', message: 'Running ICMR clinical text analysis...' });
+    try {
+      const _icmrGuidelines = await s3Client.getConfig('icmr-guidelines').catch(() => null);
+      const _icmrResult     = await icmrAnalyser.runICMRAnalysis(wf, _icmrGuidelines?.text || null);
+      wf.icmr_analysis = _icmrResult;
+      const _findingsCount   = _icmrResult.icmr_findings?.length || 0;
+      const _nonDisclosures  = _icmrResult.non_disclosure_flags?.length || 0;
+      wf.state_history.push({
+        state: 'icmr_analysis_complete', timestamp: new Date().toISOString(), actor: 'ICMR Engine',
+        note: `ICMR: ${_findingsCount} finding(s), risk: ${_icmrResult.overall_clinical_risk}, adj: ${_icmrResult.score_adjustment}` + (_nonDisclosures ? `, NON-DISCLOSURE: ${_nonDisclosures}` : '')
+      });
+      console.log('[ICMR] Auto-analysis complete — findings:', _findingsCount, '| risk:', _icmrResult.overall_clinical_risk, '| adj:', _icmrResult.score_adjustment);
+    } catch(icmrErr) {
+      console.error('[ICMR] Auto-analysis failed:', icmrErr.message);
+      wf.icmr_analysis = { icmr_findings: [], overall_clinical_risk: 'low', score_adjustment: 0, error: icmrErr.message, analysed_at: new Date().toISOString() };
+    }
+
+    // Step 2: Run AI analysis against rules (numeric Per-CAT scoring)
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'analyzing', message: 'Scoring against UW rules...' });
     wf.state_history.push({ state: 'rule_engine_started', timestamp: new Date().toISOString(), actor: 'Rule Engine', note: 'Evaluating against medical-scoring, uw-guidelines, risk-params' });
 
@@ -2837,7 +2859,7 @@ ${violationsText ? 'GUIDELINE VIOLATIONS:\n'+violationsText : 'No guideline viol
 ${loadingText ? 'LOADING FACTORS: '+loadingText : ''}
 
 EXTRACTED DATA SUMMARY: ${ed.summary || 'Data extracted from '+wf.documents?.length+' document(s)'}
-
+${icmrContext}
 Write the summary in these sections. Use ALL CAPS section titles on their own line, NO markdown, NO asterisks, NO hashtags:
 
 PROPOSER PROFILE
@@ -2845,6 +2867,9 @@ One paragraph about the proposer and reason for NSTP referral.
 
 MEDICAL ASSESSMENT
 What the lab results show. Mention specific values with units.
+
+ICMR CLINICAL FINDINGS
+Summarise ICMR analysis results. Mention any non-disclosure flags, BMI classification per Indian cut-offs, ECG findings. If ICMR score adjustment was applied mention it.
 
 RISK FACTORS
 List adverse findings with clinical significance. Be specific.

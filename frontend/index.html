@@ -1316,7 +1316,15 @@ function showWfTab(tab, wfId) {
       el.innerHTML = `
       <div class="card" style="border-color:${recColors[rec]||'var(--border)'};border-width:2px">
         <div class="card-header" style="background:${recBgs[rec]||'var(--surface-alt)'}"><h3>AI Underwriting Decision</h3>
-          ${!wf.ai_summary_text ? `<button class="btn btn-sm btn-primary" onclick="generateAISummary('${wf.id}')" id="aiSumBtn"><i data-lucide="sparkles"></i> Generate Summary</button>` : ''}
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            ${!wf.ai_summary_text ? `<button class="btn btn-sm btn-primary" onclick="generateAISummary('${wf.id}')" id="aiSumBtn"><i data-lucide="sparkles"></i> Generate Summary</button>` : ''}
+            ${wf.icmr_analysis?.overall_clinical_risk && wf.icmr_analysis.overall_clinical_risk !== 'low'
+              ? `<span style="padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;background:${({'moderate':'#FFFBEB','high':'#FEF2F2','very_high':'#FEE2E2'}[wf.icmr_analysis.overall_clinical_risk]||'#F3F4F6')};color:${({'moderate':'#B45309','high':'#B91C1C','very_high':'#7f1d1d'}[wf.icmr_analysis.overall_clinical_risk]||'#374151')}">
+                ⚕ ICMR: ${wf.icmr_analysis.overall_clinical_risk.replace('_',' ').toUpperCase()} RISK
+              </span>` : ''}
+            ${wf.icmr_analysis?.non_disclosure_flags?.length
+              ? `<span style="padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;background:#FEE2E2;color:#B91C1C">⚠ NON-DISCLOSURE</span>` : ''}
+          </div>
         </div>
         <div class="card-body">
           <div style="display:flex;align-items:center;gap:24px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border-light)">
@@ -2290,6 +2298,13 @@ function renderSummaryHTML(wf) {
       <div style="margin-left:auto;font-size:10px;color:var(--text-muted)">${wf.ai_summary_generated_at?new Date(wf.ai_summary_generated_at).toLocaleString('en-IN'):''}</div>
     </div>
     <div style="padding:14px 18px">${sHtml}
+      ${wf.icmr_analysis?.icmr_findings?.length ? `<div style="margin-top:12px;padding:10px 14px;background:#FFF7ED;border-radius:8px;border-left:3px solid #F59E0B">
+        <div style="font-size:10px;font-weight:700;color:#B45309;text-transform:uppercase;margin-bottom:6px">ICMR Clinical Analysis</div>
+        ${wf.icmr_analysis.non_disclosure_flags?.length ? `<div style="font-size:12px;color:#B91C1C;margin-bottom:4px">⚠ Non-Disclosure: ${wf.icmr_analysis.non_disclosure_flags.join(', ')}</div>` : ''}
+        <div style="font-size:12px;color:#78350F">Overall Clinical Risk: <strong>${(wf.icmr_analysis.overall_clinical_risk||'').replace('_',' ').toUpperCase()}</strong>
+        ${wf.icmr_analysis.score_adjustment < 0 ? ' | Score Adj: <strong>'+wf.icmr_analysis.score_adjustment+' pts</strong>' : ''}</div>
+        ${wf.icmr_analysis.summary ? `<div style="font-size:11px;color:#92400E;margin-top:4px;line-height:1.5">${wf.icmr_analysis.summary}</div>` : ''}
+      </div>` : ''}
       <div style="font-size:9px;color:var(--text-muted);padding-top:10px;border-top:1px solid var(--border-light);text-align:center">AI-generated advisory. Subject to human review and underwriter discretion.</div>
     </div>
   </div>`;
