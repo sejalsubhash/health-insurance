@@ -1489,35 +1489,16 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
 
         console.log('[Extraction] converseContent blocks:', converseContent.length, '| docs:', wf.documents.length);
 
-        // ── Split extraction into 2 focused calls to avoid 4096 token truncation ──
-        // Call 1: Physical exam docs (MER, ECG, CXR, photos) → BMI, BP, ECG, lifestyle
-        // Call 2: Blood reports (biochemistry, haematology, HbA1c, urine) → lab values
-        //
-        // Categorise content blocks by document type
-        const physicalBlocks = [];  // MER, ECG, photos, CXR
-        const labBlocks      = [];  // blood chemistry, haematology, urine, HbA1c
-        let currentDocName   = '';
-        let currentDocCat    = '';
+        // ── Two-call extraction to avoid 4096-token output truncation ─────────
+        // Both calls receive ALL document pages — Claude ignores irrelevant pages.
+        // Call 1 focuses on: physical exam values (BMI, BP, ECG, lifestyle, medications)
+        // Call 2 focuses on: blood lab values (CBC, biochemistry, HbA1c, haematology)
+        // This works for ALL PDF structures — single multi-page, multiple files, any order.
 
-        for (const block of converseContent) {
-          if (block.text && block.text.startsWith('[Document:')) {
-            currentDocName = block.text.toLowerCase();
-            currentDocCat  = currentDocName;
-          }
-          const isLabDoc = currentDocCat.includes('blood') || currentDocCat.includes('biochem') ||
-                           currentDocCat.includes('haematol') || currentDocCat.includes('hematol') ||
-                           currentDocCat.includes('hba') || currentDocCat.includes('urine') ||
-                           currentDocCat.includes('pathol') || currentDocCat.includes('lab') ||
-                           currentDocCat.includes('report on') || currentDocCat.includes('heritage') ||
-                           currentDocCat.includes('sgpt') || currentDocCat.includes('creatinine') ||
-                           currentDocCat.includes('cholesterol');
-          if (isLabDoc) labBlocks.push(block);
-          else physicalBlocks.push(block);
-        }
+        const __client = await getBedrockClient();
+        const allDocBlocks = converseContent; // all pages from all uploaded documents
 
-        // If unable to categorise, put everything in physical (will do single call)
-        const hasLabDocs = labBlocks.length > 0;
-        console.log('[Extraction] Physical blocks:', physicalBlocks.length, '| Lab blocks:', labBlocks.length);
+        console.log('[Extraction] Using 2-call split — total blocks:', allDocBlocks.length, '| docs:', wf.documents.length);
 
         // ── Short JSON schemas for focused extraction ─────────────────────────
         const PHYSICAL_SCHEMA = `Return ONLY valid JSON:
@@ -1555,7 +1536,8 @@ For flags: normal=within range, high=above, low=below, borderline=near limit.`;
 
 Extract physical examination data from the above documents. ${PHYSICAL_SCHEMA}`;
 
-        const physContent = [...physicalBlocks, { text: physPrompt }];
+        // Call 1: ALL documents + focused physical prompt
+        const physContent = [...allDocBlocks, { text: physPrompt }];
         const invokeStart1 = Date.now();
         const physRes = await __client.send(new ConverseCommand({
           modelId,
@@ -1567,12 +1549,12 @@ Extract physical examination data from the above documents. ${PHYSICAL_SCHEMA}`;
 
         // ── Call 2: Lab reports (only if lab docs exist) ──────────────────────
         let labResponseText = '';
-        if (hasLabDocs) {
+        if (true) { // Always run Call 2 — lab values may be in any page of the PDF
           const labPrompt = `Patient: ${wf.proposer_name}, Age:${wf.age}, Gender:${wf.gender}.
 
-Extract ALL blood test values from the lab reports above. ${LAB_SCHEMA}`;
+Look through ALL pages of the uploaded documents and extract every blood test value you can find. ${LAB_SCHEMA}`;
 
-          const labContent = [...labBlocks, { text: labPrompt }];
+          const labContent = [...allDocBlocks, { text: labPrompt }];
           const invokeStart2 = Date.now();
           const labRes = await __client.send(new ConverseCommand({
             modelId,
