@@ -1489,88 +1489,113 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
 
         console.log('[Extraction] converseContent blocks:', converseContent.length, '| docs:', wf.documents.length);
 
-        // Add extraction prompt
-        converseContent.push({ text: `
-Customer Profile: ${wf.proposer_name}, Age: ${wf.age}, Gender: ${wf.gender}, Sum Assured: ₹${wf.sum_assured}
-Declared Conditions: ${wf.medical_history?.pre_existing_conditions?.join(', ')||'None declared'}
-Occupation Hazard (declared): ${wf.lifestyle?.occupation_hazard||'unknown'}
-Observations: ${wf.observations || 'None'}
+        // ── Split extraction into 2 focused calls to avoid 4096 token truncation ──
+        // Call 1: Physical exam docs (MER, ECG, CXR, photos) → BMI, BP, ECG, lifestyle
+        // Call 2: Blood reports (biochemistry, haematology, HbA1c, urine) → lab values
+        //
+        // Categorise content blocks by document type
+        const physicalBlocks = [];  // MER, ECG, photos, CXR
+        const labBlocks      = [];  // blood chemistry, haematology, urine, HbA1c
+        let currentDocName   = '';
+        let currentDocCat    = '';
 
-LIFESTYLE EXTRACTION: Look for Personal History / Habits / Social History section in the document.
-Extract smoking, alcohol, tobacco, exercise from what the examining doctor recorded.
-For TeleMER: read Q7 (cigarette/beedi/pan/gutkha/alcohol) follow-up detail.
+        for (const block of converseContent) {
+          if (block.text && block.text.startsWith('[Document:')) {
+            currentDocName = block.text.toLowerCase();
+            currentDocCat  = currentDocName;
+          }
+          const isLabDoc = currentDocCat.includes('blood') || currentDocCat.includes('biochem') ||
+                           currentDocCat.includes('haematol') || currentDocCat.includes('hematol') ||
+                           currentDocCat.includes('hba') || currentDocCat.includes('urine') ||
+                           currentDocCat.includes('pathol') || currentDocCat.includes('lab') ||
+                           currentDocCat.includes('report on') || currentDocCat.includes('heritage') ||
+                           currentDocCat.includes('sgpt') || currentDocCat.includes('creatinine') ||
+                           currentDocCat.includes('cholesterol');
+          if (isLabDoc) labBlocks.push(block);
+          else physicalBlocks.push(block);
+        }
 
-Return ONLY valid JSON — no markdown, no explanation, no code fences.
-Structure (use compact form — for each lab value give ONLY {"v": value, "f": "normal|high|low|borderline"}; do NOT output units, server knows them):
+        // If unable to categorise, put everything in physical (will do single call)
+        const hasLabDocs = labBlocks.length > 0;
+        console.log('[Extraction] Physical blocks:', physicalBlocks.length, '| Lab blocks:', labBlocks.length);
+
+        // ── Short JSON schemas for focused extraction ─────────────────────────
+        const PHYSICAL_SCHEMA = `Return ONLY valid JSON:
 {
-  "lifestyle": {
-    "smoking": { "status": "never|former|former_gt5|current", "years": null, "packs_per_day": null },
-    "alcohol": { "status": "never|occasional|regular|heavy", "units_per_week": null },
-    "tobacco_chewing": { "status": "never|former|current" },
-    "occupation_hazard": "none|low|moderate|high",
-    "exercise": { "frequency": "none|occasional|regular|daily" },
-    "source": "document_extracted"
-  },
-  "blood_chemistry": { "fasting_glucose": {"v": null, "f": ""}, "hba1c": {"v": null, "f": ""}, "total_cholesterol": {"v": null, "f": ""}, "hdl": {"v": null, "f": ""}, "ldl": {"v": null, "f": ""}, "triglycerides": {"v": null, "f": ""}, "tc_hdl_ratio": {"v": null, "f": ""}, "sgot_ast": {"v": null, "f": ""}, "sgpt_alt": {"v": null, "f": ""}, "serum_creatinine": {"v": null, "f": ""}, "blood_urea": {"v": null, "f": ""}, "uric_acid": {"v": null, "f": ""}, "total_bilirubin": {"v": null, "f": ""}, "total_protein": {"v": null, "f": ""}, "albumin": {"v": null, "f": ""}, "hiv": {"v": "non_reactive", "f": "normal"}, "hbsag": {"v": "non_reactive", "f": "normal"} },
-  "hematology": { "hemoglobin": {"v": null, "f": ""}, "rbc_count": {"v": null, "f": ""}, "wbc_count": {"v": null, "f": ""}, "platelet_count": {"v": null, "f": ""}, "esr": {"v": null, "f": ""} },
-  "physical_exam": { "bmi": {"v": null, "f": ""}, "blood_pressure": {"systolic": {"v": null, "f": ""}, "diastolic": {"v": null, "f": ""}} },
-  "urine_analysis": { "protein": {"v": "nil", "f": "normal"}, "glucose": {"v": "nil", "f": "normal"} },
-  "cardiac": { "ecg": {"v": "normal", "f": ""} },
-  "liver_extended": { "ggt": {"v": null, "f": ""}, "alp": {"v": null, "f": ""} },
-  "thyroid": { "tsh": {"v": null, "f": ""} },
-  "cardiac_extended": { "lvef": {"v": null, "f": ""}, "tmt": {"v": "not_done", "f": ""} },
-  "chest_xray": { "v": "normal", "f": "" },
-  "correlation_data": {
-    "medications_found": [],
-    "drug_condition_mismatches": [],
-    "cardiovascular_risk": { "framingham_risk_category": "low|moderate|high|very_high", "risk_factors_count": 0 }
-  },
+  "lifestyle": { "smoking": {"status":"never|former|current"}, "alcohol": {"status":"never|occasional|regular|heavy"}, "tobacco_chewing": {"status":"never|former|current"}, "occupation_hazard": "none|low|moderate|high", "exercise": {"frequency":"none|occasional|regular|daily"} },
+  "physical_exam": { "bmi": {"v":null,"f":""}, "blood_pressure": {"systolic":{"v":null,"f":""},"diastolic":{"v":null,"f":""}} },
+  "urine_analysis": { "protein": {"v":"nil","f":"normal"}, "glucose": {"v":"nil","f":"normal"} },
+  "cardiac": { "ecg": {"v":"normal","f":""} },
+  "chest_xray": { "v":"normal","f":"" },
+  "correlation_data": { "medications_found": [], "drug_condition_mismatches": [] },
   "parameters_found": 0
 }
+RULES: BMI=weight(kg)/height(m)^2. BP systolic/diastolic from sphygmomanometer. ECG from interpretation line. Urine protein from urine report. medications_found: list ALL tablets/drugs mentioned anywhere with {name,condition,disclosed:false if not in declared list}.`;
 
-YOUR JOB — READ CAREFULLY BEFORE FILLING THE JSON:
-You are looking at a medical document (lab report / PPHC form / TeleMER report / examination report).
-These documents ALWAYS contain values — your job is to find every number and fill it in.
+        const LAB_SCHEMA = `Return ONLY valid JSON:
+{
+  "blood_chemistry": { "fasting_glucose":{"v":null,"f":""}, "hba1c":{"v":null,"f":""}, "total_cholesterol":{"v":null,"f":""}, "hdl":{"v":null,"f":""}, "ldl":{"v":null,"f":""}, "triglycerides":{"v":null,"f":""}, "tc_hdl_ratio":{"v":null,"f":""}, "sgot_ast":{"v":null,"f":""}, "sgpt_alt":{"v":null,"f":""}, "serum_creatinine":{"v":null,"f":""}, "blood_urea":{"v":null,"f":""}, "uric_acid":{"v":null,"f":""}, "total_bilirubin":{"v":null,"f":""}, "albumin":{"v":null,"f":""}, "hiv":{"v":"non_reactive","f":"normal"}, "hbsag":{"v":"non_reactive","f":"normal"} },
+  "hematology": { "hemoglobin":{"v":null,"f":""}, "wbc_count":{"v":null,"f":""}, "platelet_count":{"v":null,"f":""}, "rbc_count":{"v":null,"f":""}, "esr":{"v":null,"f":""} },
+  "parameters_found": 0
+}
+CRITICAL FIELD MAPPING — use EXACTLY these field names:
+- S.G.P.T. or SGPT or ALT → sgpt_alt
+- Serum Creatinine or S.Creatinine → serum_creatinine
+- Serum Cholesterol or CHOLESTROL or TC → total_cholesterol
+- HbA1c or HbA1C or Glycated Haemoglobin → hba1c
+- Haemoglobin or Hb or HAEMOGLOBIN → hemoglobin (in hematology)
+- WBC or W.B.C or Leukocytes or TLC → wbc_count
+- ESR (WestPergreen/Westergren) → esr
+- Serum Triglyceride or TRIGLYCERIDE or TG → triglycerides
+- T.CHOLESTROL/HDL Ratio or TC/HDL → tc_hdl_ratio
+For flags: normal=within range, high=above, low=below, borderline=near limit.`;
 
-STEP 1 — Scan the ENTIRE document first. Read every table row, every column, every header, every remarks section, every printed value.
-STEP 2 — For each field in the JSON schema below, ask yourself: "Did I see this value anywhere in the document?" If YES — fill it. If genuinely not present — leave null.
-STEP 3 — Common places values hide: remarks column, summary box at top/bottom, printed reference range rows, doctor's handwritten notes, footers.
+        // ── Call 1: Physical exam ─────────────────────────────────────────────
+        const physPrompt = `Customer: ${wf.proposer_name}, Age:${wf.age}, Gender:${wf.gender}, Declared conditions: ${wf.medical_history?.pre_existing_conditions?.join(',')||'none'}, Declared medications/history: ${wf.observations||'none'}.
 
-SPECIFIC RULES:
-- BMI: if you see height + weight, calculate it. If BMI is printed anywhere, use it. Fill physical_exam.bmi.value.
-- Blood pressure: if you see any BP reading (e.g. 120/80), fill systolic AND diastolic.
-- HbA1c: this is also written as "Glycated Haemoglobin" or "A1C" — fill blood_chemistry.hba1c.value.
-- Hemoglobin: also written as "Hb" or "Haemoglobin" — fill hematology.hemoglobin.value.
-- ECG: if it says "Normal sinus rhythm" or "Normal" — fill cardiac.ecg_interpretation = "normal".
-- Urine protein: if it says "Nil" or "Negative" — fill urine_analysis.protein.value = "nil", flag = "normal".
-- For flags: use "normal" if within range, "high" if above, "low" if below, "borderline" if near limit.
-- medications_found — list any medications mentioned anywhere. Set disclosed=false if condition not in declared list.
-- drug_condition_mismatches — flag if a medication implies an undeclared condition.
-- parameters_found — count EVERY field you filled with a non-null value (excluding default non_reactive). Must be accurate.` });
+Extract physical examination data from the above documents. ${PHYSICAL_SCHEMA}`;
 
-        // ── Call Bedrock using ConverseCommand ───────────────────────────────
-        const __client = await getBedrockClient();
-        const invokeStart = Date.now();
-
-        const converseRes = await __client.send(new ConverseCommand({
+        const physContent = [...physicalBlocks, { text: physPrompt }];
+        const invokeStart1 = Date.now();
+        const physRes = await __client.send(new ConverseCommand({
           modelId,
-          system: [{ text: 'You are a medical document extraction AI. Extract structured lab values from medical reports. Return ONLY valid JSON, no markdown, no explanation, no code fences.' }],
-          messages: [{ role: 'user', content: converseContent }],
+          system: [{ text: 'You are a medical document extraction AI. Extract structured values from medical examination reports. Return ONLY valid JSON, no markdown, no explanation.' }],
+          messages: [{ role: 'user', content: physContent }],
           inferenceConfig: { maxTokens: 4096, temperature: 0 }
         }));
+        console.log('[Extraction] Call 1 (Physical) responded in', Date.now()-invokeStart1, 'ms | tokens:', physRes.usage?.inputTokens, '→', physRes.usage?.outputTokens);
 
-        const elapsed = Date.now() - invokeStart;
+        // ── Call 2: Lab reports (only if lab docs exist) ──────────────────────
+        let labResponseText = '';
+        if (hasLabDocs) {
+          const labPrompt = `Patient: ${wf.proposer_name}, Age:${wf.age}, Gender:${wf.gender}.
+
+Extract ALL blood test values from the lab reports above. ${LAB_SCHEMA}`;
+
+          const labContent = [...labBlocks, { text: labPrompt }];
+          const invokeStart2 = Date.now();
+          const labRes = await __client.send(new ConverseCommand({
+            modelId,
+            system: [{ text: 'You are a medical lab report extraction AI. Extract blood test values from pathology reports. Return ONLY valid JSON, no markdown, no explanation.' }],
+            messages: [{ role: 'user', content: labContent }],
+            inferenceConfig: { maxTokens: 4096, temperature: 0 }
+          }));
+          labResponseText = labRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+          console.log('[Extraction] Call 2 (Lab) responded in', Date.now()-invokeStart2, 'ms | tokens:', labRes.usage?.inputTokens, '→', labRes.usage?.outputTokens);
+          console.log('[Extraction] Lab raw response (first 500):', labResponseText.substring(0, 500));
+        }
+
+        // ── Merge responses ───────────────────────────────────────────────────
+        const physResponseText = physRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+        const elapsed = Date.now() - invokeStart1;
         console.log('[Extraction] ✅ Converse API responded in', elapsed, 'ms');
-        console.log('[Extraction] Stop reason:', converseRes.stopReason);
-        console.log('[Extraction] Input tokens:', converseRes.usage?.inputTokens, '| Output tokens:', converseRes.usage?.outputTokens);
+        console.log('[Extraction] Stop reason:', physRes.stopReason);
+        console.log('[Extraction] Input tokens:', physRes.usage?.inputTokens, '| Output tokens:', physRes.usage?.outputTokens);
 
-        const responseText = converseRes.output?.message?.content
-          ?.filter(b => b.text)
-          ?.map(b => b.text)
-          ?.join('') || '';
-
-        console.log('[Extraction] Raw response length:', responseText.length);
-        console.log('[Extraction] Raw response (first 500):', responseText.substring(0, 500));
+        // responseText = physical exam result; labResponseText = blood lab result
+        const responseText = physResponseText;
+        console.log('[Extraction] Physical raw response length:', responseText.length);
+        console.log('[Extraction] Physical raw response (first 600):', responseText.substring(0, 600));
 
         const jsonMatch = responseText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -1638,12 +1663,58 @@ SPECIFIC RULES:
 
             console.log('[Extraction] JSON parsed OK — parameters_found:', extractedData.parameters_found);
             console.log('[Extraction] Keys found:', Object.keys(extractedData).join(', '));
-            // Log non-null blood chemistry values
+            // Log ALL blood chemistry values (null and non-null) to diagnose extraction
             const bc = extractedData.blood_chemistry || {};
             const nonNull = Object.entries(bc).filter(([k,v]) => v && v.value !== null).map(([k,v]) => k+'='+v.value);
+            const allNull = Object.entries(bc).filter(([k,v]) => !v || v.value === null).map(([k]) => k);
             console.log('[Extraction] Non-null blood_chemistry:', nonNull.join(', ') || 'NONE');
-            apiLog.push({ agent: 'AI Document Extraction (Converse)', timestamp: new Date().toISOString(),
-              tokens: { input: converseRes.usage?.inputTokens, output: converseRes.usage?.outputTokens },
+            console.log('[Extraction] NULL blood_chemistry fields:', allNull.join(', ') || 'none');
+            console.log('[Extraction] Raw hba1c field:', JSON.stringify(bc.hba1c));
+            console.log('[Extraction] Raw sgpt_alt field:', JSON.stringify(bc.sgpt_alt));
+            console.log('[Extraction] Raw serum_creatinine field:', JSON.stringify(bc.serum_creatinine));
+            console.log('[Extraction] Raw total_cholesterol field:', JSON.stringify(bc.total_cholesterol));
+            const hem = extractedData.hematology || {};
+            console.log('[Extraction] Raw hemoglobin field:', JSON.stringify(hem.hemoglobin));
+            console.log('[Extraction] Raw esr field:', JSON.stringify(hem.esr));
+            console.log('[Extraction] Raw wbc_count field:', JSON.stringify(hem.wbc_count));
+            // ── Merge lab results into extractedData ──────────────────────
+            if (labResponseText) {
+              const labMatch = labResponseText.match(/\{[\s\S]*\}/);
+              if (labMatch) {
+                try {
+                  const labData = JSON.parse(labMatch[0]);
+                  // Merge blood_chemistry
+                  if (labData.blood_chemistry) {
+                    extractedData.blood_chemistry = extractedData.blood_chemistry || {};
+                    for (const [k, v] of Object.entries(labData.blood_chemistry)) {
+                      if (v && v.v !== null && v.v !== undefined) {
+                        extractedData.blood_chemistry[k] = v; // overwrite with lab value
+                      }
+                    }
+                  }
+                  // Merge hematology
+                  if (labData.hematology) {
+                    extractedData.hematology = extractedData.hematology || {};
+                    for (const [k, v] of Object.entries(labData.hematology)) {
+                      if (v && v.v !== null && v.v !== undefined) {
+                        extractedData.hematology[k] = v;
+                      }
+                    }
+                  }
+                  console.log('[Extraction] Lab merge complete — blood_chemistry non-null after merge:',
+                    Object.entries(extractedData.blood_chemistry||{}).filter(([k,v])=>v&&v.v!=null).map(([k,v])=>k+'='+v.v).join(', ') || 'NONE');
+                  console.log('[Extraction] Hematology non-null after merge:',
+                    Object.entries(extractedData.hematology||{}).filter(([k,v])=>v&&v.v!=null).map(([k,v])=>k+'='+v.v).join(', ') || 'NONE');
+                } catch(labErr) {
+                  console.error('[Extraction] Lab merge parse error:', labErr.message);
+                  console.error('[Extraction] Lab raw:', labResponseText.substring(0, 300));
+                }
+              } else {
+                console.warn('[Extraction] No JSON found in lab response:', labResponseText.substring(0, 200));
+              }
+            }
+            apiLog.push({ agent: 'AI Document Extraction (Converse — split 2-call)', timestamp: new Date().toISOString(),
+              tokens: { input: physRes.usage?.inputTokens, output: physRes.usage?.outputTokens },
               duration_ms: elapsed, status: 'success', parameters_found: extractedData.parameters_found || 0 });
           } catch(parseErr) {
             console.error('[Extraction] JSON parse failed:', parseErr.message);
@@ -1666,7 +1737,7 @@ SPECIFIC RULES:
         console.error('[Extraction] Stack:', claudeErr.stack?.split('\n').slice(0,4).join(' | '));
         console.error('[Extraction] Workflow ID:', wf.id);
         console.error('[Extraction] Documents count:', wf.documents?.length);
-        try { console.error('[Extraction] converseContent blocks:', typeof converseContent !== 'undefined' ? converseContent.length : 'not built yet'); } catch(_) {}
+        try { console.error('[Extraction] converseContent blocks:', typeof converseContent !== 'undefined' ? converseContent.length : 'not built yet'); console.error('[Extraction] physicalBlocks:', typeof physicalBlocks !== 'undefined' ? physicalBlocks.length : 'not built'); console.error('[Extraction] labBlocks:', typeof labBlocks !== 'undefined' ? labBlocks.length : 'not built'); } catch(_) {}
         apiLog.push({ agent: 'AI Document Extraction', timestamp: new Date().toISOString(), status: 'error',
           error: claudeErr.message, error_name: claudeErr.name, http_status: claudeErr.$metadata?.httpStatusCode });
         wf.state_history.push({ state: 'extraction_fallback', timestamp: new Date().toISOString(), actor: 'System',
@@ -2073,7 +2144,7 @@ async function runAIAnalysis(wf) {
     if (_ca.ecg?.overall_interpretation) console.log('[MedExtract] ECG: ' + _ca.ecg.overall_interpretation);
     if (extractedData.chest_xray?.interpretation) console.log('[MedExtract] CXR: ' + extractedData.chest_xray.interpretation);
     const _meds = extractedData.correlation_data?.medications_found || [];
-    if (_meds.length) console.log('[MedExtract] Medications: ' + _meds.map(m => m.name + (m.disclosed ? '' : ' (UNDISCLOSED)')).join(', '));
+    const _validMeds = _meds.filter(m => m && m.name); if (_validMeds.length) console.log('[MedExtract] Medications: ' + _validMeds.map(m => m.name + (m.disclosed ? '' : ' (UNDISCLOSED)')).join(', ')); else if (_meds.length) console.log('[MedExtract] Medications array has', _meds.length, 'entries but no valid names');
     console.log('[MedExtract] ---------- End ----------');
     // Merge declared medical history
     if (wf.medical_history && Object.keys(wf.medical_history).length > 0) {
@@ -2155,7 +2226,7 @@ async function runAIAnalysis(wf) {
         }
       }
     }
-    console.log('[ScoringDebug] Final score:', riskResult.risk_score?.normalized, '| Recommendation:', riskResult.recommendation);
+    console.log('[ScoringDebug] Final score:', riskResult.risk_score?.normalized, '| riskResult.decision.recommendation:', riskResult.decision?.recommendation);
 
     // Check UW guideline violations — Issue 2 fix: prioritize by severity per parameter path
     // Phase 0.1 fix: merge AI-extracted custom rules with built-in guidelines so they actually fire
