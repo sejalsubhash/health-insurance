@@ -1494,97 +1494,128 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
 
         console.log('[Extraction] converseContent blocks:', converseContent.length, '| docs:', wf.documents.length);
 
-        // ── Two-call extraction to avoid 4096-token output truncation ─────────
-        // Both calls receive ALL document pages — Claude ignores irrelevant pages.
-        // Call 1 focuses on: physical exam values (BMI, BP, ECG, lifestyle, medications)
-        // Call 2 focuses on: blood lab values (CBC, biochemistry, HbA1c, haematology)
-        // This works for ALL PDF structures — single multi-page, multiple files, any order.
+        // ── Extract just the page-image blocks for per-page sequential scanning ──
+        // Each image block becomes one page we scan individually (Sequential + Process-all).
+        const pageImages = converseContent.filter(b => b.image);
+        console.log('[Extraction] Total page images to scan one-by-one:', pageImages.length);
+
+        // ── PER-PAGE SEQUENTIAL EXTRACTION ────────────────────────────────────
+        // Send ONE page at a time to Bedrock, scan it, extract, log immediately, repeat
+        // until all pages are done (Sequential + Process-all). Each call has the model's
+        // full attention on a single page and its own fresh 4096 output budget.
+        // Merge rule: a value from a LAB-REPORT page always OVERWRITES a value from a
+        // non-lab page. Lifestyle / form-only fields are filled by whichever page supplies them.
 
         const __client = await getBedrockClient();
-        const allDocBlocks = converseContent; // all pages from all uploaded documents
 
-        console.log('[Extraction] Using 2-call split — total blocks:', allDocBlocks.length, '| docs:', wf.documents.length);
-
-        // ── Short JSON schemas for focused extraction ─────────────────────────
-        const PHYSICAL_SCHEMA = `Return ONLY valid JSON:
+        // One combined schema per page — the page may contain physical, lab, or nothing.
+        const PAGE_SCHEMA = `Return ONLY valid JSON (no markdown, no prose). If this page has NO medical values, return {"parameters_found":0}.
 {
+  "page_type": "lab_report|exam_form|photo|id_card|other",
   "lifestyle": { "smoking": {"status":"never|former|current"}, "alcohol": {"status":"never|occasional|regular|heavy"}, "tobacco_chewing": {"status":"never|former|current"}, "occupation_hazard": "none|low|moderate|high", "exercise": {"frequency":"none|occasional|regular|daily"} },
   "physical_exam": { "bmi": {"v":null,"f":""}, "blood_pressure": {"systolic":{"v":null,"f":""},"diastolic":{"v":null,"f":""}} },
-  "urine_analysis": { "protein": {"v":"nil","f":"normal"}, "glucose": {"v":"nil","f":"normal"} },
-  "cardiac": { "ecg": {"v":"normal","f":""} },
-  "chest_xray": { "v":"normal","f":"" },
-  "correlation_data": { "medications_found": [], "drug_condition_mismatches": [] },
-  "parameters_found": 0
-}
-RULES: BMI=weight(kg)/height(m)^2. BP systolic/diastolic from sphygmomanometer. ECG from interpretation line. Urine protein from urine report. medications_found: list ALL tablets/drugs mentioned anywhere with {name,condition,disclosed:false if not in declared list}.`;
-
-        const LAB_SCHEMA = `Return ONLY valid JSON:
-{
-  "blood_chemistry": { "fasting_glucose":{"v":null,"f":""}, "hba1c":{"v":null,"f":""}, "total_cholesterol":{"v":null,"f":""}, "hdl":{"v":null,"f":""}, "ldl":{"v":null,"f":""}, "triglycerides":{"v":null,"f":""}, "tc_hdl_ratio":{"v":null,"f":""}, "sgot_ast":{"v":null,"f":""}, "sgpt_alt":{"v":null,"f":""}, "serum_creatinine":{"v":null,"f":""}, "blood_urea":{"v":null,"f":""}, "uric_acid":{"v":null,"f":""}, "total_bilirubin":{"v":null,"f":""}, "albumin":{"v":null,"f":""}, "hiv":{"v":"non_reactive","f":"normal"}, "hbsag":{"v":"non_reactive","f":"normal"} },
+  "urine_analysis": { "protein": {"v":null,"f":""}, "glucose": {"v":null,"f":""} },
+  "cardiac": { "ecg": {"v":null,"f":""} },
+  "chest_xray": { "v":null,"f":"" },
+  "blood_chemistry": { "fasting_glucose":{"v":null,"f":""}, "hba1c":{"v":null,"f":""}, "total_cholesterol":{"v":null,"f":""}, "hdl":{"v":null,"f":""}, "ldl":{"v":null,"f":""}, "triglycerides":{"v":null,"f":""}, "tc_hdl_ratio":{"v":null,"f":""}, "sgot_ast":{"v":null,"f":""}, "sgpt_alt":{"v":null,"f":""}, "serum_creatinine":{"v":null,"f":""}, "blood_urea":{"v":null,"f":""}, "uric_acid":{"v":null,"f":""}, "total_bilirubin":{"v":null,"f":""}, "albumin":{"v":null,"f":""}, "hiv":{"v":null,"f":""}, "hbsag":{"v":null,"f":""} },
   "hematology": { "hemoglobin":{"v":null,"f":""}, "wbc_count":{"v":null,"f":""}, "platelet_count":{"v":null,"f":""}, "rbc_count":{"v":null,"f":""}, "esr":{"v":null,"f":""} },
+  "correlation_data": { "medications_found": [] },
   "parameters_found": 0
 }
-This document has MULTIPLE PAGES (selfies, ID cards, examination form, AND lab report pages). The lab reports with numeric values (biochemistry, haematology, HbA1c, urine) are usually the LAST pages. Read EVERY page to the very end — do not stop after the form pages.
+ONLY fill fields that actually appear on THIS page; leave the rest null. Set page_type accurately.
+FIELD MAPPING: S.G.P.T./SGPT/ALT→sgpt_alt; Serum Creatinine→serum_creatinine; Serum Cholesterol/CHOLESTROL/TC→total_cholesterol; HbA1c/Glycated Haemoglobin→hba1c; Haemoglobin/Hb→hemoglobin(hematology); WBC/TLC→wbc_count; ESR→esr; Triglyceride/TG→triglycerides; T.CHOLESTROL/HDL→tc_hdl_ratio.
+BMI=weight(kg)/height(m)^2. BP from sphygmomanometer. medications_found: list tablets/drugs with {name,condition,disclosed:false if not declared}.
+Flags: normal/high/low/borderline.`;
 
-CRITICAL FIELD MAPPING — use EXACTLY these field names:
-- S.G.P.T. or SGPT or ALT → sgpt_alt
-- Serum Creatinine or S.Creatinine → serum_creatinine
-- Serum Cholesterol or CHOLESTROL or TC → total_cholesterol
-- HbA1c or HbA1C or Glycated Haemoglobin → hba1c
-- Haemoglobin or Hb or HAEMOGLOBIN → hemoglobin (in hematology)
-- WBC or W.B.C or Leukocytes or TLC → wbc_count
-- ESR (WestPergreen/Westergren) → esr
-- Serum Triglyceride or TRIGLYCERIDE or TG → triglycerides
-- T.CHOLESTROL/HDL Ratio or TC/HDL → tc_hdl_ratio
-For flags: normal=within range, high=above, low=below, borderline=near limit.`;
+        const pagePrompt = `Patient: ${wf.proposer_name}, Age:${wf.age}, Gender:${wf.gender}, Declared conditions: ${wf.medical_history?.pre_existing_conditions?.join(',')||'none'}.
 
-        // ── Call 1: Physical exam ─────────────────────────────────────────────
-        const physPrompt = `Customer: ${wf.proposer_name}, Age:${wf.age}, Gender:${wf.gender}, Declared conditions: ${wf.medical_history?.pre_existing_conditions?.join(',')||'none'}, Declared medications/history: ${wf.observations||'none'}.
+This is ONE page from a medical document bundle. Extract every medical value visible on THIS page only. ${PAGE_SCHEMA}`;
 
-Extract physical examination data from the above documents. ${PHYSICAL_SCHEMA}`;
+        // Accumulators that the downstream parse/normalize/merge code expects.
+        let mergedPhysical = {};   // non-lab sections (physical_exam, lifestyle, urine, cardiac, chest_xray, correlation_data)
+        let mergedLab = { blood_chemistry: {}, hematology: {} }; // lab sections — these OVERWRITE
+        const labFieldFromLabPage = { blood_chemistry: {}, hematology: {} }; // track which fields came from a lab page
 
-        // Call 1: ALL documents + focused physical prompt
-        const physContent = [...allDocBlocks, { text: physPrompt }];
+        const _isLeafFilled = (n) => n && typeof n === 'object' && 'v' in n && n.v !== null && n.v !== '' && n.v !== undefined;
         const invokeStart1 = Date.now();
-        const physRes = await __client.send(new ConverseCommand({
-          modelId,
-          system: [{ text: 'You are a medical document extraction AI. Extract structured values from medical examination reports. Return ONLY valid JSON, no markdown, no explanation.' }],
-          messages: [{ role: 'user', content: physContent }],
-          inferenceConfig: { maxTokens: 4096, temperature: 0 }
-        }));
-        console.log('[Extraction] Call 1 (Physical) responded in', Date.now()-invokeStart1, 'ms | tokens:', physRes.usage?.inputTokens, '→', physRes.usage?.outputTokens);
+        let pagesScanned = 0, pagesWithData = 0, lastStopReason = 'end_turn';
 
-        // ── Call 2: Lab reports (only if lab docs exist) ──────────────────────
-        let labResponseText = '';
-        if (true) { // Always run Call 2 — lab values may be in any page of the PDF
-          const labPrompt = `Patient: ${wf.proposer_name}, Age:${wf.age}, Gender:${wf.gender}.
+        for (let pi = 0; pi < pageImages.length; pi++) {
+          const pageNum = pi + 1;
+          try {
+            const pageRes = await __client.send(new ConverseCommand({
+              modelId,
+              system: [{ text: 'You are a medical document extraction AI. You are shown ONE page. Extract only what is on it. Return ONLY valid JSON, no markdown.' }],
+              messages: [{ role: 'user', content: [ pageImages[pi], { text: pagePrompt } ] }],
+              inferenceConfig: { maxTokens: 4096, temperature: 0 }
+            }));
+            lastStopReason = pageRes.stopReason || lastStopReason;
+            const pageText = pageRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+            const pm = pageText.match(/\{[\s\S]*\}/);
+            if (!pm) {
+              console.log(`[Extraction] Page ${pageNum}/${pageImages.length}: no JSON returned — skipping`);
+              pagesScanned++;
+              continue;
+            }
+            const pd = JSON.parse(pm[0]);
+            const isLabPage = pd.page_type === 'lab_report';
 
-Look through ALL pages of the uploaded documents and extract every blood test value you can find. ${LAB_SCHEMA}`;
+            // Merge LAB sections — lab page values always win; non-lab page lab values only fill empty slots
+            for (const sec of ['blood_chemistry','hematology']) {
+              if (!pd[sec]) continue;
+              for (const [k, v] of Object.entries(pd[sec])) {
+                if (!_isLeafFilled(v)) continue;
+                const alreadyFromLab = labFieldFromLabPage[sec][k];
+                if (isLabPage) {
+                  mergedLab[sec][k] = v;                 // lab page overwrites unconditionally
+                  labFieldFromLabPage[sec][k] = true;
+                } else if (!alreadyFromLab && !(mergedLab[sec][k])) {
+                  mergedLab[sec][k] = v;                 // non-lab fills only if no lab value yet
+                }
+              }
+            }
 
-          const labContent = [...allDocBlocks, { text: labPrompt }];
-          const invokeStart2 = Date.now();
-          const labRes = await __client.send(new ConverseCommand({
-            modelId,
-            system: [{ text: 'You are a medical lab report extraction AI. Extract blood test values from pathology reports. Return ONLY valid JSON, no markdown, no explanation.' }],
-            messages: [{ role: 'user', content: labContent }],
-            inferenceConfig: { maxTokens: 4096, temperature: 0 }
-          }));
-          labResponseText = labRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
-          console.log('[Extraction] Call 2 (Lab) responded in', Date.now()-invokeStart2, 'ms | tokens:', labRes.usage?.inputTokens, '→', labRes.usage?.outputTokens);
-          console.log('[Extraction] Lab raw response (first 500):', labResponseText.substring(0, 500));
+            // Merge NON-LAB sections — first non-null wins (lab pages rarely carry these)
+            for (const sec of ['physical_exam','urine_analysis','cardiac','chest_xray','lifestyle']) {
+              if (!pd[sec]) continue;
+              if (!mergedPhysical[sec]) mergedPhysical[sec] = {};
+              if (sec === 'chest_xray') { if (_isLeafFilled(pd[sec]) && !_isLeafFilled(mergedPhysical[sec])) mergedPhysical[sec] = pd[sec]; continue; }
+              for (const [k, v] of Object.entries(pd[sec])) {
+                const cur = mergedPhysical[sec][k];
+                const has = (x) => x && (typeof x !== 'object' || _isLeafFilled(x) || ('status' in x && x.status) || ('frequency' in x && x.frequency) || ('systolic' in x));
+                if (has(v) && !has(cur)) mergedPhysical[sec][k] = v;
+              }
+            }
+            // medications accumulate
+            if (pd.correlation_data?.medications_found?.length) {
+              mergedPhysical.correlation_data = mergedPhysical.correlation_data || { medications_found: [] };
+              mergedPhysical.correlation_data.medications_found.push(...pd.correlation_data.medications_found);
+            }
+
+            // ── Immediate per-page log (your live-progress requirement) ──
+            const found = [];
+            for (const sec of ['blood_chemistry','hematology','physical_exam']) {
+              if (pd[sec]) for (const [k,v] of Object.entries(pd[sec])) { if (_isLeafFilled(v)) found.push(`${k}=${v.v}`); else if (v?.systolic && _isLeafFilled(v.systolic)) found.push(`${k}=${v.systolic.v}/${v.diastolic?.v}`); }
+            }
+            pagesScanned++;
+            if (found.length) pagesWithData++;
+            console.log(`[Extraction] ✅ Page ${pageNum}/${pageImages.length} [${pd.page_type||'?'}] → ${found.length?found.join(', '):'no values'}`);
+          } catch (pageErr) {
+            pagesScanned++;
+            console.error(`[Extraction] ⚠️ Page ${pageNum}/${pageImages.length} failed: ${pageErr.message} — continuing`);
+          }
         }
 
-        // ── Merge responses ───────────────────────────────────────────────────
-        const physResponseText = physRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
         const elapsed = Date.now() - invokeStart1;
-        console.log('[Extraction] ✅ Converse API responded in', elapsed, 'ms');
-        console.log('[Extraction] Stop reason:', physRes.stopReason);
-        console.log('[Extraction] Input tokens:', physRes.usage?.inputTokens, '| Output tokens:', physRes.usage?.outputTokens);
+        console.log(`[Extraction] ✅ Per-page scan complete: ${pagesScanned}/${pageImages.length} pages, ${pagesWithData} had data, ${elapsed}ms total`);
 
-        // responseText = physical exam result; labResponseText = blood lab result
-        const responseText = physResponseText;
-        console.log('[Extraction] Physical raw response length:', responseText.length);
-        console.log('[Extraction] Physical raw response (first 600):', responseText.substring(0, 600));
+        // Hand the merged results to the existing downstream parse/normalize/merge code unchanged.
+        const responseText = JSON.stringify({ ...mergedPhysical, parameters_found: 0 });
+        const labResponseText = JSON.stringify({ blood_chemistry: mergedLab.blood_chemistry, hematology: mergedLab.hematology, parameters_found: 0 });
+        const physRes = { stopReason: lastStopReason, usage: {} };
+        console.log('[Extraction] Stop reason (last page):', lastStopReason);
+        console.log('[Extraction] Merged physical (first 400):', responseText.substring(0, 400));
+        console.log('[Extraction] Merged lab (first 400):', labResponseText.substring(0, 400));
 
         const jsonMatch = responseText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
