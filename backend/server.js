@@ -1859,6 +1859,13 @@ async function runAIAnalysis(wf) {
   const riskParams = JSON.parse(fs.readFileSync(`${configPath}/risk-params.json`, 'utf8'));
 
   // Product-specific policy lookup and merge
+  // catForAI declared here so it's accessible everywhere in runAIAnalysis
+  const hasPED_ai = !!(wf.pre_existing_conditions?.length || wf.detailed_ped);
+  const catForAI  = wf.cat_level
+    ? { cat: wf.cat_level }
+    : resolveCAT(wf.age, wf.sum_assured, {}, hasPED_ai);
+  console.log('[resolveCAT AI] wf.cat_level:', wf.cat_level, '→ catForAI:', catForAI.cat);
+
   let appliedPolicy = null;
   const productConfig = getProductScoringConfig(wf.product_name);
   if (productConfig && productConfig.overrides) {
@@ -1891,10 +1898,7 @@ async function runAIAnalysis(wf) {
     // The workflow's cat_level was set at creation time using the correct logic
     // (including PPHCTestName from JSON, family member ages, manual overrides).
     // Recalculating here causes the scoring engine to use the wrong Per-CAT config.
-    const hasPED_ai = !!(wf.pre_existing_conditions?.length || wf.detailed_ped);
-    const catForAI = wf.cat_level
-      ? { cat: wf.cat_level }
-      : resolveCAT(wf.age, wf.sum_assured, ov, hasPED_ai); // fallback only if cat_level missing
+    // catForAI is declared outside this block — see below
     const catTestsMapAI = {
       'STP':      [],
       'tele_mer': [],
