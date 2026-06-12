@@ -1687,30 +1687,7 @@ SPECIFIC RULES:
     wf.extraction_method = extractionMethod;
     wf.api_log = apiLog;
 
-    // Step 1B: ICMR Clinical Text Analysis — runs automatically after extraction
-    // Analyses non-numeric clinical text from extracted_data against ICMR guidelines
-    // (ECG findings, CXR, MER notes, medications, BMI/BP context, flagged labs)
-    // Does NOT re-score numeric values — Per-CAT Scoring Config handles those
-    socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'icmr_analysis', message: 'Running ICMR clinical text analysis...' });
-    try {
-      const icmrGuidelines = await s3Client.getConfig('icmr-guidelines').catch(() => null);
-      const icmrResult = await icmrAnalyser.runICMRAnalysis(wf, icmrGuidelines?.text || null);
-      wf.icmr_analysis = icmrResult;
-      const findingsCount = icmrResult.icmr_findings?.length || 0;
-      const nonDisclosures = icmrResult.non_disclosure_flags?.length || 0;
-      wf.state_history.push({
-        state: 'icmr_analysis_complete',
-        timestamp: new Date().toISOString(),
-        actor: 'ICMR Engine',
-        note: `ICMR: ${findingsCount} finding(s), risk: ${icmrResult.overall_clinical_risk}, adj: ${icmrResult.score_adjustment}${nonDisclosures > 0 ? ', NON-DISCLOSURE: ' + nonDisclosures : ''}`
-      });
-      console.log('[ICMR] Analysis complete — findings:', findingsCount, '| risk:', icmrResult.overall_clinical_risk, '| adj:', icmrResult.score_adjustment);
-    } catch(icmrErr) {
-      console.error('[ICMR] Analysis failed:', icmrErr.message);
-      wf.icmr_analysis = { icmr_findings: [], overall_clinical_risk: 'low', score_adjustment: 0, error: icmrErr.message, analysed_at: new Date().toISOString() };
-    }
-
-    // Step 2: Run AI analysis against rules (numeric Per-CAT scoring)
+    // Step 2: Run AI analysis against rules
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'analyzing', message: 'Scoring against UW rules...' });
     wf.state_history.push({ state: 'rule_engine_started', timestamp: new Date().toISOString(), actor: 'Rule Engine', note: 'Evaluating against medical-scoring, uw-guidelines, risk-params' });
 
@@ -2054,6 +2031,13 @@ async function runAIAnalysis(wf) {
       };
       riskResult = riskEngine.calculateTeleMERRisk(teleMERInput, null, correlationData);
     } else {
+      // ── Scoring debug log ──────────────────────────────────────────────────
+      console.log('[ScoringDebug] CAT:', catForAI?.cat, '| scoring_components:', riskParams._scoring_components ? 'DB config loaded' : 'hardcoded fallback');
+      if (riskParams._scoring_components?.medical?.factors?.length > 0) {
+        console.log('[ScoringDebug] Medical factors:', riskParams._scoring_components.medical.factors.map(f => f.id).join(', '));
+      } else {
+        console.log('[ScoringDebug] Medical weight:', riskParams._scoring_components?.medical?.weight, '| factors:', riskParams._scoring_components?.medical?.factors?.length || 0);
+      }
       riskResult = riskEngine.calculateAll(extractedData, correlationData, {
         component_weights:  riskParams._component_weights  || null,
         scoring_components: riskParams._scoring_components || null,
@@ -2076,7 +2060,13 @@ async function runAIAnalysis(wf) {
         status: comp.score >= comp.max * 0.8 ? 'good' : comp.score >= comp.max * 0.5 ? 'moderate' : 'poor',
         breakdown: comp.breakdown || {}
       };
+      if (comp.breakdown && Object.keys(comp.breakdown).length > 0) {
+        for (const [fid, fb] of Object.entries(comp.breakdown)) {
+          console.log('[ScoringDebug] [' + name + '] ' + fid + ': value="' + fb.value + '" band="' + fb.matched_band + '" score=' + fb.score + '/' + fb.max + (fb.status === 'missing' ? ' ⚠ MISSING (40% fallback)' : ' ✓'));
+        }
+      }
     }
+    console.log('[ScoringDebug] Final score:', riskResult.risk_score?.normalized, '| Recommendation:', riskResult.recommendation);
 
     // Check UW guideline violations — Issue 2 fix: prioritize by severity per parameter path
     // Phase 0.1 fix: merge AI-extracted custom rules with built-in guidelines so they actually fire
