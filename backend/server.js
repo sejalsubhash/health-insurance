@@ -1341,6 +1341,13 @@ app.delete('/api/workflow/:id/document/:docId', requireAuth, (req, res) => {
 // Final submit documents — triggers AI extraction + analysis
 app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => {
   try {
+    // Check if already submitted before calling finalizeDocuments
+    const _wfCheck = workflowEngine.getWorkflow(req.params.id);
+    if (!_wfCheck) return res.status(404).json({ error: 'Workflow not found' });
+    if (_wfCheck.docs_submitted) {
+      console.warn('[submit-documents] Already submitted:', req.params.id, '— returning 400');
+      return res.status(400).json({ error: 'Documents already final-submitted. No further changes allowed.', already_submitted: true });
+    }
     const wf = workflowEngine.finalizeDocuments(req.params.id, req.user?.email||'vendor');
     socketManager.emitGlobal('docs_submitted', { workflow_id: wf.id, proposer_name: wf.proposer_name, doc_count: wf.documents.length });
 
