@@ -1415,10 +1415,15 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               // Convert all pages to JPEG at 150 DPI (good quality, reasonable size)
               execSync(`pdftoppm -jpeg -r 150 "${tmpPdf}" "${tmpDir}/page"`, { timeout: 60000, stdio: 'pipe' });
 
-              const pageFiles = fs.readdirSync(tmpDir)
+              const allPageFiles = fs.readdirSync(tmpDir)
                 .filter(f => f.endsWith('.jpg') || f.endsWith('.jpeg') || f.endsWith('.ppm'))
-                .sort()
-                .slice(0, 10); // max 10 pages per document
+                .sort();
+              const PAGE_CAP = 20; // PPHC bundles (selfies + Aadhaar + MER + lab reports) routinely run 12-16 pages; lab values are often on the LAST pages
+              const pageFiles = allPageFiles.slice(0, PAGE_CAP);
+              if (allPageFiles.length > PAGE_CAP) {
+                console.warn(`[Extraction] WARNING: ${doc.name} has ${allPageFiles.length} pages but only ${PAGE_CAP} sent — lab pages near the end may be dropped. Raise PAGE_CAP.`);
+              }
+              console.log(`[Extraction] ${doc.name}: ${allPageFiles.length} total pages, sending ${pageFiles.length}`);
 
               if (pageFiles.length > 0) {
                 converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — ${pageFiles.length} page(s)]` });
@@ -1519,6 +1524,8 @@ RULES: BMI=weight(kg)/height(m)^2. BP systolic/diastolic from sphygmomanometer. 
   "hematology": { "hemoglobin":{"v":null,"f":""}, "wbc_count":{"v":null,"f":""}, "platelet_count":{"v":null,"f":""}, "rbc_count":{"v":null,"f":""}, "esr":{"v":null,"f":""} },
   "parameters_found": 0
 }
+This document has MULTIPLE PAGES (selfies, ID cards, examination form, AND lab report pages). The lab reports with numeric values (biochemistry, haematology, HbA1c, urine) are usually the LAST pages. Read EVERY page to the very end — do not stop after the form pages.
+
 CRITICAL FIELD MAPPING — use EXACTLY these field names:
 - S.G.P.T. or SGPT or ALT → sgpt_alt
 - Serum Creatinine or S.Creatinine → serum_creatinine
