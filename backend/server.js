@@ -1997,6 +1997,84 @@ async function runAIAnalysis(wf) {
     }
     // Always sync top-level for risk engine compatibility
     extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+
+    // ── Medical parameters normalisation — path aliases ───────────────────────
+    // Fixes mismatched key names between Bedrock output and FACTOR_VALUE_EXTRACTORS
+    // Same pattern as lifestyle sync above — no data changed, just path aliases added
+    const _bc  = extractedData.blood_chemistry  || {};
+    const _hem = extractedData.hematology       || {};
+    const _pe  = extractedData.physical_exam    || {};
+    const _ur  = extractedData.urine_analysis   || {};
+    const _ca  = extractedData.cardiac          || {};
+
+    // sgpt alias — engine reads sgpt_alt, Bedrock may return sgpt
+    if (_bc.sgpt && !_bc.sgpt_alt) {
+      _bc.sgpt_alt = _bc.sgpt;
+      console.log('[MedNorm] sgpt → sgpt_alt alias added:', _bc.sgpt_alt?.value);
+    }
+    // triglycerides alias
+    if (_bc.triglyceride && !_bc.triglycerides) {
+      _bc.triglycerides = _bc.triglyceride;
+      console.log('[MedNorm] triglyceride → triglycerides alias added:', _bc.triglycerides?.value);
+    }
+    // blood_pressure flat → nested
+    if (_pe.blood_pressure && !_pe.blood_pressure.systolic && _pe.blood_pressure.systolic_value != null) {
+      _pe.blood_pressure = {
+        systolic:  { value: _pe.blood_pressure.systolic_value,  flag: _pe.blood_pressure.flag || '' },
+        diastolic: { value: _pe.blood_pressure.diastolic_value, flag: '' }
+      };
+    }
+    // ecg_interpretation alias
+    if (_ca.ecg_interpretation && !_ca.ecg) {
+      _ca.ecg = { overall_interpretation: _ca.ecg_interpretation, findings: '' };
+    }
+    // urine microalbumin alias
+    const _urMicro = extractedData.urine_analysis?.urine_microalbumin || extractedData.urine_microalbumin;
+    if (_urMicro && !extractedData.urine_analysis?.microalbumin) {
+      if (!extractedData.urine_analysis) extractedData.urine_analysis = {};
+      extractedData.urine_analysis.microalbumin = _urMicro;
+    }
+    // Sync back
+    extractedData.blood_chemistry = _bc;
+    extractedData.hematology      = _hem;
+    extractedData.physical_exam   = _pe;
+    extractedData.urine_analysis  = _ur;
+    extractedData.cardiac         = _ca;
+
+    // ── Detailed medical extraction log ──────────────────────────────────────
+    console.log('[MedExtract] ---------- Extracted Medical Parameters ----------');
+    const _lv = (label, v) => { if (v && v.value != null) console.log('[MedExtract] ' + label + ': ' + v.value + ' ' + (v.unit||'') + ' (' + (v.flag||'') + ')'); };
+    _lv('BMI',               _pe.bmi);
+    _lv('BP Systolic',       _pe.blood_pressure?.systolic);
+    _lv('BP Diastolic',      _pe.blood_pressure?.diastolic);
+    _lv('Hemoglobin',        _hem.hemoglobin);
+    _lv('WBC',               _hem.wbc_count);
+    _lv('ESR',               _hem.esr);
+    _lv('Platelet',          _hem.platelet_count);
+    _lv('HbA1C',             _bc.hba1c);
+    _lv('SGPT/ALT',          _bc.sgpt_alt);
+    _lv('SGOT/AST',          _bc.sgot_ast);
+    _lv('Serum Creatinine',  _bc.serum_creatinine);
+    _lv('Total Cholesterol', _bc.total_cholesterol);
+    _lv('Triglycerides',     _bc.triglycerides);
+    _lv('HDL',               _bc.hdl);
+    _lv('LDL',               _bc.ldl);
+    _lv('Fasting Glucose',   _bc.fasting_glucose);
+    _lv('TC/HDL Ratio',      _bc.tc_hdl_ratio);
+    _lv('Albumin',           _bc.albumin);
+    _lv('Total Bilirubin',   _bc.total_bilirubin);
+    _lv('Blood Urea',        _bc.blood_urea);
+    _lv('Uric Acid',         _bc.uric_acid);
+    _lv('TSH',               extractedData.thyroid?.tsh);
+    _lv('LVEF',              extractedData.cardiac_extended?.lvef);
+    _lv('GGT',               extractedData.liver_extended?.ggt);
+    _lv('Urine Protein',     _ur.protein);
+    _lv('Urine Microalbumin',_ur.microalbumin);
+    if (_ca.ecg?.overall_interpretation) console.log('[MedExtract] ECG: ' + _ca.ecg.overall_interpretation);
+    if (extractedData.chest_xray?.interpretation) console.log('[MedExtract] CXR: ' + extractedData.chest_xray.interpretation);
+    const _meds = extractedData.correlation_data?.medications_found || [];
+    if (_meds.length) console.log('[MedExtract] Medications: ' + _meds.map(m => m.name + (m.disclosed ? '' : ' (UNDISCLOSED)')).join(', '));
+    console.log('[MedExtract] ---------- End ----------');
     // Merge declared medical history
     if (wf.medical_history && Object.keys(wf.medical_history).length > 0) {
       if (!extractedData.telemer_data) extractedData.telemer_data = {};
