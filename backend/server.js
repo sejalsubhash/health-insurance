@@ -1969,10 +1969,38 @@ async function runAIAnalysis(wf) {
   // Product-specific policy lookup and merge
   // catForAI declared here so it's accessible everywhere in runAIAnalysis
   const hasPED_ai = !!(wf.pre_existing_conditions?.length || wf.detailed_ped);
-  const catForAI  = wf.cat_level
-    ? { cat: wf.cat_level }
-    : resolveCAT(wf.age, wf.sum_assured, {}, hasPED_ai);
-  console.log('[resolveCAT AI] wf.cat_level:', wf.cat_level, '→ catForAI:', catForAI.cat);
+
+  // ── Resilient CAT resolution — never silently fall to STP for a case that has a CAT/vendor ──
+  // Priority: (1) wf.cat_level if stored, (2) recover from assigned vendor's CAT mapping,
+  // (3) re-derive from age+SA via product rules. This fixes older/restored workflows whose
+  // cat_level wasn't persisted — without it they default to STP and score on the wrong weights.
+  function resolveCatForScoring() {
+    // 1) stored cat_level (normal path)
+    if (wf.cat_level && wf.cat_level !== 'STP') return { cat: wf.cat_level, reason: 'stored cat_level' };
+    // 2) recover from assigned vendor → CAT (VEND-005 = CAT_4, etc.)
+    if (wf.assigned_vendor_id) {
+      const VENDOR_CAT_MAP = { 'VEND-003':'tele_mer', 'VEND-001':'CAT_1', 'VEND-002':'CAT_2', 'VEND-004':'CAT_3', 'VEND-005':'CAT_4' };
+      let vendorCat = VENDOR_CAT_MAP[wf.assigned_vendor_id];
+      if (!vendorCat) {
+        try { const v = vendorApi.getVendor(wf.assigned_vendor_id); if (v?.cat_level) vendorCat = v.cat_level; } catch(_) {}
+      }
+      if (vendorCat && vendorCat !== 'STP') {
+        console.log('[resolveCAT AI] cat_level missing — recovered', vendorCat, 'from vendor', wf.assigned_vendor_id);
+        return { cat: vendorCat, reason: 'recovered from assigned vendor' };
+      }
+    }
+    // 3) re-derive from age + SA via product mandatory-test rules
+    const pc = getProductScoringConfig(wf.product_name);
+    const derived = resolveCAT(wf.age, wf.sum_assured, pc?.overrides, hasPED_ai);
+    if (derived.cat && derived.cat !== 'STP') {
+      console.log('[resolveCAT AI] cat_level missing — re-derived', derived.cat, 'from age/SA rules');
+      return derived;
+    }
+    // genuine STP (no vendor, no CAT rule matched)
+    return wf.cat_level ? { cat: wf.cat_level, reason: 'stored STP/tele_mer' } : derived;
+  }
+  const catForAI = resolveCatForScoring();
+  console.log('[resolveCAT AI] wf.cat_level:', wf.cat_level, '→ catForAI:', catForAI.cat, '(', catForAI.reason, ')');
 
   let appliedPolicy = null;
   const productConfig = getProductScoringConfig(wf.product_name);
@@ -2213,7 +2241,7 @@ async function runAIAnalysis(wf) {
     // ── Route to correct scoring function based on CAT level ──────────────────
     // tele_mer has medical weight=0 and uses the 6-component hybrid engine.
     // All PPHC CATs (CAT_1–4) use calculateAll with the lab-results engine.
-    const isTeleMER = wf.cat_level === 'tele_mer';
+    const isTeleMER = catForAI.cat === 'tele_mer';
     console.log(`[Scoring] cat_level=${wf.cat_level} → routing to ${isTeleMER ? 'calculateTeleMERRisk' : 'calculateAll'}`);
 
     let riskResult;
@@ -2251,11 +2279,21 @@ async function runAIAnalysis(wf) {
     // Build detailed component analysis
     const componentAnalysis = {};
     for (const [name, comp] of Object.entries(riskResult.risk_score.components)) {
+      // ── Use per-CAT WEIGHTED values for display when the weighting path ran ──
+      // calculateAll's weighting loop sets comp.weight (the CAT component weight, e.g. medical=45
+      // for CAT_4) and comp.weighted_score (the score rescaled onto that weight). The raw comp.score
+      // and comp.max are the hardcoded scorer's internal scale (medical=35, lifestyle=25) and must
+      // NOT be shown when per-CAT weights exist — otherwise the UI shows /35 instead of the
+      // configured /45. Falls back to raw score/max only when no per-CAT weight was applied.
+      const hasWeight = comp.weight != null && comp.weighted_score != null;
+      const dispScore = hasWeight ? comp.weighted_score : comp.score;
+      const dispMax   = hasWeight ? comp.weight         : comp.max;
       componentAnalysis[name] = {
-        score: comp.score, max: comp.max,
-        percentage: Math.round((comp.score / comp.max) * 100),
-        status: comp.score >= comp.max * 0.8 ? 'good' : comp.score >= comp.max * 0.5 ? 'moderate' : 'poor',
-        breakdown: comp.breakdown || {}
+        score: dispScore, max: dispMax,
+        percentage: dispMax > 0 ? Math.round((dispScore / dispMax) * 100) : 0,
+        status: dispScore >= dispMax * 0.8 ? 'good' : dispScore >= dispMax * 0.5 ? 'moderate' : 'poor',
+        breakdown: comp.breakdown || {},
+        raw_score: comp.score, raw_max: comp.max, weight: comp.weight ?? null
       };
       if (comp.breakdown && Object.keys(comp.breakdown).length > 0) {
         for (const [fid, fb] of Object.entries(comp.breakdown)) {
