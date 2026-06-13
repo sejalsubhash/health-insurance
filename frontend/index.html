@@ -1480,6 +1480,7 @@ function showWfTab(tab, wfId) {
       <div id="hilPendingBanner"></div>
       <div class="tab-bar" id="hilSubTabs">
         <div class="tab-item active" onclick="showHILSubTab('extracted','${wf.id}')">Extracted Parameters</div>
+        <div class="tab-item" onclick="showHILSubTab('pages','${wf.id}')">Page-by-Page</div>
         <div class="tab-item" onclick="showHILSubTab('audit','${wf.id}')">Audit Trail</div>
       </div>
       <div id="hilSubContent"></div>`;
@@ -2025,7 +2026,7 @@ function showWfTab(tab, wfId) {
 // ─── Human in Loop Sub-Tabs ───
 function showHILSubTab(subtab, wfId) {
   document.querySelectorAll('#hilSubTabs .tab-item').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('#hilSubTabs .tab-item').forEach(t => { if (t.textContent.toLowerCase().includes(subtab.substring(0,5))) t.classList.add('active'); });
+  document.querySelectorAll('#hilSubTabs .tab-item').forEach(t => { if ((t.getAttribute('onclick')||'').includes(`showHILSubTab('${subtab}'`)) t.classList.add('active'); });
   const el = document.getElementById('hilSubContent');
   const wf = window._currentWf;
   if (!wf) return;
@@ -2074,6 +2075,10 @@ function showHILSubTab(subtab, wfId) {
     updatePendingBanner(wfId);
   }
 
+  else if (subtab === 'pages') {
+    renderPageByPage(wfId);
+  }
+
   else if (subtab === 'audit') {
     const trail = wf.audit_trail || [];
     el.innerHTML = `<div class="card"><div class="card-header"><h3>Audit Trail (${trail.length} entries)</h3></div><div class="card-body">
@@ -2104,6 +2109,79 @@ function markFieldEdited(input) {
   }
   input.closest('tr').style.background = window._hilPendingEdits[fp] ? 'var(--warning-bg)' : '';
   updatePendingBanner(window._currentWf?.id);
+}
+
+// ─── Page-by-Page Extraction (actual page image ↔ extracted values) ───
+async function renderPageByPage(wfId) {
+  const el = document.getElementById('hilSubContent');
+  el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted)"><div class="spinner" style="display:inline-block;width:20px;height:20px;vertical-align:middle;margin-right:8px"></div> Loading page extractions...</div>';
+  let data;
+  try {
+    data = await api(`/api/workflow/${wfId}/page-extractions`);
+  } catch (e) {
+    el.innerHTML = `<div class="card"><div class="card-body" style="color:var(--danger)">Could not load page extractions: ${esc(e.message)}</div></div>`;
+    return;
+  }
+  const pages = data.pages || [];
+  const u = data.usage || null;
+  if (pages.length === 0) {
+    el.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:30px;color:var(--text-muted)"><div style="font-size:28px;margin-bottom:8px"><i data-lucide="files"></i></div>No per-page extraction recorded yet. This appears after the next document submission runs through extraction.</div></div>';
+    if (window.lucide) lucide.createIcons();
+    return;
+  }
+  // Consumption header strip (tokens + ₹ cost)
+  let header = '';
+  if (u) {
+    header = `<div class="card" style="margin-bottom:14px"><div class="card-body" style="display:flex;gap:28px;flex-wrap:wrap;align-items:center;padding:14px 18px">
+      <div><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Tokens In</div><div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace">${(u.input_tokens||0).toLocaleString('en-IN')}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Tokens Out</div><div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace">${(u.output_tokens||0).toLocaleString('en-IN')}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Total Tokens</div><div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace">${(u.total_tokens||0).toLocaleString('en-IN')}</div></div>
+      <div style="margin-left:auto;text-align:right"><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Est. Cost</div><div style="font-size:22px;font-weight:800;color:var(--primary-dark)">₹${(u.cost_inr||0).toFixed(2)}</div><div style="font-size:11px;color:var(--text-muted)">$${(u.cost_usd||0).toFixed(4)} · ${esc(u.pages_scanned||pages.length)} pages</div></div>
+    </div></div>`;
+  }
+  // One row per page: image left, values right
+  const rows = pages.map(p => {
+    const ynRows = (p.yes_no||[]).map(q => {
+      const low = (q.confidence||'').toLowerCase() === 'low';
+      const ans = (q.answer||'').toLowerCase();
+      const ansBadge = ans === 'yes' ? '<span class="badge badge-danger">Yes</span>' : ans === 'no' ? '<span class="badge badge-success">No</span>' : '<span class="badge badge-warning">unclear</span>';
+      return `<tr${low?' style="background:var(--warning-bg)"':''}>
+        <td style="font-weight:500">${esc(q.q_number||'')}</td>
+        <td>${esc(q.q_text_short||'')}</td>
+        <td>${ansBadge}${low?' <span style="font-size:10px;color:var(--warning-dark)">low-confidence</span>':''}</td>
+        <td style="font-size:12px">${esc(q.handwritten_note||'')}</td></tr>`;
+    }).join('');
+    const valRows = (p.values||[]).map(v => `<tr>
+        <td style="font-weight:500">${esc(v.label||'')}</td>
+        <td style="font-family:'JetBrains Mono',monospace">${esc(v.value||'')}</td>
+        <td style="font-size:11px;color:var(--text-muted)">${esc(v.unit||'')}</td>
+        <td style="font-size:11px;color:var(--text-muted)">${esc(v.range||'')}</td>
+        <td>${v.flag && v.flag!=='normal' && v.flag!=='unclear' ? `<span class="badge badge-danger">${esc(v.flag)}</span>` : v.flag==='normal' ? '<span class="badge badge-success">normal</span>' : `<span class="badge badge-neutral">${esc(v.flag||'—')}</span>`}</td></tr>`).join('');
+    const meds = (p.medications||[]).map(m => `<div style="font-size:12px;margin-top:4px">💊 ${esc(m.name||'')}${m.condition?' — '+esc(m.condition):''}${m.disclosed===false?' <span class="badge badge-danger">undisclosed</span>':''}</div>`).join('');
+    const freeText = (p.free_text||[]).filter(Boolean).map(t => `<div style="font-size:12px;color:var(--text-muted);font-style:italic;margin-top:3px">“${esc(t)}”</div>`).join('');
+    return `<div class="card" style="margin-bottom:14px"><div class="card-header"><h3>Page ${p.page} <span class="badge badge-info" style="margin-left:6px">${esc(p.page_type||'?')}</span></h3><span style="font-size:11px;color:var(--text-muted)">${(p.tokens?.input||0)+(p.tokens?.output||0)} tok</span></div>
+      <div class="card-body" style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1 1 320px;min-width:280px">
+          <img loading="lazy" id="pgimg-${wfId}-${p.page}" data-page="${p.page}" style="width:100%;border:1px solid var(--border);border-radius:8px;cursor:zoom-in;background:var(--surface-alt)" alt="Page ${p.page}" onclick="window.open(this.src,'_blank')">
+        </div>
+        <div style="flex:2 1 420px;min-width:340px">
+          ${valRows ? `<table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Unit</th><th>Reference</th><th>Flag</th></tr></thead><tbody>${valRows}</tbody></table>` : '<div style="color:var(--text-muted);font-size:13px;padding:8px 0">No measured values on this page.</div>'}
+          ${ynRows ? `<div style="margin-top:12px;font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Yes/No Questions</div><table class="data-table" style="margin-top:6px"><thead><tr><th>Q</th><th>Question</th><th>Answer</th><th>Handwritten note</th></tr></thead><tbody>${ynRows}</tbody></table>` : ''}
+          ${meds ? `<div style="margin-top:10px">${meds}</div>` : ''}
+          ${freeText ? `<div style="margin-top:10px">${freeText}</div>` : ''}
+        </div>
+      </div></div>`;
+  }).join('');
+  el.innerHTML = header + rows;
+  if (window.lucide) lucide.createIcons();
+  // Lazy-load each page image from S3 (base64) without blocking render
+  for (const p of pages) {
+    api(`/api/workflow/${wfId}/page-image/${p.page}`).then(r => {
+      const img = document.getElementById(`pgimg-${wfId}-${p.page}`);
+      if (img && r && r.base64_data) img.src = `data:${r.content_type||'image/jpeg'};base64,${r.base64_data}`;
+      else if (img) { img.alt = 'Page image not stored'; img.style.minHeight='80px'; }
+    }).catch(() => {});
+  }
 }
 
 function updatePendingBanner(wfId) {

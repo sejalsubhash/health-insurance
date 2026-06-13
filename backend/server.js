@@ -477,6 +477,30 @@ app.get('/api/workflow/:id/document/:docId/preview', requireAuth, async (req, re
   res.json({ id: doc.id, name: doc.name, content_type: doc.content_type || doc.mimetype, base64_data: doc.base64_data, is_image: isImage, is_pdf: isPdf, size: doc.size });
 });
 
+// ── Page-by-Page Extraction: per-page records (page image ↔ extracted values) ──
+app.get('/api/workflow/:id/page-extractions', requireAuth, (req, res) => {
+  const wf = workflowEngine.getWorkflow(req.params.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+  res.json({ pages: wf.page_extractions || [], usage: wf.extraction_usage || null });
+});
+
+// Serve one rendered page image from S3 as base64 (for the side-by-side view).
+app.get('/api/workflow/:id/page-image/:page', requireAuth, async (req, res) => {
+  const wf = workflowEngine.getWorkflow(req.params.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+  const pageNum = parseInt(req.params.page, 10);
+  const rec = (wf.page_extractions || []).find(p => p.page === pageNum);
+  const key = rec?.image_key || `extraction-pages/${req.params.id}/page-${pageNum}.jpg`;
+  if (!process.env.AWS_ACCESS_KEY_ID) return res.status(404).json({ error: 'S3 not configured' });
+  try {
+    const obj = await s3Client.getDocumentFromS3(key);
+    if (!obj?.buffer) return res.status(404).json({ error: 'Page image not found' });
+    res.json({ page: pageNum, content_type: obj.contentType || 'image/jpeg', base64_data: obj.buffer.toString('base64') });
+  } catch (e) {
+    res.status(404).json({ error: 'Page image not available: ' + e.message });
+  }
+});
+
 // Export workflow as PDF report
 app.get('/api/workflow/:id/export-pdf', requireAuth, (req, res) => {
   const wf = workflowEngine.getWorkflow(req.params.id);
@@ -1418,12 +1442,10 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               const allPageFiles = fs.readdirSync(tmpDir)
                 .filter(f => f.endsWith('.jpg') || f.endsWith('.jpeg') || f.endsWith('.ppm'))
                 .sort();
-              const PAGE_CAP = 20; // PPHC bundles (selfies + Aadhaar + MER + lab reports) routinely run 12-16 pages; lab values are often on the LAST pages
-              const pageFiles = allPageFiles.slice(0, PAGE_CAP);
-              if (allPageFiles.length > PAGE_CAP) {
-                console.warn(`[Extraction] WARNING: ${doc.name} has ${allPageFiles.length} pages but only ${PAGE_CAP} sent — lab pages near the end may be dropped. Raise PAGE_CAP.`);
-              }
-              console.log(`[Extraction] ${doc.name}: ${allPageFiles.length} total pages, sending ${pageFiles.length}`);
+              // No page cap — process every page. Lab values often sit on the last pages,
+              // so truncating the bundle silently drops the most important data.
+              const pageFiles = allPageFiles;
+              console.log(`[Extraction] ${doc.name}: ${allPageFiles.length} total pages, sending ALL ${pageFiles.length}`);
 
               if (pageFiles.length > 0) {
                 converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — ${pageFiles.length} page(s)]` });
@@ -1520,9 +1542,16 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
   "blood_chemistry": { "fasting_glucose":{"v":null,"f":""}, "hba1c":{"v":null,"f":""}, "total_cholesterol":{"v":null,"f":""}, "hdl":{"v":null,"f":""}, "ldl":{"v":null,"f":""}, "triglycerides":{"v":null,"f":""}, "tc_hdl_ratio":{"v":null,"f":""}, "sgot_ast":{"v":null,"f":""}, "sgpt_alt":{"v":null,"f":""}, "serum_creatinine":{"v":null,"f":""}, "blood_urea":{"v":null,"f":""}, "uric_acid":{"v":null,"f":""}, "total_bilirubin":{"v":null,"f":""}, "albumin":{"v":null,"f":""}, "hiv":{"v":null,"f":""}, "hbsag":{"v":null,"f":""} },
   "hematology": { "hemoglobin":{"v":null,"f":""}, "wbc_count":{"v":null,"f":""}, "platelet_count":{"v":null,"f":""}, "rbc_count":{"v":null,"f":""}, "esr":{"v":null,"f":""} },
   "correlation_data": { "medications_found": [] },
+  "raw_parameters": [],
+  "yes_no": [],
+  "free_text": [],
   "parameters_found": 0
 }
 ONLY fill fields that actually appear on THIS page; leave the rest null. Set page_type accurately.
+LOSSLESS CAPTURE — in addition to the mapped fields above:
+- "raw_parameters": list EVERY test/measurement printed on this page exactly as written, even ones not in the schema above. Each = {"label":"<exact printed name>","value":"<exact value>","unit":"<unit>","range":"<printed normal range>","flag":"normal|high|low|borderline|unclear"}. Do NOT skip ratios, differential counts, or microscopic lines.
+- "yes_no": if this is an examination/history FORM page with Yes/No questions marked by hand, list EACH question = {"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>","answer":"yes|no|unclear","confidence":"high|low","handwritten_note":"<verbatim handwriting near it, else empty>"}. Decide if the tick sits in the Yes or No column. If unsure, give best guess with confidence "low". ALWAYS transcribe handwritten drug names/durations even when the tick is unclear.
+- "free_text": any other handwritten or notable text on the page, verbatim.
 FIELD MAPPING: S.G.P.T./SGPT/ALT→sgpt_alt; Serum Creatinine→serum_creatinine; Serum Cholesterol/CHOLESTROL/TC→total_cholesterol; HbA1c/Glycated Haemoglobin→hba1c; Haemoglobin/Hb→hemoglobin(hematology); WBC/TLC→wbc_count; ESR→esr; Triglyceride/TG→triglycerides; T.CHOLESTROL/HDL→tc_hdl_ratio.
 BMI=weight(kg)/height(m)^2. BP from sphygmomanometer. medications_found: list tablets/drugs with {name,condition,disclosed:false if not declared}.
 Flags: normal/high/low/borderline.`;
@@ -1540,6 +1569,12 @@ This is ONE page from a medical document bundle. Extract every medical value vis
         const invokeStart1 = Date.now();
         let pagesScanned = 0, pagesWithData = 0, lastStopReason = 'end_turn';
 
+        // ── Per-page record + real token accounting (additive — does not touch merge logic) ──
+        // pageExtractions powers the "Page-by-Page Extraction" UI subtab (page image ↔ values).
+        // Token totals are summed from each page's real ConverseResponse.usage (previously discarded).
+        const pageExtractions = [];
+        let totalInTok = 0, totalOutTok = 0;
+
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
           try {
@@ -1547,18 +1582,41 @@ This is ONE page from a medical document bundle. Extract every medical value vis
               modelId,
               system: [{ text: 'You are a medical document extraction AI. You are shown ONE page. Extract only what is on it. Return ONLY valid JSON, no markdown.' }],
               messages: [{ role: 'user', content: [ pageImages[pi], { text: pagePrompt } ] }],
-              inferenceConfig: { maxTokens: 4096, temperature: 0 }
+              inferenceConfig: { maxTokens: 8000, temperature: 0 }
             }));
             lastStopReason = pageRes.stopReason || lastStopReason;
+            // Real per-page token usage (previously discarded — api_log showed 0/0)
+            const _pin = pageRes.usage?.inputTokens || 0;
+            const _pout = pageRes.usage?.outputTokens || 0;
+            totalInTok += _pin; totalOutTok += _pout;
             const pageText = pageRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
             const pm = pageText.match(/\{[\s\S]*\}/);
             if (!pm) {
               console.log(`[Extraction] Page ${pageNum}/${pageImages.length}: no JSON returned — skipping`);
+              pageExtractions.push({ page: pageNum, page_type: 'unparsed', values: [], yes_no: [], free_text: [], tokens: { input: _pin, output: _pout }, note: 'No JSON returned' });
               pagesScanned++;
               continue;
             }
             const pd = JSON.parse(pm[0]);
             const isLabPage = pd.page_type === 'lab_report';
+
+            // ── Per-page record for the UI (page image ↔ extracted values) ──
+            // Build a flat value list from raw_parameters (lossless) plus any mapped leaves on this page.
+            const _pageVals = [];
+            if (Array.isArray(pd.raw_parameters)) {
+              for (const rp of pd.raw_parameters) {
+                if (rp && (rp.label || rp.value != null)) _pageVals.push({ label: rp.label || '', value: rp.value != null ? String(rp.value) : '', unit: rp.unit || '', range: rp.range || '', flag: rp.flag || '' });
+              }
+            }
+            pageExtractions.push({
+              page: pageNum,
+              page_type: pd.page_type || 'other',
+              values: _pageVals,
+              yes_no: Array.isArray(pd.yes_no) ? pd.yes_no : [],
+              free_text: Array.isArray(pd.free_text) ? pd.free_text : [],
+              medications: pd.correlation_data?.medications_found || [],
+              tokens: { input: _pin, output: _pout }
+            });
 
             // Merge LAB sections — lab page values always win; non-lab page lab values only fill empty slots
             for (const sec of ['blood_chemistry','hematology']) {
@@ -1608,6 +1666,39 @@ This is ONE page from a medical document bundle. Extract every medical value vis
 
         const elapsed = Date.now() - invokeStart1;
         console.log(`[Extraction] ✅ Per-page scan complete: ${pagesScanned}/${pageImages.length} pages, ${pagesWithData} had data, ${elapsed}ms total`);
+
+        // ── Token + cost accounting (config-driven; default Claude 3 Sonnet ap-south-1 + FX) ──
+        // Prices are USD per 1M tokens; FX converts to INR for display. Adjust in one place
+        // (or move to a config master) when the model or rate changes.
+        const _PRICE_IN_PER_M  = Number(process.env.EXTRACT_PRICE_IN_USD_PER_M)  || 3.0;
+        const _PRICE_OUT_PER_M = Number(process.env.EXTRACT_PRICE_OUT_USD_PER_M) || 15.0;
+        const _USD_TO_INR      = Number(process.env.USD_TO_INR) || 83.5;
+        const _usd = (totalInTok / 1e6) * _PRICE_IN_PER_M + (totalOutTok / 1e6) * _PRICE_OUT_PER_M;
+        const _inr = _usd * _USD_TO_INR;
+        wf.extraction_usage = {
+          input_tokens: totalInTok, output_tokens: totalOutTok,
+          total_tokens: totalInTok + totalOutTok,
+          cost_usd: Math.round(_usd * 10000) / 10000,
+          cost_inr: Math.round(_inr * 100) / 100,
+          pages_scanned: pagesScanned, model: modelId, duration_ms: elapsed
+        };
+        // Attach the per-page records for the Page-by-Page Extraction subtab.
+        wf.page_extractions = pageExtractions;
+        console.log(`[Extraction] Tokens: ${totalInTok} in + ${totalOutTok} out | $${_usd.toFixed(4)} | ₹${_inr.toFixed(2)}`);
+
+        // Persist each rendered page image to S3 so the UI can show "actual page ↔ values".
+        // Best-effort, non-blocking — failure here must not break extraction.
+        if (process.env.AWS_ACCESS_KEY_ID) {
+          for (let pi = 0; pi < pageImages.length; pi++) {
+            try {
+              const bytes = pageImages[pi]?.image?.source?.bytes;
+              if (!bytes) continue;
+              const key = `extraction-pages/${wf.id}/page-${pi + 1}.jpg`;
+              await s3Client.savePageImage(key, Buffer.from(bytes), 'image/jpeg').catch(() => {});
+              if (pageExtractions[pi]) pageExtractions[pi].image_key = key;
+            } catch (_) { /* non-fatal */ }
+          }
+        }
 
         // Hand the merged results to the existing downstream parse/normalize/merge code unchanged.
         const responseText = JSON.stringify({ ...mergedPhysical, parameters_found: 0 });
@@ -1750,8 +1841,9 @@ This is ONE page from a medical document bundle. Extract every medical value vis
                 console.warn('[Extraction] No JSON found in lab response:', labResponseText.substring(0, 200));
               }
             }
-            apiLog.push({ agent: 'AI Document Extraction (Converse — split 2-call)', timestamp: new Date().toISOString(),
-              tokens: { input: physRes.usage?.inputTokens, output: physRes.usage?.outputTokens },
+            apiLog.push({ agent: 'AI Document Extraction (per-page sequential)', timestamp: new Date().toISOString(),
+              tokens: { input: totalInTok, output: totalOutTok },
+              cost_inr: wf.extraction_usage?.cost_inr, cost_usd: wf.extraction_usage?.cost_usd,
               duration_ms: elapsed, status: 'success', parameters_found: extractedData.parameters_found || 0 });
           } catch(parseErr) {
             console.error('[Extraction] JSON parse failed:', parseErr.message);

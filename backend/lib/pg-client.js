@@ -384,7 +384,6 @@ async function getDocumentFromS3(key) {
 }
 
 async function saveUpload(workflowId, docId, buffer, contentType) {
-  // Binary goes to S3
   const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION || 'ap-south-1' });
   const key = `uploads/${workflowId}/documents/${docId}`;
@@ -397,6 +396,14 @@ async function saveBiometric(workflowId, type, buffer, contentType) {
   const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION || 'ap-south-1' });
   const key = `uploads/${workflowId}/biometrics/${type}`;
+  await s3.send(new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, Body: buffer, ContentType: contentType || 'image/jpeg' }));
+  return { key, bucket: process.env.S3_BUCKET };
+}
+
+// Write a binary object to an explicit S3 key (used for per-page extraction images).
+async function savePageImage(key, buffer, contentType) {
+  const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+  const s3 = new S3Client({ region: process.env.AWS_REGION || 'ap-south-1' });
   await s3.send(new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, Body: buffer, ContentType: contentType || 'image/jpeg' }));
   return { key, bucket: process.env.S3_BUCKET };
 }
@@ -440,6 +447,7 @@ module.exports = {
   saveUpload,         // binary → S3
   saveBiometric,      // binary → S3
   saveBiometricMeta,
+  savePageImage,      // binary → S3 at explicit key (per-page extraction images)
 
   // Audit
   saveAuditEntry,
