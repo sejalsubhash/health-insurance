@@ -2144,10 +2144,13 @@ async function renderPageByPage(wfId) {
     const ynRows = (p.yes_no||[]).map(q => {
       const low = (q.confidence||'').toLowerCase() === 'low';
       const ans = (q.answer||'').toLowerCase();
+      const pos = (q.tick_position||'').toLowerCase();
       const ansBadge = ans === 'yes' ? '<span class="badge badge-danger">Yes</span>' : ans === 'no' ? '<span class="badge badge-success">No</span>' : '<span class="badge badge-warning">unclear</span>';
+      const posBadge = pos === 'left' ? '<span class="badge badge-neutral" title="Mark in column 1 (left)">◧ left</span>' : pos === 'right' ? '<span class="badge badge-neutral" title="Mark in column 2 (right)">◨ right</span>' : pos === 'none' ? '<span class="badge badge-neutral">none</span>' : '<span class="badge badge-warning">unclear</span>';
       return `<tr${low?' style="background:var(--warning-bg)"':''}>
         <td style="font-weight:500">${esc(q.q_number||'')}</td>
         <td>${esc(q.q_text_short||'')}</td>
+        <td>${posBadge}</td>
         <td>${ansBadge}${low?' <span style="font-size:10px;color:var(--warning-dark)">low-confidence</span>':''}</td>
         <td style="font-size:12px">${esc(q.handwritten_note||'')}</td></tr>`;
     }).join('');
@@ -2166,7 +2169,7 @@ async function renderPageByPage(wfId) {
         </div>
         <div style="flex:2 1 420px;min-width:340px">
           ${valRows ? `<table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Unit</th><th>Reference</th><th>Flag</th></tr></thead><tbody>${valRows}</tbody></table>` : '<div style="color:var(--text-muted);font-size:13px;padding:8px 0">No measured values on this page.</div>'}
-          ${ynRows ? `<div style="margin-top:12px;font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Yes/No Questions</div><table class="data-table" style="margin-top:6px"><thead><tr><th>Q</th><th>Question</th><th>Answer</th><th>Handwritten note</th></tr></thead><tbody>${ynRows}</tbody></table>` : ''}
+          ${ynRows ? `<div style="margin-top:12px;font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Yes/No Questions</div><table class="data-table" style="margin-top:6px"><thead><tr><th>Q</th><th>Question</th><th>Tick</th><th>Answer</th><th>Handwritten note</th></tr></thead><tbody>${ynRows}</tbody></table>` : ''}
           ${meds ? `<div style="margin-top:10px">${meds}</div>` : ''}
           ${freeText ? `<div style="margin-top:10px">${freeText}</div>` : ''}
         </div>
