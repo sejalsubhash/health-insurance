@@ -1575,29 +1575,76 @@ This is ONE page from a medical document bundle. Extract every medical value vis
         const pageExtractions = [];
         let totalInTok = 0, totalOutTok = 0;
 
+        // One Converse call for a page image with a given instruction. Returns {pd, in, out, stop, raw}.
+        const _callPage = async (imgBlock, instruction) => {
+          const r = await __client.send(new ConverseCommand({
+            modelId,
+            system: [{ text: 'You are a medical document extraction AI. You are shown ONE page. Extract only what is on it. Return ONLY valid JSON, no markdown.' }],
+            messages: [{ role: 'user', content: [ imgBlock, { text: instruction } ] }],
+            inferenceConfig: { maxTokens: 4096, temperature: 0 }
+          }));
+          const txt = r.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+          const m = txt.match(/\{[\s\S]*\}/);
+          let pd = null;
+          if (m) { try { pd = JSON.parse(m[0]); } catch (_) { pd = null; } }
+          return { pd, in: r.usage?.inputTokens || 0, out: r.usage?.outputTokens || 0, stop: r.stopReason || 'end_turn', raw: m ? m[0] : txt };
+        };
+
+        // When a page's combined output would exceed the 4096 cap (stopReason=max_tokens or
+        // unparseable truncated JSON), we re-scan the SAME page in two smaller passes —
+        // pass A = measurements, pass B = Yes/No questions + free text — then merge.
+        const _MEASURE_ONLY = `Return ONLY valid JSON. Extract ONLY measured/lab/vital values from THIS page; OMIT any Yes/No questionnaire and narrative.
+{"page_type":"lab_report|exam_form|photo|id_card|other","blood_chemistry":{},"hematology":{},"physical_exam":{},"urine_analysis":{},"cardiac":{},"chest_xray":{"v":null,"f":""},"raw_parameters":[{"label":"","value":"","unit":"","range":"","flag":"normal|high|low|borderline|unclear"}],"correlation_data":{"medications_found":[]},"parameters_found":0}
+List EVERY printed measurement in raw_parameters verbatim (ratios, differentials, microscopic lines included). Use mapped fields where they apply. FIELD MAPPING: S.G.P.T./SGPT/ALT->sgpt_alt; Serum Creatinine->serum_creatinine; Serum Cholesterol/CHOLESTROL/TC->total_cholesterol; HbA1c->hba1c; Haemoglobin/Hb->hemoglobin; WBC/TLC->wbc_count; ESR->esr; Triglyceride/TG->triglycerides.`;
+        const _QUESTIONS_ONLY = `Return ONLY valid JSON. This is an examination/history FORM page. Extract ONLY the Yes/No questions and any handwriting; OMIT lab/measurement tables.
+{"page_type":"exam_form","yes_no":[{"q_number":"","q_text_short":"","answer":"yes|no|unclear","confidence":"high|low","handwritten_note":""}],"free_text":[],"lifestyle":{"smoking":{"status":""},"alcohol":{"status":""},"tobacco_chewing":{"status":""}}}
+For each question decide if the tick is in the Yes or No column. If unsure, best guess with confidence "low". ALWAYS transcribe handwritten drug names/durations verbatim even if the tick is unclear.`;
+
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
           try {
-            const pageRes = await __client.send(new ConverseCommand({
-              modelId,
-              system: [{ text: 'You are a medical document extraction AI. You are shown ONE page. Extract only what is on it. Return ONLY valid JSON, no markdown.' }],
-              messages: [{ role: 'user', content: [ pageImages[pi], { text: pagePrompt } ] }],
-              inferenceConfig: { maxTokens: 8000, temperature: 0 }
-            }));
-            lastStopReason = pageRes.stopReason || lastStopReason;
-            // Real per-page token usage (previously discarded — api_log showed 0/0)
-            const _pin = pageRes.usage?.inputTokens || 0;
-            const _pout = pageRes.usage?.outputTokens || 0;
+            // First attempt: one combined call for the whole page.
+            let r = await _callPage(pageImages[pi], pagePrompt);
+            let _pin = r.in, _pout = r.out;
+            let pd = r.pd;
+            let wasSplit = false;
+
+            // If output hit the 4096 cap (max_tokens) or truncated JSON failed to parse,
+            // re-scan the SAME page in two smaller passes and merge.
+            if (r.stop === 'max_tokens' || !pd) {
+              console.log(`[Extraction] Page ${pageNum}: ${r.stop === 'max_tokens' ? 'hit 4096 cap' : 'unparseable'} — splitting into 2 passes`);
+              wasSplit = true;
+              const a = await _callPage(pageImages[pi], _MEASURE_ONLY);
+              const b = await _callPage(pageImages[pi], _QUESTIONS_ONLY);
+              _pin += a.in + b.in; _pout += a.out + b.out;
+              const ma = a.pd || {}; const mb = b.pd || {};
+              // Merge the two partial objects into one pd.
+              pd = {
+                page_type: ma.page_type || mb.page_type || pd?.page_type || 'other',
+                blood_chemistry: ma.blood_chemistry || {},
+                hematology: ma.hematology || {},
+                physical_exam: ma.physical_exam || {},
+                urine_analysis: ma.urine_analysis || {},
+                cardiac: ma.cardiac || {},
+                chest_xray: ma.chest_xray,
+                raw_parameters: Array.isArray(ma.raw_parameters) ? ma.raw_parameters : [],
+                yes_no: Array.isArray(mb.yes_no) ? mb.yes_no : [],
+                free_text: Array.isArray(mb.free_text) ? mb.free_text : [],
+                lifestyle: mb.lifestyle || ma.lifestyle,
+                correlation_data: ma.correlation_data || { medications_found: [] },
+                parameters_found: 0
+              };
+            }
+
+            lastStopReason = r.stop || lastStopReason;
             totalInTok += _pin; totalOutTok += _pout;
-            const pageText = pageRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
-            const pm = pageText.match(/\{[\s\S]*\}/);
-            if (!pm) {
-              console.log(`[Extraction] Page ${pageNum}/${pageImages.length}: no JSON returned — skipping`);
-              pageExtractions.push({ page: pageNum, page_type: 'unparsed', values: [], yes_no: [], free_text: [], tokens: { input: _pin, output: _pout }, note: 'No JSON returned' });
+
+            if (!pd) {
+              console.log(`[Extraction] Page ${pageNum}/${pageImages.length}: no JSON even after split — skipping`);
+              pageExtractions.push({ page: pageNum, page_type: 'unparsed', values: [], yes_no: [], free_text: [], tokens: { input: _pin, output: _pout }, was_split: wasSplit, note: 'No JSON returned' });
               pagesScanned++;
               continue;
             }
-            const pd = JSON.parse(pm[0]);
             const isLabPage = pd.page_type === 'lab_report';
 
             // ── Per-page record for the UI (page image ↔ extracted values) ──
@@ -1615,6 +1662,7 @@ This is ONE page from a medical document bundle. Extract every medical value vis
               yes_no: Array.isArray(pd.yes_no) ? pd.yes_no : [],
               free_text: Array.isArray(pd.free_text) ? pd.free_text : [],
               medications: pd.correlation_data?.medications_found || [],
+              was_split: wasSplit,
               tokens: { input: _pin, output: _pout }
             });
 
