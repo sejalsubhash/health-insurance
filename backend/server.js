@@ -1589,6 +1589,7 @@ This is ONE page from a medical document bundle. Extract every medical value vis
             q_text_short: q.q_text_short || '',
             middle_box_marked: (typeof q.middle_box_marked === 'boolean') ? q.middle_box_marked : undefined,
             answer,
+            reason: q.reason || '',
             handwritten_note: q.handwritten_note || ''
           };
         });
@@ -1634,15 +1635,16 @@ This is ONE page from a medical document bundle. Extract every medical value vis
             const rowPrompt = `Return ONLY valid JSON. This page has these questions in this order:
 ${roster}
 
-Focus on ONE question only: "${qn}". Find ITS row on the page (use the ordered list above to locate it). Each row has 3 columns: column 1 (wide) = question text, column 2 = the MIDDLE narrow box, column 3 = the far-right narrow box. Look ONLY at column 2, the MIDDLE box, on question ${qn}'s row. Answer one simple question: is there a tick/check/mark inside the MIDDLE box?
-{"q_number":"${qn}","middle_box_marked":true|false,"handwritten_note":"<any handwriting on THIS row, verbatim; else empty>"}`;
+Focus on ONE question only: "${qn}". Find ITS row on the page (use the ordered list above to locate it). Each row has 3 columns: column 1 (wide) = question text, column 2 = the MIDDLE narrow box, column 3 = the far-right narrow box. Look ONLY at column 2, the MIDDLE box, on question ${qn}'s row. Answer one simple question: is there a tick/check/mark INSIDE the boundaries of the MIDDLE box (not the right box, not between boxes)?
+First describe in one sentence exactly what you see in and around the middle box for this row (is the box empty, does a mark sit clearly inside it, or does a checkmark from the right box have a tail crossing into it). Then decide.
+{"q_number":"${qn}","reason":"<one sentence: what you see in/around the middle box>","middle_box_marked":true|false,"handwritten_note":"<any handwriting on THIS row, verbatim; else empty>"}`;
             try {
               const rr = await _callPage(imgBlock, rowPrompt);
               cin += rr.in; cout += rr.out;
               const pd = rr.pd || {};
-              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: pd.middle_box_marked === true, handwritten_note: pd.handwritten_note || '' });
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: pd.middle_box_marked === true, reason: pd.reason || '', handwritten_note: pd.handwritten_note || '' });
             } catch (e) {
-              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: false, handwritten_note: '' });
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: false, reason: 'extraction error', handwritten_note: '' });
             }
           }
           return { yes_no_raw: rows, in: cin, out: cout, question_count: qlist.length };

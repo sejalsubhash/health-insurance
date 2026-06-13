@@ -2152,7 +2152,7 @@ async function renderPageByPage(wfId) {
         <td>${esc(q.q_text_short||'')}</td>
         <td>${posBadge}</td>
         <td>${ansBadge}</td>
-        <td style="font-size:12px">${esc(q.handwritten_note||'')}</td></tr>`;
+        <td style="font-size:12px">${esc(q.handwritten_note||'')}${q.reason?`<div style="font-size:11px;color:var(--text-muted);font-style:italic;margin-top:2px">${esc(q.reason)}</div>`:''}</td></tr>`;
     }).join('');
     const valRows = (p.values||[]).map(v => `<tr>
         <td style="font-weight:500">${esc(v.label||'')}</td>
