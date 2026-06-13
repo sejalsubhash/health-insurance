@@ -1661,9 +1661,10 @@ function showWfTab(tab, wfId) {
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.lifestyle_risk?.percentage||0}%;background:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Factor</th><th>Tick on form</th><th>Status (derived)</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
           ${Object.entries(compA.lifestyle_risk?.breakdown||{}).map(([pk,pv])=>`<tr>
             <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+            <td>${lifestyleTickBadge(pk)}</td>
             <td><span class="badge ${pv.status==='never'||pv.status==='none'?'badge-success':pv.status==='former'||pv.status==='occasional'||pv.status==='low'?'badge-info':pv.status==='current'||pv.status==='heavy'||pv.status==='high'?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
@@ -2109,6 +2110,36 @@ function markFieldEdited(input) {
   }
   input.closest('tr').style.background = window._hilPendingEdits[fp] ? 'var(--warning-bg)' : '';
   updatePendingBanner(window._currentWf?.id);
+}
+
+// Map a lifestyle factor to its source MER form question and show the raw tick (Yes/No).
+function lifestyleTickBadge(factorKey) {
+  const wf = window._currentWf;
+  const pages = wf?.page_extractions || [];
+  if (!pages.length) return '<span class="badge badge-neutral" title="No per-page extraction for this case">—</span>';
+  // Keyword hints per lifestyle factor, matched against question text/number.
+  const hints = {
+    smoking: ['cigarett','bidi','smok','tobacco','habit','addict','2.'],
+    tobacco_chewing: ['paan','gutka','chew','tobacco','habit','addict','2.'],
+    alcohol: ['alcohol','3.'],
+    occupation_hazard: ['occupation','hazard']
+  };
+  const keys = hints[factorKey] || [factorKey.replace(/_/g,' ')];
+  let hit = null;
+  for (const p of pages) {
+    for (const q of (p.yes_no||[])) {
+      const hay = `${(q.q_text_short||'').toLowerCase()} ${(q.q_number||'').toLowerCase()}`;
+      if (keys.some(k => hay.includes(k))) { hit = { q, page: p.page }; break; }
+    }
+    if (hit) break;
+  }
+  if (!hit) return '<span class="badge badge-neutral" title="No matching Yes/No question found on the form">not on form</span>';
+  const ans = (hit.q.answer||'').toLowerCase();
+  const low = (hit.q.confidence||'').toLowerCase() === 'low';
+  const cls = ans === 'yes' ? 'badge-danger' : ans === 'no' ? 'badge-success' : 'badge-warning';
+  const note = hit.q.handwritten_note ? ` · “${esc(hit.q.handwritten_note)}”` : '';
+  const title = `Q${esc(hit.q.q_number||'')} (page ${hit.page}): ${esc(hit.q.q_text_short||'')}`;
+  return `<span class="badge ${cls}" title="${title}">${ans||'unclear'}</span>${low?' <span style="font-size:10px;color:var(--warning-dark)">low-conf</span>':''}${note?`<span style="font-size:11px;color:var(--text-muted)">${note}</span>`:''}`;
 }
 
 // ─── Page-by-Page Extraction (actual page image ↔ extracted values) ───
