@@ -1601,6 +1601,46 @@ This is ONE page from a medical document bundle. Extract every medical value vis
           return { pd, in: r.usage?.inputTokens || 0, out: r.usage?.outputTokens || 0, stop: r.stopReason || 'end_turn', raw: m ? m[0] : txt };
         };
 
+        // ── Row-by-row Yes/No (most accurate on dense forms) ──────────────────
+        // Holistic grid reading drifts ticks to the wrong row. Instead:
+        //   Stage 1: discover the question list on the page (no tick reading).
+        //   Stage 2: ONE focused call per question — anchor on that row, read only
+        //            its two narrow boxes (col2=Yes, col3=No). Returns derived rows.
+        // Accumulates tokens into the page totals via the returned {in,out}.
+        const _extractYesNoRowByRow = async (imgBlock) => {
+          let cin = 0, cout = 0;
+          // Stage 1 — discover questions (don't read ticks yet)
+          const discoverPrompt = `Return ONLY valid JSON. Does this page have numbered examination/history questions with Yes/No tick boxes? If NOT, return {"is_question_page":false,"questions":[]}. If yes, list EVERY numbered question in order — DO NOT read the tick marks yet, just the labels:
+{"is_question_page":true,"questions":[{"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>"}]}`;
+          const disc = await _callPage(imgBlock, discoverPrompt);
+          cin += disc.in; cout += disc.out;
+          const qlist = (disc.pd && Array.isArray(disc.pd.questions)) ? disc.pd.questions : [];
+          if (!disc.pd?.is_question_page || qlist.length === 0) {
+            return { yes_no_raw: [], in: cin, out: cout, question_count: 0 };
+          }
+          // Build an ordered roster string so the model can locate a row by counting.
+          const roster = qlist.map(q => `${q.q_number}: ${q.q_text_short || ''}`).join('\n');
+          const rows = [];
+          // Stage 2 — one call per question, anchored on its row
+          for (const q of qlist) {
+            const qn = q.q_number || '';
+            const rowPrompt = `Return ONLY valid JSON. This page has these questions in this order:
+${roster}
+
+Focus on ONE question only: "${qn}". Find ITS row on the page (use the ordered list above to locate it). Then look ONLY across that single row to the TWO narrow boxes on the far right. The form has 3 columns: column 1 (wide) = question text (ignore it), column 2 (middle narrow box) = Yes, column 3 (far-right narrow box) = No. Which box on question ${qn}'s row holds the tick/check mark?
+{"q_number":"${qn}","tick_column":"yes_col|no_col|none|unclear","handwritten_note":"<any handwriting on THIS row, verbatim; else empty>"}`;
+            try {
+              const rr = await _callPage(imgBlock, rowPrompt);
+              cin += rr.in; cout += rr.out;
+              const pd = rr.pd || {};
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', tick_column: pd.tick_column || 'unclear', handwritten_note: pd.handwritten_note || '' });
+            } catch (e) {
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', tick_column: 'unclear', handwritten_note: '' });
+            }
+          }
+          return { yes_no_raw: rows, in: cin, out: cout, question_count: qlist.length };
+        };
+
         // When a page's combined output would exceed the 4096 cap (stopReason=max_tokens or
         // unparseable truncated JSON), we re-scan the SAME page in two smaller passes —
         // pass A = measurements, pass B = Yes/No questions + free text — then merge.
@@ -1666,11 +1706,30 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
                 if (rp && (rp.label || rp.value != null)) _pageVals.push({ label: rp.label || '', value: rp.value != null ? String(rp.value) : '', unit: rp.unit || '', range: rp.range || '', flag: rp.flag || '' });
               }
             }
+
+            // ── Row-by-row Yes/No for form pages (replaces the holistic grid read) ──
+            // Trigger when the holistic pass saw any questions or thinks it's a form page.
+            const _looksLikeForm = (pd.page_type === 'exam_form') || (Array.isArray(pd.yes_no) && pd.yes_no.length > 0);
+            let _yesNo;
+            if (_looksLikeForm) {
+              try {
+                const rb = await _extractYesNoRowByRow(pageImages[pi]);
+                _pin += rb.in; _pout += rb.out; totalInTok += rb.in; totalOutTok += rb.out;
+                _yesNo = _deriveYesNo(rb.yes_no_raw);
+                console.log(`[Extraction] Page ${pageNum}: row-by-row Yes/No — ${rb.question_count} questions, ${rb.in + rb.out} tok`);
+              } catch (e) {
+                console.error(`[Extraction] Page ${pageNum}: row-by-row failed (${e.message}), falling back to holistic`);
+                _yesNo = _deriveYesNo(pd.yes_no);
+              }
+            } else {
+              _yesNo = _deriveYesNo(pd.yes_no);
+            }
+
             pageExtractions.push({
               page: pageNum,
               page_type: pd.page_type || 'other',
               values: _pageVals,
-              yes_no: _deriveYesNo(pd.yes_no),
+              yes_no: _yesNo,
               free_text: Array.isArray(pd.free_text) ? pd.free_text : [],
               medications: pd.correlation_data?.medications_found || [],
               was_split: wasSplit,
