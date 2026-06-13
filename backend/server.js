@@ -1574,16 +1574,23 @@ This is ONE page from a medical document bundle. Extract every medical value vis
         const pageExtractions = [];
         let totalInTok = 0, totalOutTok = 0;
 
-        // Derive Yes/No from the model-reported tick COLUMN (we own the mapping, not the model).
-        // Form geometry: col1 = question text (ignored), col2 (middle) = Yes box, col3 (right) = No box.
+        // Derive Yes/No. Primary rule (row-by-row): middle box (col 2) marked = Yes, else No.
+        // Fallback (holistic read, no middle_box_marked field): tick_column yes_col = Yes, else No.
         const _deriveYesNo = (arr) => (Array.isArray(arr) ? arr : []).map(q => {
-          const col = (q.tick_column || '').toLowerCase();
-          let answer, confidence;
-          if (col === 'yes_col')      { answer = 'yes'; confidence = 'high'; }
-          else if (col === 'no_col')  { answer = 'no';  confidence = 'high'; }
-          else if (col === 'none')    { answer = 'no';  confidence = 'low'; }  // no mark = not affirmed (review)
-          else                        { answer = 'unclear'; confidence = 'low'; }
-          return { q_number: q.q_number || '', q_text_short: q.q_text_short || '', tick_column: col || 'unclear', answer, confidence, handwritten_note: q.handwritten_note || '' };
+          let answer;
+          if (typeof q.middle_box_marked === 'boolean') {
+            answer = q.middle_box_marked ? 'yes' : 'no';          // your rule: only the middle box means Yes
+          } else {
+            const col = (q.tick_column || '').toLowerCase();
+            answer = (col === 'yes_col') ? 'yes' : 'no';          // anything that isn't a clear Yes = No
+          }
+          return {
+            q_number: q.q_number || '',
+            q_text_short: q.q_text_short || '',
+            middle_box_marked: (typeof q.middle_box_marked === 'boolean') ? q.middle_box_marked : undefined,
+            answer,
+            handwritten_note: q.handwritten_note || ''
+          };
         });
 
         // One Converse call for a page image with a given instruction. Returns {pd, in, out, stop, raw}.
@@ -1627,15 +1634,15 @@ This is ONE page from a medical document bundle. Extract every medical value vis
             const rowPrompt = `Return ONLY valid JSON. This page has these questions in this order:
 ${roster}
 
-Focus on ONE question only: "${qn}". Find ITS row on the page (use the ordered list above to locate it). Then look ONLY across that single row to the TWO narrow boxes on the far right. The form has 3 columns: column 1 (wide) = question text (ignore it), column 2 (middle narrow box) = Yes, column 3 (far-right narrow box) = No. Which box on question ${qn}'s row holds the tick/check mark?
-{"q_number":"${qn}","tick_column":"yes_col|no_col|none|unclear","handwritten_note":"<any handwriting on THIS row, verbatim; else empty>"}`;
+Focus on ONE question only: "${qn}". Find ITS row on the page (use the ordered list above to locate it). Each row has 3 columns: column 1 (wide) = question text, column 2 = the MIDDLE narrow box, column 3 = the far-right narrow box. Look ONLY at column 2, the MIDDLE box, on question ${qn}'s row. Answer one simple question: is there a tick/check/mark inside the MIDDLE box?
+{"q_number":"${qn}","middle_box_marked":true|false,"handwritten_note":"<any handwriting on THIS row, verbatim; else empty>"}`;
             try {
               const rr = await _callPage(imgBlock, rowPrompt);
               cin += rr.in; cout += rr.out;
               const pd = rr.pd || {};
-              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', tick_column: pd.tick_column || 'unclear', handwritten_note: pd.handwritten_note || '' });
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: pd.middle_box_marked === true, handwritten_note: pd.handwritten_note || '' });
             } catch (e) {
-              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', tick_column: 'unclear', handwritten_note: '' });
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: false, handwritten_note: '' });
             }
           }
           return { yes_no_raw: rows, in: cin, out: cout, question_count: qlist.length };
