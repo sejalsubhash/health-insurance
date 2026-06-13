@@ -491,7 +491,6 @@ app.get('/api/workflow/:id/page-image/:page', requireAuth, async (req, res) => {
   const pageNum = parseInt(req.params.page, 10);
   const rec = (wf.page_extractions || []).find(p => p.page === pageNum);
   const key = rec?.image_key || `extraction-pages/${req.params.id}/page-${pageNum}.jpg`;
-  if (!process.env.AWS_ACCESS_KEY_ID) return res.status(404).json({ error: 'S3 not configured' });
   try {
     const obj = await s3Client.getDocumentFromS3(key);
     if (!obj?.buffer) return res.status(404).json({ error: 'Page image not found' });
@@ -1550,7 +1549,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
 ONLY fill fields that actually appear on THIS page; leave the rest null. Set page_type accurately.
 LOSSLESS CAPTURE — in addition to the mapped fields above:
 - "raw_parameters": list EVERY test/measurement printed on this page exactly as written, even ones not in the schema above. Each = {"label":"<exact printed name>","value":"<exact value>","unit":"<unit>","range":"<printed normal range>","flag":"normal|high|low|borderline|unclear"}. Do NOT skip ratios, differential counts, or microscopic lines.
-- "yes_no": if this is an examination/history FORM page with Yes/No questions marked by hand, list EACH question = {"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>","answer":"yes|no|unclear","confidence":"high|low","handwritten_note":"<verbatim handwriting near it, else empty>"}. Decide if the tick sits in the Yes or No column. If unsure, give best guess with confidence "low". ALWAYS transcribe handwritten drug names/durations even when the tick is unclear.
+- "yes_no": if this page has numbered questions with hand-marked tick/check boxes — EVEN IF there is NO visible "Yes"/"No" column header on this page (continuation pages often omit it) — list EACH question = {"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>","answer":"yes|no|unclear","confidence":"high|low","handwritten_note":"<verbatim handwriting near it, else empty>"}. On this form there are TWO answer columns in fixed positions: the LEFT tick column = Yes, the RIGHT tick column = No. Use the tick's horizontal POSITION to decide the answer even when the header is absent. If a question has a tick mark anywhere, you MUST output a row for it — never skip a question just because the page has no Yes/No heading. If unsure which column, give best guess with confidence "low". ALWAYS transcribe handwritten drug names/durations even when the tick is unclear.
 - "free_text": any other handwritten or notable text on the page, verbatim.
 FIELD MAPPING: S.G.P.T./SGPT/ALT→sgpt_alt; Serum Creatinine→serum_creatinine; Serum Cholesterol/CHOLESTROL/TC→total_cholesterol; HbA1c/Glycated Haemoglobin→hba1c; Haemoglobin/Hb→hemoglobin(hematology); WBC/TLC→wbc_count; ESR→esr; Triglyceride/TG→triglycerides; T.CHOLESTROL/HDL→tc_hdl_ratio.
 BMI=weight(kg)/height(m)^2. BP from sphygmomanometer. medications_found: list tablets/drugs with {name,condition,disclosed:false if not declared}.
@@ -1598,7 +1597,7 @@ This is ONE page from a medical document bundle. Extract every medical value vis
 List EVERY printed measurement in raw_parameters verbatim (ratios, differentials, microscopic lines included). Use mapped fields where they apply. FIELD MAPPING: S.G.P.T./SGPT/ALT->sgpt_alt; Serum Creatinine->serum_creatinine; Serum Cholesterol/CHOLESTROL/TC->total_cholesterol; HbA1c->hba1c; Haemoglobin/Hb->hemoglobin; WBC/TLC->wbc_count; ESR->esr; Triglyceride/TG->triglycerides.`;
         const _QUESTIONS_ONLY = `Return ONLY valid JSON. This is an examination/history FORM page. Extract ONLY the Yes/No questions and any handwriting; OMIT lab/measurement tables.
 {"page_type":"exam_form","yes_no":[{"q_number":"","q_text_short":"","answer":"yes|no|unclear","confidence":"high|low","handwritten_note":""}],"free_text":[],"lifestyle":{"smoking":{"status":""},"alcohol":{"status":""},"tobacco_chewing":{"status":""}}}
-For each question decide if the tick is in the Yes or No column. If unsure, best guess with confidence "low". ALWAYS transcribe handwritten drug names/durations verbatim even if the tick is unclear.`;
+For each numbered question, output a row EVEN IF this page has no visible Yes/No column header (continuation pages omit it). Two answer columns sit in fixed positions: LEFT tick = Yes, RIGHT tick = No — use the tick's horizontal position to decide. If a question has any tick, you MUST list it; never skip a question because the heading is missing. If unsure, best guess with confidence "low". ALWAYS transcribe handwritten drug names/durations verbatim even if the tick is unclear.`;
 
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
@@ -1736,17 +1735,23 @@ For each question decide if the tick is in the Yes or No column. If unsure, best
 
         // Persist each rendered page image to S3 so the UI can show "actual page ↔ values".
         // Best-effort, non-blocking — failure here must not break extraction.
-        if (process.env.AWS_ACCESS_KEY_ID) {
-          for (let pi = 0; pi < pageImages.length; pi++) {
-            try {
-              const bytes = pageImages[pi]?.image?.source?.bytes;
-              if (!bytes) continue;
-              const key = `extraction-pages/${wf.id}/page-${pi + 1}.jpg`;
-              await s3Client.savePageImage(key, Buffer.from(bytes), 'image/jpeg').catch(() => {});
-              if (pageExtractions[pi]) pageExtractions[pi].image_key = key;
-            } catch (_) { /* non-fatal */ }
+        // Note: do NOT gate on AWS_ACCESS_KEY_ID — this deployment uses an EC2 instance
+        // role (no static keys), so that env var is absent even though S3 works.
+        let _imgOk = 0, _imgFail = 0;
+        for (let pi = 0; pi < pageImages.length; pi++) {
+          try {
+            const bytes = pageImages[pi]?.image?.source?.bytes;
+            if (!bytes) continue;
+            const key = `extraction-pages/${wf.id}/page-${pi + 1}.jpg`;
+            await s3Client.savePageImage(key, Buffer.from(bytes), 'image/jpeg');
+            if (pageExtractions[pi]) pageExtractions[pi].image_key = key;
+            _imgOk++;
+          } catch (e) {
+            _imgFail++;
+            console.error(`[Extraction] page image ${pi + 1} S3 save failed:`, e.message);
           }
         }
+        console.log(`[Extraction] Page images to S3: ${_imgOk} saved, ${_imgFail} failed`);
 
         // Hand the merged results to the existing downstream parse/normalize/merge code unchanged.
         const responseText = JSON.stringify({ ...mergedPhysical, parameters_found: 0 });
