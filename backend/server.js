@@ -1549,7 +1549,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
 ONLY fill fields that actually appear on THIS page; leave the rest null. Set page_type accurately.
 LOSSLESS CAPTURE — in addition to the mapped fields above:
 - "raw_parameters": list EVERY test/measurement printed on this page exactly as written, even ones not in the schema above. Each = {"label":"<exact printed name>","value":"<exact value>","unit":"<unit>","range":"<printed normal range>","flag":"normal|high|low|borderline|unclear"}. Do NOT skip ratios, differential counts, or microscopic lines.
-- "yes_no": if this page has numbered questions with hand-marked tick/check boxes — EVEN IF there is NO visible "Yes"/"No" column header on this page (continuation pages often omit it) — list EACH question = {"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>","tick_position":"left|right|none|unclear","handwritten_note":"<verbatim handwriting near it, else empty>"}. The form has exactly TWO answer boxes per question row, side by side: column 1 (LEFT) and column 2 (RIGHT). For each question, FIRST look only at WHERE the tick/check mark sits on that row and report tick_position: "left" if the mark is in the first/left box, "right" if in the second/right box, "none" if the row has no mark, "unclear" if a mark exists but you cannot tell which box. Do NOT output a yes/no answer yourself — only report the position. If a question row has any mark you MUST output a row for it. ALWAYS transcribe handwritten drug names/durations into handwritten_note even when tick_position is unclear.
+- "yes_no": if this page has numbered questions with hand-marked tick/check boxes — EVEN IF there is NO visible "Yes"/"No" column header on this page (continuation pages often omit it) — list EACH question = {"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>","tick_column":"yes_col|no_col|none|unclear","handwritten_note":"<verbatim handwriting near it, else empty>"}. CRITICAL LAYOUT: each question row has THREE columns — column 1 (the WIDE left column) is the question TEXT and comments and NEVER holds a tick; column 2 (the FIRST narrow box, in the MIDDLE) is the YES box; column 3 (the SECOND/LAST narrow box, on the far RIGHT) is the NO box. IGNORE column 1 completely. Look ONLY at the two narrow boxes on the right. For each question report tick_column: "yes_col" if the mark is in the middle narrow box, "no_col" if the mark is in the far-right narrow box, "none" if neither box is marked, "unclear" if a mark exists but you cannot tell which of the two narrow boxes. Do NOT output a yes/no answer yourself — only which column the tick is in. If a question row has any mark in the narrow boxes you MUST output a row for it. ALWAYS transcribe handwritten drug names/durations into handwritten_note even when tick_column is unclear.
 - "free_text": any other handwritten or notable text on the page, verbatim.
 FIELD MAPPING: S.G.P.T./SGPT/ALT→sgpt_alt; Serum Creatinine→serum_creatinine; Serum Cholesterol/CHOLESTROL/TC→total_cholesterol; HbA1c/Glycated Haemoglobin→hba1c; Haemoglobin/Hb→hemoglobin(hematology); WBC/TLC→wbc_count; ESR→esr; Triglyceride/TG→triglycerides; T.CHOLESTROL/HDL→tc_hdl_ratio.
 BMI=weight(kg)/height(m)^2. BP from sphygmomanometer. medications_found: list tablets/drugs with {name,condition,disclosed:false if not declared}.
@@ -1574,17 +1574,16 @@ This is ONE page from a medical document bundle. Extract every medical value vis
         const pageExtractions = [];
         let totalInTok = 0, totalOutTok = 0;
 
-        // Derive Yes/No from the model-reported tick POSITION (we own the mapping, not the model).
-        // column 1 / left = Yes, column 2 / right = No. We do this in code so a correct perception
-        // always maps to the correct answer.
+        // Derive Yes/No from the model-reported tick COLUMN (we own the mapping, not the model).
+        // Form geometry: col1 = question text (ignored), col2 (middle) = Yes box, col3 (right) = No box.
         const _deriveYesNo = (arr) => (Array.isArray(arr) ? arr : []).map(q => {
-          const pos = (q.tick_position || '').toLowerCase();
+          const col = (q.tick_column || '').toLowerCase();
           let answer, confidence;
-          if (pos === 'left')       { answer = 'yes'; confidence = 'high'; }
-          else if (pos === 'right') { answer = 'no';  confidence = 'high'; }
-          else if (pos === 'none')  { answer = 'no';  confidence = 'low'; }  // no mark = not affirmed (review)
-          else                      { answer = 'unclear'; confidence = 'low'; }
-          return { q_number: q.q_number || '', q_text_short: q.q_text_short || '', tick_position: pos || 'unclear', answer, confidence, handwritten_note: q.handwritten_note || '' };
+          if (col === 'yes_col')      { answer = 'yes'; confidence = 'high'; }
+          else if (col === 'no_col')  { answer = 'no';  confidence = 'high'; }
+          else if (col === 'none')    { answer = 'no';  confidence = 'low'; }  // no mark = not affirmed (review)
+          else                        { answer = 'unclear'; confidence = 'low'; }
+          return { q_number: q.q_number || '', q_text_short: q.q_text_short || '', tick_column: col || 'unclear', answer, confidence, handwritten_note: q.handwritten_note || '' };
         });
 
         // One Converse call for a page image with a given instruction. Returns {pd, in, out, stop, raw}.
@@ -1609,8 +1608,8 @@ This is ONE page from a medical document bundle. Extract every medical value vis
 {"page_type":"lab_report|exam_form|photo|id_card|other","blood_chemistry":{},"hematology":{},"physical_exam":{},"urine_analysis":{},"cardiac":{},"chest_xray":{"v":null,"f":""},"raw_parameters":[{"label":"","value":"","unit":"","range":"","flag":"normal|high|low|borderline|unclear"}],"correlation_data":{"medications_found":[]},"parameters_found":0}
 List EVERY printed measurement in raw_parameters verbatim (ratios, differentials, microscopic lines included). Use mapped fields where they apply. FIELD MAPPING: S.G.P.T./SGPT/ALT->sgpt_alt; Serum Creatinine->serum_creatinine; Serum Cholesterol/CHOLESTROL/TC->total_cholesterol; HbA1c->hba1c; Haemoglobin/Hb->hemoglobin; WBC/TLC->wbc_count; ESR->esr; Triglyceride/TG->triglycerides.`;
         const _QUESTIONS_ONLY = `Return ONLY valid JSON. This is an examination/history FORM page. Extract ONLY the Yes/No questions and any handwriting; OMIT lab/measurement tables.
-{"page_type":"exam_form","yes_no":[{"q_number":"","q_text_short":"","tick_position":"left|right|none|unclear","handwritten_note":""}],"free_text":[],"lifestyle":{"smoking":{"status":""},"alcohol":{"status":""},"tobacco_chewing":{"status":""}}}
-The form has exactly TWO answer boxes per question row, side by side: column 1 (LEFT) and column 2 (RIGHT). For each numbered question, FIRST look only at WHERE the tick/check mark sits and report tick_position: "left" (first box), "right" (second box), "none" (no mark), or "unclear" (mark present, box ambiguous). Do NOT output a yes/no answer yourself — only the position. Output a row for EVERY question that has any mark, even with no visible column header. ALWAYS transcribe handwritten drug names/durations verbatim even if tick_position is unclear.`;
+{"page_type":"exam_form","yes_no":[{"q_number":"","q_text_short":"","tick_column":"yes_col|no_col|none|unclear","handwritten_note":""}],"free_text":[],"lifestyle":{"smoking":{"status":""},"alcohol":{"status":""},"tobacco_chewing":{"status":""}}}
+CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is question TEXT/comments and NEVER holds a tick; column 2 (FIRST narrow box, MIDDLE) is YES; column 3 (SECOND/LAST narrow box, far RIGHT) is NO. IGNORE column 1. Look ONLY at the two narrow right-hand boxes. Report tick_column: "yes_col" (middle box marked), "no_col" (far-right box marked), "none" (neither), "unclear" (mark present, box ambiguous). Do NOT output a yes/no answer yourself. Output a row for EVERY question with a mark, even with no visible column header. ALWAYS transcribe handwritten drug names/durations verbatim even if tick_column is unclear.`;
 
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
