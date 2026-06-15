@@ -477,6 +477,29 @@ app.get('/api/workflow/:id/document/:docId/preview', requireAuth, async (req, re
   res.json({ id: doc.id, name: doc.name, content_type: doc.content_type || doc.mimetype, base64_data: doc.base64_data, is_image: isImage, is_pdf: isPdf, size: doc.size });
 });
 
+// ── Page-by-Page Extraction: per-page records (page image ↔ extracted values) ──
+app.get('/api/workflow/:id/page-extractions', requireAuth, (req, res) => {
+  const wf = workflowEngine.getWorkflow(req.params.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+  res.json({ pages: wf.page_extractions || [], usage: wf.extraction_usage || null });
+});
+
+// Serve one rendered page image from S3 as base64 (for the side-by-side view).
+app.get('/api/workflow/:id/page-image/:page', requireAuth, async (req, res) => {
+  const wf = workflowEngine.getWorkflow(req.params.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+  const pageNum = parseInt(req.params.page, 10);
+  const rec = (wf.page_extractions || []).find(p => p.page === pageNum);
+  const key = rec?.image_key || `extraction-pages/${req.params.id}/page-${pageNum}.jpg`;
+  try {
+    const obj = await s3Client.getDocumentFromS3(key);
+    if (!obj?.buffer) return res.status(404).json({ error: 'Page image not found' });
+    res.json({ page: pageNum, content_type: obj.contentType || 'image/jpeg', base64_data: obj.buffer.toString('base64') });
+  } catch (e) {
+    res.status(404).json({ error: 'Page image not available: ' + e.message });
+  }
+});
+
 // Export workflow as PDF report
 app.get('/api/workflow/:id/export-pdf', requireAuth, (req, res) => {
   const wf = workflowEngine.getWorkflow(req.params.id);
@@ -1418,12 +1441,10 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               const allPageFiles = fs.readdirSync(tmpDir)
                 .filter(f => f.endsWith('.jpg') || f.endsWith('.jpeg') || f.endsWith('.ppm'))
                 .sort();
-              const PAGE_CAP = 20; // PPHC bundles (selfies + Aadhaar + MER + lab reports) routinely run 12-16 pages; lab values are often on the LAST pages
-              const pageFiles = allPageFiles.slice(0, PAGE_CAP);
-              if (allPageFiles.length > PAGE_CAP) {
-                console.warn(`[Extraction] WARNING: ${doc.name} has ${allPageFiles.length} pages but only ${PAGE_CAP} sent — lab pages near the end may be dropped. Raise PAGE_CAP.`);
-              }
-              console.log(`[Extraction] ${doc.name}: ${allPageFiles.length} total pages, sending ${pageFiles.length}`);
+              // No page cap — process every page. Lab values often sit on the last pages,
+              // so truncating the bundle silently drops the most important data.
+              const pageFiles = allPageFiles;
+              console.log(`[Extraction] ${doc.name}: ${allPageFiles.length} total pages, sending ALL ${pageFiles.length}`);
 
               if (pageFiles.length > 0) {
                 converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — ${pageFiles.length} page(s)]` });
@@ -1520,10 +1541,21 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
   "blood_chemistry": { "fasting_glucose":{"v":null,"f":""}, "hba1c":{"v":null,"f":""}, "total_cholesterol":{"v":null,"f":""}, "hdl":{"v":null,"f":""}, "ldl":{"v":null,"f":""}, "triglycerides":{"v":null,"f":""}, "tc_hdl_ratio":{"v":null,"f":""}, "sgot_ast":{"v":null,"f":""}, "sgpt_alt":{"v":null,"f":""}, "serum_creatinine":{"v":null,"f":""}, "blood_urea":{"v":null,"f":""}, "uric_acid":{"v":null,"f":""}, "total_bilirubin":{"v":null,"f":""}, "albumin":{"v":null,"f":""}, "hiv":{"v":null,"f":""}, "hbsag":{"v":null,"f":""} },
   "hematology": { "hemoglobin":{"v":null,"f":""}, "wbc_count":{"v":null,"f":""}, "platelet_count":{"v":null,"f":""}, "rbc_count":{"v":null,"f":""}, "esr":{"v":null,"f":""} },
   "correlation_data": { "medications_found": [] },
+  "raw_parameters": [],
+  "yes_no": [],
+  "free_text": [],
   "parameters_found": 0
 }
 ONLY fill fields that actually appear on THIS page; leave the rest null. Set page_type accurately.
+LOSSLESS CAPTURE — in addition to the mapped fields above:
+- "raw_parameters": list EVERY test/measurement printed on this page exactly as written, even ones not in the schema above. Each = {"label":"<exact printed name>","value":"<exact value>","unit":"<unit>","range":"<printed normal range>","flag":"normal|high|low|borderline|unclear"}. Do NOT skip ratios, differential counts, or microscopic lines.
+- "yes_no": if this page has numbered questions with hand-marked tick/check boxes — EVEN IF there is NO visible "Yes"/"No" column header on this page (continuation pages often omit it) — list EACH question = {"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>","tick_column":"yes_col|no_col|none|unclear","handwritten_note":"<verbatim handwriting near it, else empty>"}. CRITICAL LAYOUT: each question row has THREE columns — column 1 (the WIDE left column) is the question TEXT and comments and NEVER holds a tick; column 2 (the FIRST narrow box, in the MIDDLE) is the YES box; column 3 (the SECOND/LAST narrow box, on the far RIGHT) is the NO box. IGNORE column 1 completely. Look ONLY at the two narrow boxes on the right. For each question report tick_column: "yes_col" if the mark is in the middle narrow box, "no_col" if the mark is in the far-right narrow box, "none" if neither box is marked, "unclear" if a mark exists but you cannot tell which of the two narrow boxes. Do NOT output a yes/no answer yourself — only which column the tick is in. If a question row has any mark in the narrow boxes you MUST output a row for it. ALWAYS transcribe handwritten drug names/durations into handwritten_note even when tick_column is unclear.
+- "free_text": any other handwritten or notable text on the page, verbatim.
 FIELD MAPPING: S.G.P.T./SGPT/ALT→sgpt_alt; Serum Creatinine→serum_creatinine; Serum Cholesterol/CHOLESTROL/TC→total_cholesterol; HbA1c/Glycated Haemoglobin→hba1c; Haemoglobin/Hb→hemoglobin(hematology); WBC/TLC→wbc_count; ESR→esr; Triglyceride/TG→triglycerides; T.CHOLESTROL/HDL→tc_hdl_ratio.
+HEMATOLOGY / CBC — a blood-count panel may be titled "HAEMOGRAM", "Complete Blood Count", "CBC", "HAEMATOLOGY", "HAEMOTOLOGY" (misspelled), "Report on Haematology", or "Examination of Blood". Treat ALL of these as the hematology section. Map its rows: Haemoglobin/HAEMOGLOBIN/Hb→hemoglobin; Total WBC Count/TOTOL WBC COUNT/Total Leucocyte Count/Total Count/TLC/W.B.C./WBC→wbc_count; Platelet Count/PLATELETS COUNT/Platelets→platelet_count; RBC Count/R.B.C./RBC→rbc_count; ESR/E.S.R./Erythrocyte Sedimentation Rate/ESR (Wintrobe)/ESR (Westergren/WestPergreen)→esr. Ignore differential percentages (Neutrophils/Lymphocytes/etc) for these fields.
+URINE: "Albumin" on a urine report IS the protein test — put its value in urine_analysis.protein. Canonicalise urine protein/glucose to: "nil" (nil/negative/absent/nad/trace-negative), "trace" (trace/1+), or "abnormal" (2+/3+/4+/present).
+ECG: canonicalise cardiac.ecg.v to exactly: "normal" (normal/within normal limits/WNL/sinus rhythm/NSR/no abnormality/unremarkable), "borderline" (minor or nonspecific ST-T changes/LVH/RBBB/incomplete block/sinus brady or tachy), or "abnormal" (ischaemic/LBBB/AF/MI/Q waves/arrhythmia).
+CHEST X-RAY: canonicalise chest_xray.v to "normal" (normal/NAD/clear/within normal limits/no active disease/unremarkable), "borderline", or "abnormal".
 BMI=weight(kg)/height(m)^2. BP from sphygmomanometer. medications_found: list tablets/drugs with {name,condition,disclosed:false if not declared}.
 Flags: normal/high/low/borderline.`;
 
@@ -1540,25 +1572,182 @@ This is ONE page from a medical document bundle. Extract every medical value vis
         const invokeStart1 = Date.now();
         let pagesScanned = 0, pagesWithData = 0, lastStopReason = 'end_turn';
 
+        // ── Per-page record + real token accounting (additive — does not touch merge logic) ──
+        // pageExtractions powers the "Page-by-Page Extraction" UI subtab (page image ↔ values).
+        // Token totals are summed from each page's real ConverseResponse.usage (previously discarded).
+        const pageExtractions = [];
+        let totalInTok = 0, totalOutTok = 0;
+
+        // Derive Yes/No. Primary rule (row-by-row): middle box (col 2) marked = Yes, else No.
+        // Fallback (holistic read, no middle_box_marked field): tick_column yes_col = Yes, else No.
+        const _deriveYesNo = (arr) => (Array.isArray(arr) ? arr : []).map(q => {
+          let answer;
+          if (typeof q.middle_box_marked === 'boolean') {
+            answer = q.middle_box_marked ? 'yes' : 'no';          // your rule: only the middle box means Yes
+          } else {
+            const col = (q.tick_column || '').toLowerCase();
+            answer = (col === 'yes_col') ? 'yes' : 'no';          // anything that isn't a clear Yes = No
+          }
+          return {
+            q_number: q.q_number || '',
+            q_text_short: q.q_text_short || '',
+            middle_box_marked: (typeof q.middle_box_marked === 'boolean') ? q.middle_box_marked : undefined,
+            answer,
+            reason: q.reason || '',
+            handwritten_note: q.handwritten_note || ''
+          };
+        });
+
+        // One Converse call for a page image with a given instruction. Returns {pd, in, out, stop, raw}.
+        const _callPage = async (imgBlock, instruction) => {
+          const r = await __client.send(new ConverseCommand({
+            modelId,
+            system: [{ text: 'You are a medical document extraction AI. You are shown ONE page. Extract only what is on it. Return ONLY valid JSON, no markdown.' }],
+            messages: [{ role: 'user', content: [ imgBlock, { text: instruction } ] }],
+            inferenceConfig: { maxTokens: 4096, temperature: 0 }
+          }));
+          const txt = r.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+          const m = txt.match(/\{[\s\S]*\}/);
+          let pd = null;
+          if (m) { try { pd = JSON.parse(m[0]); } catch (_) { pd = null; } }
+          return { pd, in: r.usage?.inputTokens || 0, out: r.usage?.outputTokens || 0, stop: r.stopReason || 'end_turn', raw: m ? m[0] : txt };
+        };
+
+        // ── Row-by-row Yes/No (most accurate on dense forms) ──────────────────
+        // Holistic grid reading drifts ticks to the wrong row. Instead:
+        //   Stage 1: discover the question list on the page (no tick reading).
+        //   Stage 2: ONE focused call per question — anchor on that row, read only
+        //            its two narrow boxes (col2=Yes, col3=No). Returns derived rows.
+        // Accumulates tokens into the page totals via the returned {in,out}.
+        const _extractYesNoRowByRow = async (imgBlock) => {
+          let cin = 0, cout = 0;
+          // Stage 1 — discover questions (don't read ticks yet)
+          const discoverPrompt = `Return ONLY valid JSON. Does this page have numbered examination/history questions with Yes/No tick boxes? If NOT, return {"is_question_page":false,"questions":[]}. If yes, list EVERY numbered question in order — DO NOT read the tick marks yet, just the labels:
+{"is_question_page":true,"questions":[{"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>"}]}`;
+          const disc = await _callPage(imgBlock, discoverPrompt);
+          cin += disc.in; cout += disc.out;
+          const qlist = (disc.pd && Array.isArray(disc.pd.questions)) ? disc.pd.questions : [];
+          if (!disc.pd?.is_question_page || qlist.length === 0) {
+            return { yes_no_raw: [], in: cin, out: cout, question_count: 0 };
+          }
+          // Build an ordered roster string so the model can locate a row by counting.
+          const roster = qlist.map(q => `${q.q_number}: ${q.q_text_short || ''}`).join('\n');
+          const rows = [];
+          // Stage 2 — one call per question, anchored on its row
+          for (const q of qlist) {
+            const qn = q.q_number || '';
+            const rowPrompt = `Return ONLY valid JSON. This page has these questions in this order:
+${roster}
+
+Focus on ONE question only: "${qn}". Find ITS row on the page (use the ordered list above to locate it). Each row has 3 columns: column 1 (wide) = question text, column 2 = the MIDDLE narrow box, column 3 = the far-right narrow box. Look ONLY at column 2, the MIDDLE box, on question ${qn}'s row. Answer one simple question: is there a tick/check/mark INSIDE the boundaries of the MIDDLE box (not the right box, not between boxes)?
+First describe in one sentence exactly what you see in and around the middle box for this row (is the box empty, does a mark sit clearly inside it, or does a checkmark from the right box have a tail crossing into it). Then decide.
+{"q_number":"${qn}","reason":"<one sentence: what you see in/around the middle box>","middle_box_marked":true|false,"handwritten_note":"<any handwriting on THIS row, verbatim; else empty>"}`;
+            try {
+              const rr = await _callPage(imgBlock, rowPrompt);
+              cin += rr.in; cout += rr.out;
+              const pd = rr.pd || {};
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: pd.middle_box_marked === true, reason: pd.reason || '', handwritten_note: pd.handwritten_note || '' });
+            } catch (e) {
+              rows.push({ q_number: qn, q_text_short: q.q_text_short || '', middle_box_marked: false, reason: 'extraction error', handwritten_note: '' });
+            }
+          }
+          return { yes_no_raw: rows, in: cin, out: cout, question_count: qlist.length };
+        };
+
+        // When a page's combined output would exceed the 4096 cap (stopReason=max_tokens or
+        // unparseable truncated JSON), we re-scan the SAME page in two smaller passes —
+        // pass A = measurements, pass B = Yes/No questions + free text — then merge.
+        const _MEASURE_ONLY = `Return ONLY valid JSON. Extract ONLY measured/lab/vital values from THIS page; OMIT any Yes/No questionnaire and narrative.
+{"page_type":"lab_report|exam_form|photo|id_card|other","blood_chemistry":{},"hematology":{},"physical_exam":{},"urine_analysis":{},"cardiac":{},"chest_xray":{"v":null,"f":""},"raw_parameters":[{"label":"","value":"","unit":"","range":"","flag":"normal|high|low|borderline|unclear"}],"correlation_data":{"medications_found":[]},"parameters_found":0}
+List EVERY printed measurement in raw_parameters verbatim (ratios, differentials, microscopic lines included). Use mapped fields where they apply. FIELD MAPPING: S.G.P.T./SGPT/ALT->sgpt_alt; Serum Creatinine->serum_creatinine; Serum Cholesterol/CHOLESTROL/TC->total_cholesterol; HbA1c->hba1c; Haemoglobin/Hb->hemoglobin; WBC/TLC->wbc_count; ESR->esr; Triglyceride/TG->triglycerides.`;
+        const _QUESTIONS_ONLY = `Return ONLY valid JSON. This is an examination/history FORM page. Extract ONLY the Yes/No questions and any handwriting; OMIT lab/measurement tables.
+{"page_type":"exam_form","yes_no":[{"q_number":"","q_text_short":"","tick_column":"yes_col|no_col|none|unclear","handwritten_note":""}],"free_text":[],"lifestyle":{"smoking":{"status":""},"alcohol":{"status":""},"tobacco_chewing":{"status":""}}}
+CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is question TEXT/comments and NEVER holds a tick; column 2 (FIRST narrow box, MIDDLE) is YES; column 3 (SECOND/LAST narrow box, far RIGHT) is NO. IGNORE column 1. Look ONLY at the two narrow right-hand boxes. Report tick_column: "yes_col" (middle box marked), "no_col" (far-right box marked), "none" (neither), "unclear" (mark present, box ambiguous). Do NOT output a yes/no answer yourself. Output a row for EVERY question with a mark, even with no visible column header. ALWAYS transcribe handwritten drug names/durations verbatim even if tick_column is unclear.`;
+
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
           try {
-            const pageRes = await __client.send(new ConverseCommand({
-              modelId,
-              system: [{ text: 'You are a medical document extraction AI. You are shown ONE page. Extract only what is on it. Return ONLY valid JSON, no markdown.' }],
-              messages: [{ role: 'user', content: [ pageImages[pi], { text: pagePrompt } ] }],
-              inferenceConfig: { maxTokens: 4096, temperature: 0 }
-            }));
-            lastStopReason = pageRes.stopReason || lastStopReason;
-            const pageText = pageRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
-            const pm = pageText.match(/\{[\s\S]*\}/);
-            if (!pm) {
-              console.log(`[Extraction] Page ${pageNum}/${pageImages.length}: no JSON returned — skipping`);
+            // First attempt: one combined call for the whole page.
+            let r = await _callPage(pageImages[pi], pagePrompt);
+            let _pin = r.in, _pout = r.out;
+            let pd = r.pd;
+            let wasSplit = false;
+
+            // If output hit the 4096 cap (max_tokens) or truncated JSON failed to parse,
+            // re-scan the SAME page in two smaller passes and merge.
+            if (r.stop === 'max_tokens' || !pd) {
+              console.log(`[Extraction] Page ${pageNum}: ${r.stop === 'max_tokens' ? 'hit 4096 cap' : 'unparseable'} — splitting into 2 passes`);
+              wasSplit = true;
+              const a = await _callPage(pageImages[pi], _MEASURE_ONLY);
+              const b = await _callPage(pageImages[pi], _QUESTIONS_ONLY);
+              _pin += a.in + b.in; _pout += a.out + b.out;
+              const ma = a.pd || {}; const mb = b.pd || {};
+              // Merge the two partial objects into one pd.
+              pd = {
+                page_type: ma.page_type || mb.page_type || pd?.page_type || 'other',
+                blood_chemistry: ma.blood_chemistry || {},
+                hematology: ma.hematology || {},
+                physical_exam: ma.physical_exam || {},
+                urine_analysis: ma.urine_analysis || {},
+                cardiac: ma.cardiac || {},
+                chest_xray: ma.chest_xray,
+                raw_parameters: Array.isArray(ma.raw_parameters) ? ma.raw_parameters : [],
+                yes_no: Array.isArray(mb.yes_no) ? mb.yes_no : [],
+                free_text: Array.isArray(mb.free_text) ? mb.free_text : [],
+                lifestyle: mb.lifestyle || ma.lifestyle,
+                correlation_data: ma.correlation_data || { medications_found: [] },
+                parameters_found: 0
+              };
+            }
+
+            lastStopReason = r.stop || lastStopReason;
+            totalInTok += _pin; totalOutTok += _pout;
+
+            if (!pd) {
+              console.log(`[Extraction] Page ${pageNum}/${pageImages.length}: no JSON even after split — skipping`);
+              pageExtractions.push({ page: pageNum, page_type: 'unparsed', values: [], yes_no: [], free_text: [], tokens: { input: _pin, output: _pout }, was_split: wasSplit, note: 'No JSON returned' });
               pagesScanned++;
               continue;
             }
-            const pd = JSON.parse(pm[0]);
             const isLabPage = pd.page_type === 'lab_report';
+
+            // ── Per-page record for the UI (page image ↔ extracted values) ──
+            // Build a flat value list from raw_parameters (lossless) plus any mapped leaves on this page.
+            const _pageVals = [];
+            if (Array.isArray(pd.raw_parameters)) {
+              for (const rp of pd.raw_parameters) {
+                if (rp && (rp.label || rp.value != null)) _pageVals.push({ label: rp.label || '', value: rp.value != null ? String(rp.value) : '', unit: rp.unit || '', range: rp.range || '', flag: rp.flag || '' });
+              }
+            }
+
+            // ── Row-by-row Yes/No for form pages (replaces the holistic grid read) ──
+            // Trigger when the holistic pass saw any questions or thinks it's a form page.
+            const _looksLikeForm = (pd.page_type === 'exam_form') || (Array.isArray(pd.yes_no) && pd.yes_no.length > 0);
+            let _yesNo;
+            if (_looksLikeForm) {
+              try {
+                const rb = await _extractYesNoRowByRow(pageImages[pi]);
+                _pin += rb.in; _pout += rb.out; totalInTok += rb.in; totalOutTok += rb.out;
+                _yesNo = _deriveYesNo(rb.yes_no_raw);
+                console.log(`[Extraction] Page ${pageNum}: row-by-row Yes/No — ${rb.question_count} questions, ${rb.in + rb.out} tok`);
+              } catch (e) {
+                console.error(`[Extraction] Page ${pageNum}: row-by-row failed (${e.message}), falling back to holistic`);
+                _yesNo = _deriveYesNo(pd.yes_no);
+              }
+            } else {
+              _yesNo = _deriveYesNo(pd.yes_no);
+            }
+
+            pageExtractions.push({
+              page: pageNum,
+              page_type: pd.page_type || 'other',
+              values: _pageVals,
+              yes_no: _yesNo,
+              free_text: Array.isArray(pd.free_text) ? pd.free_text : [],
+              medications: pd.correlation_data?.medications_found || [],
+              was_split: wasSplit,
+              tokens: { input: _pin, output: _pout }
+            });
 
             // Merge LAB sections — lab page values always win; non-lab page lab values only fill empty slots
             for (const sec of ['blood_chemistry','hematology']) {
@@ -1608,6 +1797,45 @@ This is ONE page from a medical document bundle. Extract every medical value vis
 
         const elapsed = Date.now() - invokeStart1;
         console.log(`[Extraction] ✅ Per-page scan complete: ${pagesScanned}/${pageImages.length} pages, ${pagesWithData} had data, ${elapsed}ms total`);
+
+        // ── Token + cost accounting (config-driven; default Claude 3 Sonnet ap-south-1 + FX) ──
+        // Prices are USD per 1M tokens; FX converts to INR for display. Adjust in one place
+        // (or move to a config master) when the model or rate changes.
+        const _PRICE_IN_PER_M  = Number(process.env.EXTRACT_PRICE_IN_USD_PER_M)  || 3.0;
+        const _PRICE_OUT_PER_M = Number(process.env.EXTRACT_PRICE_OUT_USD_PER_M) || 15.0;
+        const _USD_TO_INR      = Number(process.env.USD_TO_INR) || 83.5;
+        const _usd = (totalInTok / 1e6) * _PRICE_IN_PER_M + (totalOutTok / 1e6) * _PRICE_OUT_PER_M;
+        const _inr = _usd * _USD_TO_INR;
+        wf.extraction_usage = {
+          input_tokens: totalInTok, output_tokens: totalOutTok,
+          total_tokens: totalInTok + totalOutTok,
+          cost_usd: Math.round(_usd * 10000) / 10000,
+          cost_inr: Math.round(_inr * 100) / 100,
+          pages_scanned: pagesScanned, model: modelId, duration_ms: elapsed
+        };
+        // Attach the per-page records for the Page-by-Page Extraction subtab.
+        wf.page_extractions = pageExtractions;
+        console.log(`[Extraction] Tokens: ${totalInTok} in + ${totalOutTok} out | $${_usd.toFixed(4)} | ₹${_inr.toFixed(2)}`);
+
+        // Persist each rendered page image to S3 so the UI can show "actual page ↔ values".
+        // Best-effort, non-blocking — failure here must not break extraction.
+        // Note: do NOT gate on AWS_ACCESS_KEY_ID — this deployment uses an EC2 instance
+        // role (no static keys), so that env var is absent even though S3 works.
+        let _imgOk = 0, _imgFail = 0;
+        for (let pi = 0; pi < pageImages.length; pi++) {
+          try {
+            const bytes = pageImages[pi]?.image?.source?.bytes;
+            if (!bytes) continue;
+            const key = `extraction-pages/${wf.id}/page-${pi + 1}.jpg`;
+            await s3Client.savePageImage(key, Buffer.from(bytes), 'image/jpeg');
+            if (pageExtractions[pi]) pageExtractions[pi].image_key = key;
+            _imgOk++;
+          } catch (e) {
+            _imgFail++;
+            console.error(`[Extraction] page image ${pi + 1} S3 save failed:`, e.message);
+          }
+        }
+        console.log(`[Extraction] Page images to S3: ${_imgOk} saved, ${_imgFail} failed`);
 
         // Hand the merged results to the existing downstream parse/normalize/merge code unchanged.
         const responseText = JSON.stringify({ ...mergedPhysical, parameters_found: 0 });
@@ -1750,8 +1978,9 @@ This is ONE page from a medical document bundle. Extract every medical value vis
                 console.warn('[Extraction] No JSON found in lab response:', labResponseText.substring(0, 200));
               }
             }
-            apiLog.push({ agent: 'AI Document Extraction (Converse — split 2-call)', timestamp: new Date().toISOString(),
-              tokens: { input: physRes.usage?.inputTokens, output: physRes.usage?.outputTokens },
+            apiLog.push({ agent: 'AI Document Extraction (per-page sequential)', timestamp: new Date().toISOString(),
+              tokens: { input: totalInTok, output: totalOutTok },
+              cost_inr: wf.extraction_usage?.cost_inr, cost_usd: wf.extraction_usage?.cost_usd,
               duration_ms: elapsed, status: 'success', parameters_found: extractedData.parameters_found || 0 });
           } catch(parseErr) {
             console.error('[Extraction] JSON parse failed:', parseErr.message);

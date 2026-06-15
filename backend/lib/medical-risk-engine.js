@@ -620,25 +620,55 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
       return 'both_abnormal';
     },
     ecg: (ed) => {
-      const v = ed?.cardiac?.ecg?.overall_interpretation;
-      if (!v) return null;
-      if (v === 'normal')     return 'normal';
-      if (v === 'borderline') return 'borderline';
+      const raw = ed?.cardiac?.ecg?.overall_interpretation ?? ed?.cardiac?.ecg?.value;
+      if (!raw) return null;
+      const v = String(raw).toLowerCase().trim();
+      if (v === 'normal' || v === 'borderline' || v === 'abnormal') return v;
+      const abnormal = ['ischaem','ischem','lbbb','left bundle branch','atrial fib','\\baf\\b','a-fib','a fib','myocardial','\\bmi\\b','q wave','arrhythmia','arrythmia','infarct','st elevation','st depression','heart block','complete block'];
+      const borderline = ['minor','nonspecific','non-specific','st-t','st t change','lvh','left ventricular hypertrophy','rbbb','right bundle','incomplete','brady','tachy','ectopic','first degree','1st degree'];
+      const normal = ['normal','within normal limit','wnl','sinus rhythm','nsr','no abnormalit','unremarkable','no significant','regular'];
+      if (abnormal.some(s => new RegExp(s).test(v))) {
+        if (v.includes('incomplete')) return 'borderline'; // incomplete block is borderline, not abnormal
+        return 'abnormal';
+      }
+      if (borderline.some(s => v.includes(s))) return 'borderline';
+      if (normal.some(s => v.includes(s)))     return 'normal';
       return 'abnormal';
     },
     urine_routine: (ed) => {
-      const p = (ed?.urine_analysis?.protein?.value || '').toLowerCase();
+      // Urine "Albumin" and "Protein" are the same measure — read whichever the lab labelled.
+      const p = String(ed?.urine_analysis?.protein?.value ?? ed?.urine_analysis?.albumin?.value ?? '').toLowerCase().trim();
       if (!p) return null;
-      if (p === 'nil' || p === 'negative') return 'nil';
-      if (p === 'trace' || p === '1+')     return 'trace';
+      if (p === 'nil' || p === 'trace' || p === 'abnormal') return p;
+      const nilSet   = ['nil','negative','absent','nad','trace-negative','trace negative','none','not detected'];
+      const traceSet = ['trace','1+','+1','trace +'];
+      const abnSet   = ['2+','3+','4+','+2','+3','+4','present','positive'];
+      if (abnSet.some(s => p.includes(s)))            return 'abnormal';
+      if (nilSet.some(s => p === s || p.includes(s))) return 'nil';
+      if (traceSet.some(s => p.includes(s)))          return 'trace';
       return 'abnormal';
     },
     cbc: (ed) => {
-      const hb = ed?.hematology?.hemoglobin?.value;
-      if (!hb) return null;
-      if (hb >= 13.5) return 'normal';
-      if (hb >= 11)   return 'one_low';
-      return 'abnormal';
+      const hb  = ed?.hematology?.hemoglobin?.value;
+      const wbc = ed?.hematology?.wbc_count?.value;
+      if (hb == null && wbc == null) return null;
+      // Hb status (gender-neutral lower bound; band label says Hb≥13.5M/12F)
+      let hbStatus = 'normal';
+      if (hb != null) {
+        if (hb < 11)        hbStatus = 'abnormal';
+        else if (hb < 13.5) hbStatus = 'one_low';
+      } else hbStatus = null;
+      // WBC status: normal 4k-11k, borderline 11k-15k, abnormal >15k or <4k
+      let wbcStatus = null;
+      if (wbc != null) {
+        if (wbc > 15000 || wbc < 4000) wbcStatus = 'abnormal';
+        else if (wbc > 11000)          wbcStatus = 'one_low';
+        else                           wbcStatus = 'normal';
+      }
+      // Combine: worst of the two drives the band (matches "Hb<11 OR Leukocytosis>15k → abnormal")
+      const rank = { normal:0, one_low:1, abnormal:2 };
+      const worst = [hbStatus, wbcStatus].filter(Boolean).reduce((a,b)=> rank[b]>rank[a]?b:a, 'normal');
+      return worst;
     },
     esr: (ed) => {
       const v = ed?.hematology?.esr?.value;
