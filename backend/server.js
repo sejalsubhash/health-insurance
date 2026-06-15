@@ -1551,12 +1551,54 @@ LOSSLESS CAPTURE — in addition to the mapped fields above:
 - "raw_parameters": list EVERY test/measurement printed on this page exactly as written, even ones not in the schema above. Each = {"label":"<exact printed name>","value":"<exact value>","unit":"<unit>","range":"<printed normal range>","flag":"normal|high|low|borderline|unclear"}. Do NOT skip ratios, differential counts, or microscopic lines.
 - "yes_no": if this page has numbered questions with hand-marked tick/check boxes — EVEN IF there is NO visible "Yes"/"No" column header on this page (continuation pages often omit it) — list EACH question = {"q_number":"<e.g. 1.a or 12>","q_text_short":"<short paraphrase>","tick_column":"yes_col|no_col|none|unclear","handwritten_note":"<verbatim handwriting near it, else empty>"}. CRITICAL LAYOUT: each question row has THREE columns — column 1 (the WIDE left column) is the question TEXT and comments and NEVER holds a tick; column 2 (the FIRST narrow box, in the MIDDLE) is the YES box; column 3 (the SECOND/LAST narrow box, on the far RIGHT) is the NO box. IGNORE column 1 completely. Look ONLY at the two narrow boxes on the right. For each question report tick_column: "yes_col" if the mark is in the middle narrow box, "no_col" if the mark is in the far-right narrow box, "none" if neither box is marked, "unclear" if a mark exists but you cannot tell which of the two narrow boxes. Do NOT output a yes/no answer yourself — only which column the tick is in. If a question row has any mark in the narrow boxes you MUST output a row for it. ALWAYS transcribe handwritten drug names/durations into handwritten_note even when tick_column is unclear.
 - "free_text": any other handwritten or notable text on the page, verbatim.
-FIELD MAPPING: S.G.P.T./SGPT/ALT→sgpt_alt; Serum Creatinine→serum_creatinine; Serum Cholesterol/CHOLESTROL/TC→total_cholesterol; HbA1c/Glycated Haemoglobin→hba1c; Haemoglobin/Hb→hemoglobin(hematology); WBC/TLC→wbc_count; ESR→esr; Triglyceride/TG→triglycerides; T.CHOLESTROL/HDL→tc_hdl_ratio.
-HEMATOLOGY / CBC — a blood-count panel may be titled "HAEMOGRAM", "Complete Blood Count", "CBC", "HAEMATOLOGY", "HAEMOTOLOGY" (misspelled), "Report on Haematology", or "Examination of Blood". Treat ALL of these as the hematology section. Map its rows: Haemoglobin/HAEMOGLOBIN/Hb→hemoglobin; Total WBC Count/TOTOL WBC COUNT/Total Leucocyte Count/Total Count/TLC/W.B.C./WBC→wbc_count; Platelet Count/PLATELETS COUNT/Platelets→platelet_count; RBC Count/R.B.C./RBC→rbc_count; ESR/E.S.R./Erythrocyte Sedimentation Rate/ESR (Wintrobe)/ESR (Westergren/WestPergreen)→esr. Ignore differential percentages (Neutrophils/Lymphocytes/etc) for these fields.
-URINE: "Albumin" on a urine report IS the protein test — put its value in urine_analysis.protein. Canonicalise urine protein/glucose to: "nil" (nil/negative/absent/nad/trace-negative), "trace" (trace/1+), or "abnormal" (2+/3+/4+/present).
-ECG: canonicalise cardiac.ecg.v to exactly: "normal" (normal/within normal limits/WNL/sinus rhythm/NSR/no abnormality/unremarkable), "borderline" (minor or nonspecific ST-T changes/LVH/RBBB/incomplete block/sinus brady or tachy), or "abnormal" (ischaemic/LBBB/AF/MI/Q waves/arrhythmia).
-CHEST X-RAY: canonicalise chest_xray.v to "normal" (normal/NAD/clear/within normal limits/no active disease/unremarkable), "borderline", or "abnormal".
-BMI=weight(kg)/height(m)^2. BP from sphygmomanometer. medications_found: list tablets/drugs with {name,condition,disclosed:false if not declared}.
+COMPREHENSIVE MEDICAL PARAMETER SYNONYM MAP — map ANY of these lab label variants to the exact schema field shown:
+
+BLOOD CHEMISTRY (→ blood_chemistry section):
+• fasting_glucose: Fasting Blood Sugar/FBS/Fasting Glucose/Blood Glucose Fasting/FBG/Fasting Blood Glucose/Glucose Fasting/F.B.S.
+• hba1c: HbA1c/HbA1C/Glycated Haemoglobin/Glycosylated Haemoglobin/Glycohaemoglobin/A1C/Hb A1c/GHb
+• total_cholesterol: Total Cholesterol/Serum Cholesterol/CHOLESTROL/T.Chol/TC/Cholesterol Total/Chol
+• hdl: HDL/HDL Cholesterol/HDL-C/HDL-Chol/High Density Lipoprotein/H.D.L./Serum HDL
+• ldl: LDL/LDL Cholesterol/LDL-C/LDL-Chol/Low Density Lipoprotein/L.D.L./Serum LDL
+• triglycerides: Triglycerides/Serum Triglyceride/TG/TRIG/Triglyceride/Serum TG/Fasting TG/S.Triglyceride
+• tc_hdl_ratio: T.Cholesterol/HDL Ratio/Chol/HDL Ratio/TC/HDL/Total Cholesterol to HDL Ratio/Cardiac Risk Ratio
+• sgpt_alt: SGPT/S.G.P.T./ALT/Alanine Aminotransferase/Alanine Transaminase/SGPT(ALT)/Serum SGPT
+• sgot_ast: SGOT/S.G.O.T./AST/Aspartate Aminotransferase/Aspartate Transaminase/SGOT(AST)/Serum SGOT
+• serum_creatinine: Serum Creatinine/S.Creatinine/Creatinine/Creat/S.Creat/Blood Creatinine/Creatinine Serum
+• blood_urea: Blood Urea/Urea/BUN/Blood Urea Nitrogen/Serum Urea/Urea Nitrogen/B.Urea
+• uric_acid: Uric Acid/Serum Uric Acid/S.Uric Acid/UA
+• total_bilirubin: Total Bilirubin/Bilirubin Total/T.Bilirubin/S.Bilirubin/Serum Bilirubin
+• albumin: Serum Albumin/S.Albumin/Albumin (when in BIOCHEMISTRY section — NOT urine section)
+• total_protein: Total Protein/S.Total Protein/Serum Total Protein
+• fasting_glucose: Random Blood Sugar/RBS/Post Prandial/PP (if no fasting value)
+• hiv: HIV/HIV I & II/HIV 1+2/HIV Rapid/HIV Antibody/Anti-HIV — value: "non_reactive"/"reactive"/"negative"/"positive"
+• hbsag: HBsAg/Hepatitis B Surface Antigen/Australia Antigen/HBsAg (Elisa) — value: "non_reactive"/"reactive"
+
+HEMATOLOGY (→ hematology section) — section may be titled HAEMOGRAM/Complete Blood Count/CBC/HAEMATOLOGY/HAEMOTOLOGY/Examination of Blood/Report on Blood:
+• hemoglobin: Haemoglobin/HAEMOGLOBIN/Hb/Hgb/Hemoglobin
+• wbc_count: WBC/Total WBC/Total Leucocyte Count/TLC/Total Count/TOTOL WBC COUNT/W.B.C./Total White Cell/Leukocyte Count/WBC Count
+• platelet_count: Platelet Count/Platelets/PLATELETS COUNT/PLT/Thrombocyte Count/Platelet Count (Impedance)
+• rbc_count: RBC/RBC Count/R.B.C./Red Blood Cell Count/Erythrocyte Count
+• esr: ESR/E.S.R./Erythrocyte Sedimentation Rate/ESR (Wintrobe Method)/ESR (Westergren/WestPergreen Method)/Sedimentation Rate
+
+PHYSICAL EXAM (→ physical_exam section):
+• bmi: BMI/Body Mass Index — compute from Height+Weight if not given directly: BMI=weight(kg)÷height(m)²
+• blood_pressure systolic/diastolic: BP/Blood Pressure/B.P. — take from sphygmomanometer reading, NOT from ECG or other sources
+
+URINE ANALYSIS (→ urine_analysis section) — section titled Urine Analysis/Urine Routine/Examination of Urine/Urine R/E:
+• protein: Protein/Albumin/Urine Protein/Urine Albumin — "Albumin: Nil" means protein is nil. Canonicalise: "nil"(nil/negative/absent/nad/trace-negative), "trace"(trace/1+), "abnormal"(2+/3+/4+/present)
+• glucose: Glucose/Sugar/Urine Sugar/Urine Glucose — same nil/trace/abnormal scale
+
+CARDIAC (→ cardiac section):
+• ecg: ECG/EKG/Electrocardiogram/Electrocardiograph — canonicalise to "normal"(normal/within normal limits/WNL/sinus rhythm/NSR/unremarkable), "borderline"(LVH/RBBB/minor ST-T/incomplete block/brady/tachy), "abnormal"(ischaemic/LBBB/AF/MI/Q waves/arrhythmia)
+
+CHEST X-RAY (→ chest_xray) — section titled CXR/Chest X-Ray/X-Ray Chest/PA View: canonicalise to "normal"(normal/NAD/clear/unremarkable/no active disease), "borderline", "abnormal"
+
+CRITICAL RULES:
+1. HIV and HBsAg — ONLY extract from a lab_report page. NEVER from a Yes/No questionnaire page. Default to "non_reactive" unless the lab explicitly prints "Reactive" or "Positive".
+2. BMI — ONLY from the MER physical exam table (Height+Weight rows). NEVER from a selfie or weighing-scale photo page.
+3. Albumin — if on a URINE page → urine_analysis.protein. If on a BIOCHEMISTRY page → blood_chemistry.albumin. Context determines placement.
+4. Ignore differential WBC percentages (Neutrophils/Lymphocytes/Eosinophils/Monocytes/Basophils) — these do NOT map to any extraction field.
+BMI=weight(kg)/height(m)^2. medications_found: list tablets/drugs with {name,condition,disclosed:false if not declared}.
 Flags: normal/high/low/borderline.`;
 
         const pagePrompt = `Patient: ${wf.proposer_name}, Age:${wf.age}, Gender:${wf.gender}, Declared conditions: ${wf.medical_history?.pre_existing_conditions?.join(',')||'none'}.
@@ -1659,7 +1701,7 @@ First describe in one sentence exactly what you see in and around the middle box
         // pass A = measurements, pass B = Yes/No questions + free text — then merge.
         const _MEASURE_ONLY = `Return ONLY valid JSON. Extract ONLY measured/lab/vital values from THIS page; OMIT any Yes/No questionnaire and narrative.
 {"page_type":"lab_report|exam_form|photo|id_card|other","blood_chemistry":{},"hematology":{},"physical_exam":{},"urine_analysis":{},"cardiac":{},"chest_xray":{"v":null,"f":""},"raw_parameters":[{"label":"","value":"","unit":"","range":"","flag":"normal|high|low|borderline|unclear"}],"correlation_data":{"medications_found":[]},"parameters_found":0}
-List EVERY printed measurement in raw_parameters verbatim (ratios, differentials, microscopic lines included). Use mapped fields where they apply. FIELD MAPPING: S.G.P.T./SGPT/ALT->sgpt_alt; Serum Creatinine->serum_creatinine; Serum Cholesterol/CHOLESTROL/TC->total_cholesterol; HbA1c->hba1c; Haemoglobin/Hb->hemoglobin; WBC/TLC->wbc_count; ESR->esr; Triglyceride/TG->triglycerides.`;
+List EVERY printed measurement in raw_parameters verbatim (ratios, differentials, microscopic lines included). Use mapped fields where they apply. FIELD MAPPING: SGPT/S.G.P.T./ALT→sgpt_alt; SGOT/AST→sgot_ast; Serum Creatinine/S.Creatinine/Creat→serum_creatinine; Total Cholesterol/Serum Cholesterol/CHOLESTROL/TC→total_cholesterol; HbA1c/Glycated Haemoglobin/Glycosylated Haemoglobin→hba1c; HDL/HDL-C→hdl; LDL/LDL-C→ldl; Triglycerides/TG/Serum TG→triglycerides; TC/HDL Ratio/Chol/HDL→tc_hdl_ratio; Haemoglobin/Hb→hemoglobin; WBC/TLC/Total Leucocyte Count/TOTOL WBC COUNT→wbc_count; Platelet Count/PLT/PLATELETS COUNT→platelet_count; RBC/RBC Count→rbc_count; ESR/E.S.R./Erythrocyte Sedimentation Rate→esr; Blood Urea/BUN/Urea→blood_urea; Uric Acid→uric_acid; Total Bilirubin→total_bilirubin; Fasting Blood Sugar/FBS/Glucose Fasting→fasting_glucose.`;
         const _QUESTIONS_ONLY = `Return ONLY valid JSON. This is an examination/history FORM page. Extract ONLY the Yes/No questions and any handwriting; OMIT lab/measurement tables.
 {"page_type":"exam_form","yes_no":[{"q_number":"","q_text_short":"","tick_column":"yes_col|no_col|none|unclear","handwritten_note":""}],"free_text":[],"lifestyle":{"smoking":{"status":""},"alcohol":{"status":""},"tobacco_chewing":{"status":""}}}
 CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is question TEXT/comments and NEVER holds a tick; column 2 (FIRST narrow box, MIDDLE) is YES; column 3 (SECOND/LAST narrow box, far RIGHT) is NO. IGNORE column 1. Look ONLY at the two narrow right-hand boxes. Report tick_column: "yes_col" (middle box marked), "no_col" (far-right box marked), "none" (neither), "unclear" (mark present, box ambiguous). Do NOT output a yes/no answer yourself. Output a row for EVERY question with a mark, even with no visible column header. ALWAYS transcribe handwritten drug names/durations verbatim even if tick_column is unclear.`;
