@@ -2614,11 +2614,41 @@ async function runAIAnalysis(wf) {
   // (3) re-derive from age+SA via product rules. This fixes older/restored workflows whose
   // cat_level wasn't persisted — without it they default to STP and score on the wrong weights.
   function resolveCatForScoring() {
+    const VENDOR_CAT_MAP = { 'VEND-003':'tele_mer', 'VEND-001':'CAT_1', 'VEND-002':'CAT_2', 'VEND-004':'CAT_3', 'VEND-005':'CAT_4' };
+
+    // 0) detect TeleMER from uploaded document content FIRST — if page_extractions has
+    //    10+ numbered questions and no lab sections, this is a TeleMER form PDF.
+    //    Runs before trusting any stored cat_level, because a case can be created with
+    //    a provisional CAT (e.g. CAT_1 from initial age/SA rule) and only later get
+    //    correctly routed to the TeleMER vendor + TeleMER form — the stored cat_level
+    //    is stale in that situation and must not block detection from real content.
+    if (wf.page_extractions?.length > 0 && wf.cat_level !== 'tele_mer') {
+      const allQNums = new Set();
+      let hasLabData = false;
+      for (const pg of wf.page_extractions) {
+        for (const row of (pg.yes_no || [])) { if (row.q_number) allQNums.add(String(row.q_number)); }
+        if (pg.values?.length > 0) hasLabData = true;
+      }
+      if (allQNums.size >= 10 && !hasLabData) {
+        console.log('[resolveCAT AI] Detected TeleMER form PDF —', allQNums.size, 'questions, no lab values → forcing tele_mer (was:', wf.cat_level, ')');
+        wf.cat_level = 'tele_mer';
+        return { cat: 'tele_mer', reason: 'detected from TeleMER form PDF (question structure, no lab data)' };
+      }
+    }
+
+    // 0b) vendor/cat_level consistency check — if assigned vendor is the dedicated
+    //     TeleMER vendor (VEND-003) but stored cat_level says otherwise, the stored
+    //     value is stale (set before vendor reassignment). Trust the vendor.
+    if (wf.assigned_vendor_id === 'VEND-003' && wf.cat_level !== 'tele_mer') {
+      console.log('[resolveCAT AI] Vendor/cat_level mismatch — vendor is VEND-003 (TeleMER) but cat_level was', wf.cat_level, '→ correcting to tele_mer');
+      wf.cat_level = 'tele_mer';
+      return { cat: 'tele_mer', reason: 'corrected — assigned vendor is dedicated TeleMER vendor' };
+    }
+
     // 1) stored cat_level (normal path)
     if (wf.cat_level && wf.cat_level !== 'STP') return { cat: wf.cat_level, reason: 'stored cat_level' };
     // 2) recover from assigned vendor → CAT (VEND-005 = CAT_4, etc.)
     if (wf.assigned_vendor_id) {
-      const VENDOR_CAT_MAP = { 'VEND-003':'tele_mer', 'VEND-001':'CAT_1', 'VEND-002':'CAT_2', 'VEND-004':'CAT_3', 'VEND-005':'CAT_4' };
       let vendorCat = VENDOR_CAT_MAP[wf.assigned_vendor_id];
       if (!vendorCat) {
         try { const v = vendorApi.getVendor(wf.assigned_vendor_id); if (v?.cat_level) vendorCat = v.cat_level; } catch(_) {}
@@ -2628,23 +2658,7 @@ async function runAIAnalysis(wf) {
         return { cat: vendorCat, reason: 'recovered from assigned vendor' };
       }
     }
-    // 3) detect TeleMER from uploaded document content — if page_extractions has
-    //    48+ numbered questions and no lab sections, this is a TeleMER form PDF
-    if (wf.page_extractions?.length > 0) {
-      const allQNums = new Set();
-      let hasLabData = false;
-      for (const pg of wf.page_extractions) {
-        for (const row of (pg.yes_no || [])) { if (row.q_number) allQNums.add(String(row.q_number)); }
-        if (pg.values?.length > 0) hasLabData = true;
-      }
-      if (allQNums.size >= 10 && !hasLabData) {
-        console.log('[resolveCAT AI] Detected TeleMER form PDF —', allQNums.size, 'questions, no lab values → forcing tele_mer');
-        // Persist so subsequent calls don't re-derive
-        wf.cat_level = 'tele_mer';
-        return { cat: 'tele_mer', reason: 'detected from TeleMER form PDF (48-question structure, no lab data)' };
-      }
-    }
-    // 4) re-derive from age + SA via product mandatory-test rules
+    // 3) re-derive from age + SA via product mandatory-test rules
     const pc = getProductScoringConfig(wf.product_name);
     const derived = resolveCAT(wf.age, wf.sum_assured, pc?.overrides, hasPED_ai);
     if (derived.cat && derived.cat !== 'STP') {
