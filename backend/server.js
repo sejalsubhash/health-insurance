@@ -1530,7 +1530,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         const __client = await getBedrockClient();
 
         // One combined schema per page — the page may contain physical, lab, or nothing.
-        const PAGE_SCHEMA = `Return ONLY valid JSON (no markdown, no prose). If this page has NO medical values, return {"parameters_found":0}.
+        const PAGE_SCHEMA = `Return ONLY valid JSON (no markdown, no prose). This page may contain EITHER lab/measurement values OR a Yes/No questionnaire (or both) — TeleMER form pages have NO lab values at all but DO have numbered Yes/No questions with tick boxes and handwritten notes, and that content must still be extracted. Only return {"parameters_found":0} if the page is truly blank, a photo with no text, or an ID card with nothing relevant — never just because lab values are absent while questions are present.
 {
   "page_type": "lab_report|exam_form|photo|id_card|other",
   "lifestyle": { "smoking": {"status":"never|former|current"}, "alcohol": {"status":"never|occasional|regular|heavy"}, "tobacco_chewing": {"status":"never|former|current"}, "occupation_hazard": "none|low|moderate|high", "exercise": {"frequency":"none|occasional|regular|daily"} },
@@ -1764,7 +1764,16 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 
             // ── Row-by-row Yes/No for form pages (replaces the holistic grid read) ──
             // Trigger when the holistic pass saw any questions or thinks it's a form page.
-            const _looksLikeForm = (pd.page_type === 'exam_form') || (Array.isArray(pd.yes_no) && pd.yes_no.length > 0);
+            // Safety net: also trigger when the holistic pass found NOTHING at all
+            // (parameters_found:0, no lab values, no page_type) — this is exactly the
+            // shape returned for a pure Yes/No page under the old prompt instruction,
+            // so we can't assume "found nothing" means "nothing to find". The discovery
+            // stage inside _extractYesNoRowByRow independently re-checks the image and
+            // is cheap to skip (one call) if the page genuinely has no questions.
+            const _foundNothingAtAll = !pd.page_type
+              && (!Array.isArray(pd.raw_parameters) || pd.raw_parameters.length === 0)
+              && (!Array.isArray(pd.yes_no) || pd.yes_no.length === 0);
+            const _looksLikeForm = (pd.page_type === 'exam_form') || (Array.isArray(pd.yes_no) && pd.yes_no.length > 0) || _foundNothingAtAll;
             let _yesNo;
             if (_looksLikeForm) {
               try {
