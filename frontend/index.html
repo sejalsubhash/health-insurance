@@ -5120,6 +5120,25 @@ const CAT_META_LIST = [
   { key:'CAT_4', label:'CAT 4', color:'#5C2E91' },
   { key:'tele_mer', label:'Tele MER', color:'#BF8F00' },
 ];
+// Component display labels — TeleMER uses different names for history/clinical/documentation
+function getCompMeta(cat, ckey) {
+  if (cat === 'tele_mer') {
+    const tm = {
+      medical:       { label:'Medical Parameters (not used)',                     icon:'🩺' },
+      lifestyle:     { label:'C1 — Lifestyle Risk (25 pts, raw 18)',              icon:'🏃' },
+      history:       { label:'C2 — Medical History / PEC (20 pts, raw 13)',       icon:'📋' },
+      clinical:      { label:'C3 — Clinical Correlation (20 pts, raw 15)',        icon:'🔬' },
+      documentation: { label:'C4 CV+HTN (15) + C6 Surgical/GI (5) + C7 FH (5)', icon:'❤️' }
+    };
+    return tm[ckey] || { label: ckey, icon: '•' };
+  }
+  const std = {
+    medical:{label:'Medical Parameters',icon:'🩺'}, lifestyle:{label:'Lifestyle Risk',icon:'🏃'},
+    history:{label:'Medical History',icon:'📋'}, clinical:{label:'Clinical Correlation',icon:'🔬'},
+    documentation:{label:'Documentation Quality',icon:'📄'}
+  };
+  return std[ckey] || { label: ckey, icon: '•' };
+}
 const COMP_META = {
   medical:{label:'Medical Parameters',icon:'🩺'}, lifestyle:{label:'Lifestyle Risk',icon:'🏃'},
   history:{label:'Medical History',icon:'📋'}, clinical:{label:'Clinical Correlation',icon:'🔬'},
@@ -5165,6 +5184,19 @@ function renderCatEditor() {
 
   let html = '';
 
+  // ── TeleMER info banner (shown only on Tele MER tab) ─────────────────────
+  if (cat === 'tele_mer') {
+    html += `<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400E">
+      <strong>📞 TeleMER Hybrid Scoring — 6 Components, 90 raw pts → scaled to 100</strong><br>
+      <span style="color:var(--text-muted)">
+        C1 Lifestyle (25 pts) + C2 Medical History (20 pts) + C3 Clinical Correlation (20 pts)
+        + C4 Cardiovascular+HTN (15 pts direct) + C6 Surgical/GI (5 pts direct) + C7 Family History (5 pts direct).<br>
+        Contradiction penalty: −5 / −10 / RE-MER. Phase 1 total scaled × 100/90.<br>
+        <strong>To edit point values:</strong> use <em>Masters → TeleMER Scoring Config</em> for the precise knobs. This view shows the factor structure and decision thresholds.
+      </span>
+    </div>`;
+  }
+
   // ── Decision Thresholds — inline ─────────────────────────────────────────
   html += `<div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
     <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
@@ -5195,7 +5227,7 @@ function renderCatEditor() {
 
   // ── Accordion: one card per component ─────────────────────────────────────
   for (const [ckey, comp] of Object.entries(comps)) {
-    const cm       = COMP_META[ckey] || { label:ckey, icon:'•' };
+    const cm       = getCompMeta(cat, ckey);
     const factors  = comp.factors || [];
     const maxSum   = factors.reduce((s,f) => s + (Number(f.max)||0), 0);
     const cw       = Number(comp.weight) || 0;

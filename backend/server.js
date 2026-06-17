@@ -3552,7 +3552,7 @@ const CAT_VENDOR_MAP = {
 // Each CAT has: thresholds + 5 components. Each component has a weight + factors[].
 // Each factor: { id, label, max, bands:[{label,value,points}] }
 // The engine scores every factor, sums per component, scales to weight, sums to 100.
-const SCORING_VERSION = 'dynamic-v5';
+const SCORING_VERSION = 'dynamic-v6-telemer';
 
 function mkFactor(id, label, max, bands) { return { id, label, max, bands }; }
 
@@ -3575,7 +3575,7 @@ const CAT_THRESHOLDS = {
   'CAT_2':    { approve:78, refer:62, decline_below:46 },
   'CAT_3':    { approve:75, refer:58, decline_below:42 },
   'CAT_4':    { approve:72, refer:55, decline_below:40 },
-  'tele_mer': { approve:85, refer:65, decline_below:50 }
+  'tele_mer': { approve:80, refer:65, decline_below:35 }
 };
 
 // ─── RAW MAX POINTS PER TEST, PER CAT ────────────────────────────────────────
@@ -3818,6 +3818,156 @@ function buildDefaultCatScoring() {
   for (const cat of ['CAT_1','CAT_2','CAT_3','CAT_4','tele_mer']) {
     const weights = CAT_WEIGHTS[cat];
     const shared  = sharedComponents(weights);
+
+    if (cat === 'tele_mer') {
+      // ── TeleMER: 6-component hybrid engine, Phase 1 scores ──────────────────
+      // C1 Lifestyle (25 pts normalised from 18 raw)  — Q7 source
+      // C2 Medical History (20 pts normalised from 13 raw) — severity-tier PEC
+      // C3 Clinical Correlation (20 pts normalised from 15 raw) — drug-match + multi-system + CV proxy
+      // C4 Cardiovascular+HTN (15 pts direct) — Q10-Q14
+      // C6 Surgical+GI (5 pts direct) — Q5, Q16, Q17
+      // C7 Family History (5 pts direct) — Q9
+      // Contradiction penalty: -5/-10/RE-MER
+      // Phase 1 total = 90 raw pts scaled to 100
+      cfg[cat] = {
+        _version: SCORING_VERSION,
+        thresholds: { ...CAT_THRESHOLDS[cat] },
+        components: {
+          // Medical Parameters is NOT used for TeleMER (no lab tests)
+          medical: { label: 'Medical Parameters (Not used in TeleMER)', weight: 0, factors: [] },
+
+          // C1 — Lifestyle Risk (25 pts normalised from raw 18)
+          lifestyle: {
+            label: 'C1 — Lifestyle Risk (25 pts, raw 18)',
+            weight: 25,
+            _note: 'Raw max 18 → normalised to 25 using (raw/18)×25. Source: Q7.',
+            factors: [
+              mkFactor('smoking', 'Smoking / Cigarette / Beedi (Q7)', 8, [
+                { label: 'Never smoked',                  value: 'never',        points: 8 },
+                { label: 'Former — quit >5 years ago',    value: 'former_gt5',   points: 6 },
+                { label: 'Former — quit 1–5 years ago',   value: 'former_lt5',   points: 3 },
+                { label: 'Current smoker',                value: 'current',      points: 0 },
+                { label: 'Unknown (Q7=Yes, no detail)',   value: 'unknown',      points: 5 }
+              ]),
+              mkFactor('alcohol', 'Alcohol Use (Q7)', 6, [
+                { label: 'Never',                         value: 'never',        points: 6 },
+                { label: 'Occasional (<2×/week)',         value: 'occasional',   points: 5 },
+                { label: 'Regular (2+×/week)',            value: 'regular',      points: 2 },
+                { label: 'Heavy / daily',                 value: 'heavy',        points: 0 },
+                { label: 'Unknown',                       value: 'unknown',      points: 4 }
+              ]),
+              mkFactor('tobacco_chewing', 'Tobacco Chewing / Gutkha / Pan (Q7)', 4, [
+                { label: 'Never',                         value: 'never',        points: 4 },
+                { label: 'Former — quit >3 years ago',   value: 'former',       points: 2 },
+                { label: 'Current user',                  value: 'current',      points: 0 },
+                { label: 'Unknown',                       value: 'unknown',      points: 3 }
+              ])
+            ]
+          },
+
+          // C2 — Medical History / PEC (20 pts normalised from raw 13)
+          history: {
+            label: 'C2 — Medical History / PEC (20 pts, raw 13)',
+            weight: 20,
+            _note: 'Severity-tier based — NOT count-based. Raw max 13 → normalised to 20.',
+            factors: [
+              mkFactor('pec_severity', 'PEC Severity Tier (Q2, Q3, Q10–Q32)', 9, [
+                { label: 'No PEC declared anywhere',                                    value: 'none',               points: 9 },
+                { label: 'Resolved / minor — no current meds, >2yr ago',               value: 'resolved',           points: 8 },
+                { label: 'Active — managed, controlled (meds known, readings in range)',value: 'active_controlled',  points: 6 },
+                { label: 'Active — uncontrolled (med unknown OR readings outside range)',value: 'active_uncontrolled',points: 4 },
+                { label: 'Acute / post-surgical (<90 days) — AUTO-DEFER also fires',   value: 'acute',              points: 0 }
+              ]),
+              mkFactor('hospitalizations', 'Hospitalisation History (Q4, Q5)', 2, [
+                { label: 'None declared',                                               value: 'none',               points: 2 },
+                { label: '1–2 hospitalisations, resolved, >1yr ago',                   value: '1_2_resolved',       points: 1 },
+                { label: '3+ hospitalisations OR any within last 6 months',            value: '3plus_or_recent',    points: 0 }
+              ]),
+              mkFactor('systemic_flags', 'Other Systemic Conditions (Q15–Q32)', 2, [
+                { label: '0 flags — all systemic questions clear',                      value: 'none',               points: 2 },
+                { label: '1 minor systemic flag',                                       value: 'one_minor',          points: 1 },
+                { label: '2+ flags OR any serious systemic condition',                  value: 'two_plus',           points: 0 }
+              ])
+            ]
+          },
+
+          // C3 — Clinical Correlation (20 pts normalised from raw 15)
+          clinical: {
+            label: 'C3 — Clinical Correlation (20 pts, raw 15)',
+            weight: 20,
+            _note: 'Drug-match + multi-system risk + CV proxy. Raw max 15 → normalised to 20.',
+            factors: [
+              mkFactor('drug_condition_match', 'Drug–Condition Match (Q3 medications)', 5, [
+                { label: 'Condition declared, medication known, drug class matches',    value: 'match',              points: 5 },
+                { label: 'No condition, no medication — not applicable',               value: 'na_clean',           points: 5 },
+                { label: 'Condition declared, medication name unknown',                 value: 'med_unknown',        points: 3 },
+                { label: 'Drug class does NOT match declared condition',               value: 'mismatch',           points: 1 }
+              ]),
+              mkFactor('multi_system_risk', 'Multi-System Active Condition Count', 5, [
+                { label: '0 active conditions',                                        value: 'zero',               points: 5 },
+                { label: '1 active condition — single system',                         value: 'one_single',         points: 4 },
+                { label: '2 active — same system',                                     value: 'two_same',           points: 3 },
+                { label: '2 active — different systems',                               value: 'two_diff',           points: 2 },
+                { label: '3 active conditions — multi-system',                         value: 'three',              points: 1 },
+                { label: '4+ active — complex multi-system',                           value: 'four_plus',          points: 0 }
+              ]),
+              mkFactor('cv_proxy', 'CV Risk Proxy (age + gender + DM + BMI + HTN)', 5, [
+                { label: '5/5 protective factors present',                             value: '5_factors',          points: 5 },
+                { label: '4/5 protective factors',                                     value: '4_factors',          points: 4 },
+                { label: '3/5 protective factors',                                     value: '3_factors',          points: 3 },
+                { label: '2/5 protective factors',                                     value: '2_factors',          points: 2 },
+                { label: '1 or fewer protective factors',                              value: '1_or_less',          points: 1 }
+              ])
+            ]
+          },
+
+          // C4 — Cardiovascular + HTN (15 pts direct)
+          // C6 — Surgical + GI (5 pts direct)
+          // C7 — Family History (5 pts direct)
+          // These 3 are scored directly by telemer-scoring-engine.js using the dynamic config.
+          // They are shown here for visibility and weight display only.
+          documentation: {
+            label: 'C4 Cardiovascular (15) + C6 Surgical/GI (5) + C7 Family History (5)',
+            weight: 25,
+            _note: 'These 3 components (C4+C6+C7=25 pts) are scored directly by the TeleMER engine using telemer-scoring.json config. Edit their thresholds in Masters → TeleMER Scoring Config.',
+            factors: [
+              mkFactor('c4_cardiovascular', 'C4 — Cardiovascular + HTN (Q10–Q14)', 15, [
+                { label: 'No cardiac history, no HTN — all Q10–Q14 clear',            value: 'clean',              points: 15 },
+                { label: 'HTN controlled >1yr on medication, BP ≤140/90',             value: 'htn_ctrl_gt1yr',     points: 14 },
+                { label: 'HTN med known, no reading declared',                         value: 'htn_med_no_reading', points: 13 },
+                { label: 'HTN controlled ≤1yr on medication, BP ≤140/90',             value: 'htn_ctrl_lte1yr',    points: 12 },
+                { label: 'Prior HTN, self-stopped medication',                         value: 'htn_self_stopped',   points: 12 },
+                { label: 'HTN active, medication name unknown',                        value: 'htn_med_unknown',    points: 8  },
+                { label: 'HTN active, reading >140/90 on medication (uncontrolled)',   value: 'htn_uncontrolled',   points: 7  },
+                { label: 'IHD / stenting / PTCA / CABG / valve disorder',             value: 'cardiac_ihd',        points: 2  },
+                { label: 'Recent cardiac event <1 year — AUTO-DECLINE trigger',       value: 'cardiac_recent',     points: 0  }
+              ]),
+              mkFactor('c6_surgical_gi', 'C6 — Surgical + GI History (Q5, Q16, Q17)', 5, [
+                { label: 'No surgical history, no GI disorder',                        value: 'none',               points: 5 },
+                { label: 'GI managed medically, resolved',                             value: 'gi_resolved',        points: 4 },
+                { label: 'Surgery >5yr ago, records available',                        value: 'gt5yr_records',      points: 4 },
+                { label: 'Surgery >5yr ago, records unavailable',                      value: 'gt5yr_no_records',   points: 3 },
+                { label: 'Surgery 1–5yr ago, records available',                       value: 'lt5yr_records',      points: 3 },
+                { label: 'Surgery 1–5yr ago, records unavailable',                     value: 'lt5yr_no_records',   points: 2 },
+                { label: 'Surgery <1yr ago, resolved',                                 value: 'lt1yr',              points: 1 },
+                { label: 'Surgery <90 days — AUTO-DEFER fires, score 0',              value: 'lt90days',           points: 0 }
+              ]),
+              mkFactor('c7_family_history', 'C7 — Family History (Q9)', 5, [
+                { label: 'No family history of any hereditary condition',              value: 'none',               points: 5 },
+                { label: 'DM or HTN in first-degree relative',                        value: 'dm_or_htn',          points: 4 },
+                { label: 'Heart disease in first-degree relative',                     value: 'cardiac',            points: 3 },
+                { label: 'DM + HTN both in first-degree relative',                    value: 'dm_and_htn',         points: 3 },
+                { label: 'Stroke in first-degree — senior review flag',               value: 'stroke',             points: 2 },
+                { label: 'Any cancer in first-degree — senior review flag',            value: 'cancer',             points: 2 },
+                { label: 'Blood cancer / leukaemia in first-degree — senior review',  value: 'blood_cancer',       points: 1 }
+              ])
+            ]
+          }
+        }
+      };
+      continue; // skip the generic builder for tele_mer
+    }
+
     cfg[cat] = {
       _version: SCORING_VERSION,
       thresholds: { ...CAT_THRESHOLDS[cat] },
@@ -3825,8 +3975,7 @@ function buildDefaultCatScoring() {
         medical: {
           label: 'Medical Parameters',
           weight: weights.medical,
-          // Per-CAT correct test list — CAT 1 has 9 tests, CAT 4 has 13 tests
-          factors: cat === 'tele_mer' ? [] : buildMedicalFactors(cat)
+          factors: buildMedicalFactors(cat)
         },
         lifestyle:     shared.lifestyle,
         history:       shared.history,
@@ -3872,6 +4021,16 @@ async function loadProductPolicyConfig() {
       let merged = false;
       for (const cat of Object.keys(defaults)) {
         if (!catScoringConfig[cat]) { catScoringConfig[cat] = defaults[cat]; merged = true; }
+      }
+      // ── Force re-seed tele_mer when version is outdated (framework factors changed) ──
+      const telemerStored = catScoringConfig['tele_mer'];
+      const telemerNeedsUpgrade = !telemerStored || telemerStored._version !== SCORING_VERSION;
+      if (telemerNeedsUpgrade) {
+        const savedTelemerThresholds = telemerStored?.thresholds; // preserve UW-edited thresholds
+        catScoringConfig['tele_mer'] = defaults['tele_mer'];
+        if (savedTelemerThresholds) catScoringConfig['tele_mer'].thresholds = savedTelemerThresholds;
+        merged = true;
+        console.log('[Startup] ✅ TeleMER Per-CAT factors upgraded to', SCORING_VERSION, '(thresholds preserved)');
       }
       if (merged) await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(()=>{});
       console.log('[Startup] ✅ CAT scoring loaded from database (' + Object.keys(catScoringConfig).length + ' CATs, user edits preserved)');
