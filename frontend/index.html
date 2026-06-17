@@ -4128,7 +4128,8 @@ async function renderMasters() {
         {icon:'<i data-lucide="hospital"></i>',title:'Medical Scoring',desc:'Component weights and metric thresholds (100-point engine)',onclick:"_mastersView='scoring';renderMasters()"},
         {icon:'<i data-lucide="sliders-horizontal"></i>',title:'Per-CAT Scoring',desc:'Editable approve / refer / decline thresholds for CAT 1-4 and TeleMER',onclick:"_mastersView='catscoring';renderMasters()"},
         {icon:'<i data-lucide="library"></i>',title:'Historical UW Data',desc:'Upload past UW decisions to train the system for PPHC-skip intelligence',onclick:"_mastersView='historical';renderMasters()"},
-        {icon:'<i data-lucide="book-open"></i>',title:'ICMR Guidelines',desc:'Clinical text interpretation guidelines for ICMR-based analysis of non-numeric findings',onclick:"_mastersView='icmrguidelines';renderMasters()"}
+        {icon:'<i data-lucide="book-open"></i>',title:'ICMR Guidelines',desc:'Clinical text interpretation guidelines for ICMR-based analysis of non-numeric findings',onclick:"_mastersView='icmrguidelines';renderMasters()"},
+        {icon:'<i data-lucide="phone-call"></i>',title:'TeleMER Scoring Config',desc:'Edit all TeleMER scoring knobs — component weights, sub-factor points, clinical thresholds, loading table, PED periods, override rules. Changes apply instantly, no redeploy needed.',onclick:"_mastersView='telemer_scoring';renderMasters()"}
       ].map(c => `<div class="card" style="cursor:pointer;transition:all 0.15s;border:1.5px solid var(--border)" onclick="${c.onclick}" onmouseover="this.style.borderColor='var(--primary)'" onmouseout="this.style.borderColor='var(--border)'"><div class="card-body" style="text-align:center;padding:28px 16px"><div style="font-size:32px;margin-bottom:10px">${c.icon}</div><div style="font-size:15px;font-weight:700;color:var(--text)">${c.title}</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">${c.desc}</div></div></div>`).join('')}
     </div>`;
     return;
@@ -4337,6 +4338,286 @@ async function renderMasters() {
       renderIcons();
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
+  } else if (_mastersView === 'telemer_scoring') {
+    el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const cfg = await api('/api/masters/telemer-scoring');
+      window._telemerScoringCfg = JSON.parse(JSON.stringify(cfg)); // deep clone for editing
+
+      function tvFmt(v) { return typeof v === 'number' ? v : JSON.stringify(v); }
+
+      function renderTelemerScoringSection(sectionKey, sectionLabel, sectionIcon, fields, helpNote) {
+        const data = window._telemerScoringCfg[sectionKey] || {};
+        let rows = '';
+        for (const [k, v] of Object.entries(fields)) {
+          if (k.startsWith('_')) continue;
+          const val = data[k] !== undefined ? data[k] : v;
+          if (typeof val === 'object' && val !== null) {
+            // nested object (e.g. controlled_thresholds)
+            rows += `<tr><td colspan="3" style="padding:6px 10px;font-size:11px;font-weight:700;color:var(--text-muted);background:var(--surface-alt);text-transform:uppercase;letter-spacing:0.5px">${k.replace(/_/g,' ')}</td></tr>`;
+            for (const [sk, sv] of Object.entries(val)) {
+              if (sk.startsWith('_')) continue;
+              const isArr = Array.isArray(sv);
+              rows += `<tr>
+                <td style="padding:6px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--text-muted)">${sk}</td>
+                <td style="padding:6px 12px">
+                  ${isArr
+                    ? `<input class="form-control" style="font-size:13px" data-section="${sectionKey}" data-subkey="${k}" data-key="${sk}" value="${sv.join(', ')}" title="Comma-separated list">`
+                    : `<input type="${typeof sv === 'number' ? 'number' : 'text'}" step="any" class="form-control" style="font-size:13px;width:120px" data-section="${sectionKey}" data-subkey="${k}" data-key="${sk}" value="${sv}">`
+                  }
+                </td>
+                <td style="padding:6px 12px;font-size:11px;color:var(--text-muted)">—</td>
+              </tr>`;
+            }
+          } else {
+            const isArr = Array.isArray(val);
+            rows += `<tr>
+              <td style="padding:6px 12px;font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--text)">${k.replace(/_/g,' ')}</td>
+              <td style="padding:6px 12px">
+                ${isArr
+                  ? `<input class="form-control" style="font-size:13px" data-section="${sectionKey}" data-key="${k}" value="${Array.isArray(val)?val.join(', '):val}" title="Comma-separated list">`
+                  : `<input type="${typeof val === 'number' ? 'number' : 'text'}" step="any" class="form-control" style="font-size:13px;width:120px" data-section="${sectionKey}" data-key="${k}" value="${val}">`
+                }
+              </td>
+              <td style="padding:6px 12px;font-size:11px;color:var(--text-muted)">—</td>
+            </tr>`;
+          }
+        }
+        return `
+        <details style="margin-bottom:10px" open>
+          <summary style="cursor:pointer;padding:12px 16px;background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px;list-style:none;user-select:none">
+            <span>${sectionIcon}</span> <span>${sectionLabel}</span>
+            ${helpNote ? `<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text-muted)">${helpNote}</span>` : ''}
+          </summary>
+          <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow:hidden">
+            <table class="data-table" style="margin:0">
+              <thead><tr><th style="width:40%">Key</th><th style="width:30%">Value</th><th>Note</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </details>`;
+      }
+
+      // Contradiction matrix table
+      const contMatrix = window._telemerScoringCfg.contradiction_matrix || {};
+      let contRows = '';
+      for (const [cid, rule] of Object.entries(contMatrix)) {
+        if (cid.startsWith('_')) continue;
+        contRows += `<tr>
+          <td style="padding:6px 10px;font-weight:700;font-family:'JetBrains Mono',monospace">${cid}</td>
+          <td style="padding:6px 10px;font-size:12px">${rule.description}</td>
+          <td style="padding:6px 10px">
+            <select class="form-control" style="font-size:12px;width:80px" data-cont-id="${cid}" data-cont-field="enabled">
+              <option value="true" ${rule.enabled!==false?'selected':''}>ON</option>
+              <option value="false" ${rule.enabled===false?'selected':''}>OFF</option>
+            </select>
+          </td>
+          <td style="padding:6px 10px;font-size:11px;color:var(--text-muted)">${(rule.keywords||[]).slice(0,4).join(', ')}…</td>
+        </tr>`;
+      }
+
+      // Override rules table
+      const overrides = window._telemerScoringCfg.hard_overrides || {};
+      let ovRows = '';
+      for (const [pid, rule] of Object.entries(overrides)) {
+        if (pid.startsWith('_')) continue;
+        const actionColor = rule.action === 'AUTO_DECLINE' ? 'var(--danger)' : rule.action === 'AUTO_DEFER' ? 'var(--warning)' : rule.action === 'MANDATORY_RE_MER' ? 'var(--danger)' : rule.action === 'MANDATORY_DOCS' ? 'var(--info)' : 'var(--text-muted)';
+        ovRows += `<tr>
+          <td style="padding:6px 10px;font-weight:700;font-family:'JetBrains Mono',monospace;font-size:12px">${pid}</td>
+          <td style="padding:6px 10px"><span style="font-size:11px;font-weight:700;color:${actionColor}">${rule.action}</span></td>
+          <td style="padding:6px 10px;font-size:12px">${rule.message}</td>
+          <td style="padding:6px 10px">
+            <select class="form-control" style="font-size:12px;width:80px" data-override-id="${pid}" data-override-field="enabled">
+              <option value="true" ${rule.enabled!==false?'selected':''}>ON</option>
+              <option value="false" ${rule.enabled===false?'selected':''}>OFF</option>
+            </select>
+          </td>
+        </tr>`;
+      }
+
+      // Decision bands table
+      const bands = window._telemerScoringCfg.decision_bands || {};
+      let bandRows = '';
+      for (const [bkey, band] of Object.entries(bands)) {
+        if (bkey.startsWith('_')) continue;
+        const bColor = bkey === 'standard' ? 'var(--success)' : bkey === 'mild_load' ? '#0E7490' : bkey === 'moderate_load' ? 'var(--warning)' : bkey === 'heavy_load' ? '#B45309' : 'var(--danger)';
+        bandRows += `<tr>
+          <td style="padding:6px 10px"><span style="font-weight:700;color:${bColor}">${band.label}</span></td>
+          <td style="padding:6px 10px"><input type="number" class="form-control" style="width:70px;font-size:13px" data-band="${bkey}" data-band-field="min" value="${band.min}"> – <input type="number" class="form-control" style="width:70px;font-size:13px" data-band="${bkey}" data-band-field="max" value="${band.max}"></td>
+          <td style="padding:6px 10px;font-size:12px">${band.loading_range}</td>
+          <td style="padding:6px 10px;font-size:11px;color:var(--text-muted)">${band.ped_guidance}</td>
+        </tr>`;
+      }
+
+      el.innerHTML = backBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <h3 style="margin:0">TeleMER Scoring Configuration</h3>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:3px">
+            All values loaded from config (version: <strong>${cfg._version || '—'}</strong>) | Last updated: <strong>${cfg._last_updated ? new Date(cfg._last_updated).toLocaleString('en-IN') : 'Never (using defaults)'}</strong> by <strong>${cfg._updated_by || 'System'}</strong>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="previewTelemerScoring()"><i data-lucide="play"></i> Preview Score</button>
+          <button class="btn btn-outline btn-sm" onclick="resetTelemerScoring()"><i data-lucide="rotate-ccw"></i> Reset to Defaults</button>
+          <button class="btn btn-primary btn-sm" onclick="saveTelemerScoring()"><i data-lucide="save"></i> Save Changes</button>
+        </div>
+      </div>
+      <div style="background:var(--info-bg);border:1px solid var(--info);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px">
+        <strong><i data-lucide="info"></i> How this works:</strong> Every value you change here is saved to the database and takes effect on the <em>next TeleMER score</em> — no server restart or code deploy needed. Underwriters with Super Admin role can edit. All changes are audit-logged. Use <em>Preview Score</em> to test a change before saving.
+      </div>
+
+      <div id="telemerScoringMsg" style="margin-bottom:10px"></div>
+
+      <!-- C1 Lifestyle -->
+      ${renderTelemerScoringSection('C1_lifestyle','C1 — Lifestyle Risk Points (raw/18 × 25)','🏃',cfg.C1_lifestyle,'Q7 source — 18 raw pts → 25 normalised')}
+
+      <!-- C2 Medical History -->
+      <details style="margin-bottom:10px">
+        <summary style="cursor:pointer;padding:12px 16px;background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px;list-style:none;user-select:none">
+          <span>📋</span> <span>C2 — Medical History PEC Tier Deductions (raw/13 × 20)</span>
+          <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text-muted)">Severity-tier based — not count-based</span>
+        </summary>
+        <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow:hidden">
+          <table class="data-table" style="margin:0">
+            <thead><tr><th>Tier</th><th>Deduction from PEC start (${cfg.C2_medical_history?.pec_start_score || 9})</th><th>Note</th></tr></thead>
+            <tbody>
+              ${Object.entries(cfg.C2_medical_history?.pec_tiers || {}).filter(([k])=>!k.startsWith('_')).map(([k,v])=>`
+              <tr>
+                <td style="padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:12px">${k.replace(/_/g,' ')}</td>
+                <td style="padding:6px 12px"><input type="number" step="1" class="form-control" style="width:80px;font-size:13px" data-section="C2_medical_history" data-subkey="pec_tiers" data-key="${k}" value="${v}"></td>
+                <td style="padding:6px 12px;font-size:11px;color:var(--text-muted)">${k==='none'?'No PEC':k==='resolved_minor'?'Resolved/minor, no current meds':k==='active_controlled'?'On meds, readings within target':k==='active_uncontrolled'?'Med unknown or readings outside target':k==='acute_post_surgical'?'Surgery within defer window → also fires AUTO_DEFER':''}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          <div style="padding:10px 16px;background:var(--surface-alt);border-top:1px solid var(--border)">
+            <div style="font-size:12px;font-weight:600;margin-bottom:6px">Clinical Controlled Thresholds (reading_verified must be true)</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
+              ${Object.entries(cfg.C2_medical_history?.controlled_thresholds || {}).filter(([k])=>!k.startsWith('_')).map(([k,v])=>`
+              <div>
+                <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:3px">${k.replace(/_/g,' ')}</label>
+                <input type="number" step="0.1" class="form-control" style="font-size:13px" data-section="C2_medical_history" data-subkey="controlled_thresholds" data-key="${k}" value="${v}">
+              </div>`).join('')}
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- C3 Clinical Correlation -->
+      ${renderTelemerScoringSection('C3_clinical_correlation','C3 — Clinical Correlation Points (raw/15 × 20)','🔬',
+        Object.fromEntries(Object.entries(cfg.C3_clinical_correlation||{}).filter(([k])=>!k.startsWith('_')&&typeof cfg.C3_clinical_correlation[k]!=='object')),
+        'Drug-match + multi-system + CV proxy')}
+
+      <!-- C4 Cardiovascular -->
+      ${renderTelemerScoringSection('C4_cardiovascular','C4 — Cardiovascular + HTN (direct, max 15)','❤️',
+        Object.fromEntries(Object.entries(cfg.C4_cardiovascular||{}).filter(([k])=>!k.startsWith('_'))),
+        'Hardest single component — HTN most common PEC')}
+
+      <!-- C6 Surgical/GI -->
+      ${renderTelemerScoringSection('C6_surgical_gi','C6 — Surgical + GI History (direct, max 5)','🏥',
+        Object.fromEntries(Object.entries(cfg.C6_surgical_gi||{}).filter(([k])=>!k.startsWith('_'))),
+        'Surgery <90 days always fires AUTO_DEFER')}
+
+      <!-- C7 Family History -->
+      ${renderTelemerScoringSection('C7_family_history','C7 — Family History (direct, max 5)','👨‍👩‍👧','C7 points go here',
+        'Blood cancer in first-degree = 1 pt + senior review')}
+
+      <!-- Decision Bands -->
+      <details style="margin-bottom:10px">
+        <summary style="cursor:pointer;padding:12px 16px;background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px;list-style:none;user-select:none">
+          <span>📊</span> <span>Decision Bands (score → underwriting action)</span>
+        </summary>
+        <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow:hidden">
+          <table class="data-table" style="margin:0">
+            <thead><tr><th>Band</th><th>Score Range (min–max)</th><th>Loading Range</th><th>PED Guidance</th></tr></thead>
+            <tbody>${bandRows}</tbody>
+          </table>
+        </div>
+      </details>
+
+      <!-- Loading Table -->
+      ${renderTelemerScoringSection('loading_table','Premium Loading Table (additive, capped at loading_cap %)','💰',
+        Object.fromEntries(Object.entries(cfg.loading_table||{}).filter(([k])=>!k.startsWith('_'))),
+        'Cap = maximum total loading across all conditions')}
+
+      <!-- Contradiction Matrix -->
+      <details style="margin-bottom:10px">
+        <summary style="cursor:pointer;padding:12px 16px;background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px;list-style:none;user-select:none">
+          <span>⚠️</span> <span>Contradiction Matrix (C-01 to C-08)</span>
+          <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--text-muted)">3+ contradictions → MANDATORY RE-MER</span>
+        </summary>
+        <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow:hidden">
+          <table class="data-table" style="margin:0">
+            <thead><tr><th>Check</th><th>Description</th><th>Enabled</th><th>Keywords (first 4)</th></tr></thead>
+            <tbody>${contRows}</tbody>
+          </table>
+        </div>
+      </details>
+
+      <!-- Hard Override Rules -->
+      <details style="margin-bottom:10px">
+        <summary style="cursor:pointer;padding:12px 16px;background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px;list-style:none;user-select:none">
+          <span>🛡️</span> <span>Hard Override Rules (fire BEFORE scoring)</span>
+          <span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--danger)">AUTO_DECLINE / AUTO_DEFER override the score entirely</span>
+        </summary>
+        <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;overflow:hidden">
+          <table class="data-table" style="margin:0">
+            <thead><tr><th>Rule</th><th>Action</th><th>Message</th><th>Enabled</th></tr></thead>
+            <tbody>${ovRows}</tbody>
+          </table>
+        </div>
+      </details>
+      `;
+
+      // Attach live change listeners to all inputs and selects
+      el.querySelectorAll('input[data-section], select[data-section]').forEach(inp => {
+        inp.addEventListener('change', () => {
+          const sec = inp.dataset.section;
+          const key = inp.dataset.key;
+          const sub = inp.dataset.subkey;
+          let val = inp.type === 'number' ? parseFloat(inp.value) : inp.value;
+          if (Array.isArray(window._telemerScoringCfg[sec]?.[key])) val = inp.value.split(',').map(s=>s.trim());
+          if (!window._telemerScoringCfg[sec]) window._telemerScoringCfg[sec] = {};
+          if (sub) {
+            if (!window._telemerScoringCfg[sec][sub]) window._telemerScoringCfg[sec][sub] = {};
+            window._telemerScoringCfg[sec][sub][key] = val;
+          } else {
+            window._telemerScoringCfg[sec][key] = val;
+          }
+        });
+      });
+      // Contradiction matrix toggles
+      el.querySelectorAll('select[data-cont-id]').forEach(sel => {
+        sel.addEventListener('change', () => {
+          const cid = sel.dataset.contId;
+          if (window._telemerScoringCfg.contradiction_matrix?.[cid]) {
+            window._telemerScoringCfg.contradiction_matrix[cid].enabled = sel.value === 'true';
+          }
+        });
+      });
+      // Override rule toggles
+      el.querySelectorAll('select[data-override-id]').forEach(sel => {
+        sel.addEventListener('change', () => {
+          const pid = sel.dataset.overrideId;
+          if (window._telemerScoringCfg.hard_overrides?.[pid]) {
+            window._telemerScoringCfg.hard_overrides[pid].enabled = sel.value === 'true';
+          }
+        });
+      });
+      // Decision band range inputs
+      el.querySelectorAll('input[data-band]').forEach(inp => {
+        inp.addEventListener('change', () => {
+          const bkey = inp.dataset.band;
+          const field = inp.dataset.bandField;
+          if (window._telemerScoringCfg.decision_bands?.[bkey]) {
+            window._telemerScoringCfg.decision_bands[bkey][field] = parseFloat(inp.value);
+          }
+        });
+      });
+
+      renderIcons();
+    } catch(e) { el.innerHTML = backBtn + `<div class="empty-state"><p>Error loading TeleMER Scoring Config: ${e.message}</p></div>`; }
+
   } else if (_mastersView === 'historical') {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
@@ -4449,6 +4730,70 @@ async function renderMasters() {
       setTimeout(renderIcons, 0);
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: ' + e.message + '</p></div>'; }
   }
+}
+
+// ─── TeleMER Scoring Config Functions ────────────────────────────────────────
+
+async function saveTelemerScoring() {
+  const msgEl = document.getElementById('telemerScoringMsg');
+  if (!window._telemerScoringCfg) { showToast('No config loaded', 'error'); return; }
+  try {
+    if (msgEl) msgEl.innerHTML = '<span style="color:var(--text-muted)">Saving…</span>';
+    const r = await api('/api/masters/telemer-scoring', { method:'PUT', body: JSON.stringify(window._telemerScoringCfg) });
+    if (r.success) {
+      showToast('TeleMER scoring config saved — new scores use these values immediately', 'success');
+      if (msgEl) msgEl.innerHTML = `<span style="color:var(--success)">✓ Saved at ${new Date().toLocaleTimeString('en-IN')} by ${r.updated_by || 'you'}. Version: ${r.version}</span>`;
+    } else {
+      showToast('Save failed: ' + (r.error || 'unknown error'), 'error');
+      if (msgEl) msgEl.innerHTML = `<span style="color:var(--danger)">✗ Save failed: ${r.error}</span>`;
+    }
+  } catch(e) {
+    showToast('Save error: ' + e.message, 'error');
+    if (msgEl) msgEl.innerHTML = `<span style="color:var(--danger)">✗ ${e.message}</span>`;
+  }
+}
+
+async function resetTelemerScoring() {
+  if (!confirm('Reset TeleMER scoring config to document defaults (v1.0 from 14-case analysis)? This will overwrite your current configuration.')) return;
+  try {
+    const r = await api('/api/masters/telemer-scoring/reset', { method:'POST', body: JSON.stringify({}) });
+    if (r.success) { showToast('Reset to defaults', 'success'); _mastersView = 'telemer_scoring'; renderMasters(); }
+    else showToast('Reset failed: ' + (r.error||'?'), 'error');
+  } catch(e) { showToast('Reset error: ' + e.message, 'error'); }
+}
+
+async function previewTelemerScoring() {
+  const cfg = window._telemerScoringCfg;
+  if (!cfg) { showToast('No config loaded', 'error'); return; }
+  try {
+    showToast('Running preview score with current (unsaved) config…', 'info');
+    const r = await api('/api/masters/telemer-scoring/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        config_override: cfg,
+        sample_data: {
+          calling_date: new Date().toISOString().split('T')[0],
+          answers: { q12: false, q13: false },
+          detail_text: { q2: 'patient has HTN on telmisartan 40mg BP 135/90', q3: 'Tab Telma 40mg OD', q5: '' },
+          examiner_remarks: '',
+          medical_history: {
+            pre_existing_conditions: [{ condition: 'Hypertension', current_status: 'active', medication: 'Telmisartan 40mg', last_reading_systolic: 135, since_year: 2022 }],
+            surgical_history: [], hospitalizations: [], family_history: { diabetes: true }
+          },
+          lifestyle: { smoking: { status: 'never' }, alcohol: { status: 'occasional' }, tobacco_chewing: { status: 'never' } }
+        }
+      })
+    });
+    if (r.success) {
+      const s = r.preview_score;
+      const score = s.risk_score?.normalized || 0;
+      const rec   = s.decision?.recommendation || '—';
+      const loading = s.decision?.loading_percentage || 0;
+      alert(`Preview Score Result (Hypertension sample case)\n\nScore: ${score}/100 | Grade: ${s.risk_score?.grade || '—'}\nDecision: ${rec.replace(/_/g,' ')}\nLoading: ${loading}%\nContradictions: ${s.contradiction_count || 0}\nConfig version: ${r.config_version || '—'}\n\nThis used your current (unsaved) config values.`);
+    } else {
+      showToast('Preview failed: ' + (r.error || '?'), 'error');
+    }
+  } catch(e) { showToast('Preview error: ' + e.message, 'error'); }
 }
 
 async function saveICMRGuidelines() {

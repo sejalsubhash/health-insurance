@@ -1,0 +1,260 @@
+{
+  "_version": "1.0.0",
+  "_description": "TeleMER Underwriting Scoring Framework — SBI HealthAssure. All values editable by underwriter via Masters > TeleMER Scoring Config. Derived from 14 live TeleMER cases. Do not delete keys — set values only.",
+  "_source_doc": "TeleMER Scoring Pattern & Framework v1.0 March 2026",
+
+  "phase1_raw_max": 90,
+  "phase1_components": {
+    "C1_lifestyle":          { "max_normalised": 25, "raw_max": 18 },
+    "C2_medical_history":    { "max_normalised": 20, "raw_max": 13 },
+    "C3_clinical_correlation":{ "max_normalised": 20, "raw_max": 15 },
+    "C4_cardiovascular":     { "max_direct": 15 },
+    "C6_surgical_gi":        { "max_direct": 5  },
+    "C7_family_history":     { "max_direct": 5  }
+  },
+
+  "C1_lifestyle": {
+    "_note": "Raw max 18 pts → normalised to 25 pts using (raw/18)*25",
+    "smoking": {
+      "_note": "8 raw pts. Source: Q7 keywords: cigarette, beedi, quit, since X years",
+      "never":          8,
+      "former_gt5yr":   6,
+      "former_1to5yr":  3,
+      "current":        0,
+      "unknown":        5
+    },
+    "alcohol": {
+      "_note": "6 raw pts. Source: Q7 keywords: alcohol, wine, beer, whisky, occasional, daily, social",
+      "never":          6,
+      "occasional":     5,
+      "regular":        2,
+      "heavy":          0,
+      "unknown":        4
+    },
+    "tobacco_chewing": {
+      "_note": "4 raw pts. Source: Q7 keywords: gutkha, pan, khaini, zarda, tobacco chewing, times per day",
+      "never":          4,
+      "former_gt3yr":   2,
+      "current":        0,
+      "unknown":        3
+    }
+  },
+
+  "C2_medical_history": {
+    "_note": "Raw max 13 pts → normalised to 20 pts using (raw/13)*20. PEC scoring is SEVERITY-TIER based, NOT count-based.",
+    "pec_start_score": 9,
+    "pec_tiers": {
+      "_note": "Start at pec_start_score, deduct per condition based on tier. Deductions are additive.",
+      "none":                   0,
+      "resolved_minor":         1,
+      "active_controlled":      2,
+      "active_uncontrolled":    4,
+      "acute_post_surgical":    8
+    },
+    "surgery_defer_days": 90,
+    "controlled_thresholds": {
+      "_note": "If reading_verified=false (only 'normal' stated without a number), treat as uncontrolled",
+      "htn_systolic_max":       140,
+      "htn_diastolic_max":      90,
+      "dm_hba1c_max":           7.5,
+      "dm_ppbsl_max":           180,
+      "dm_fbs_max":             126
+    },
+    "hospitalizations": {
+      "none":                   2,
+      "one_or_two_resolved":    1,
+      "three_plus_or_recent":   0
+    },
+    "systemic_conditions": {
+      "zero_flags":             2,
+      "one_minor_flag":         1,
+      "two_plus_or_serious":    0
+    }
+  },
+
+  "C3_clinical_correlation": {
+    "_note": "Raw max 15 pts → normalised to 20 pts using (raw/15)*20",
+    "drug_condition_match": {
+      "_note": "5 raw pts. Checks if declared medication class matches declared condition",
+      "match_known":           5,
+      "no_condition_no_med":   5,
+      "med_unknown":           3,
+      "mismatch":              1
+    },
+    "multi_system_risk": {
+      "_note": "5 raw pts. Count of distinct active conditions across different organ systems",
+      "zero_active":           5,
+      "one_active_single_sys": 4,
+      "two_active_same_sys":   3,
+      "two_active_diff_sys":   2,
+      "three_active":          1,
+      "four_plus_active":      0
+    },
+    "cv_proxy": {
+      "_note": "5 raw pts. 5-factor proxy — 1 protective point each. Maps total to sub-score.",
+      "age_protective_below":  45,
+      "age_risk_above":        55,
+      "bmi_protective_below":  25,
+      "bmi_risk_above":        30,
+      "map_5_factors":         5,
+      "map_4_factors":         4,
+      "map_3_factors":         3,
+      "map_2_factors":         2,
+      "map_1_or_less":         1
+    }
+  },
+
+  "C4_cardiovascular": {
+    "_note": "Direct scoring, max 15 pts. Source: Q10 Q11 Q12 Q14. HTN+DM together deduct comorbidity_penalty.",
+    "no_cardiac_no_htn":                    15,
+    "htn_controlled_onset_gt1yr":           14,
+    "htn_prior_self_stopped":               12,
+    "htn_controlled_onset_lte1yr":          12,
+    "htn_med_known_no_reading":             13,
+    "htn_med_unknown":                      8,
+    "htn_uncontrolled_reading":             7,
+    "cardiac_ihd_stenting_cabg":            2,
+    "recent_cardiac_event_lt1yr":           0,
+    "htn_dm_comorbidity_penalty":           3,
+    "htn_systolic_threshold":               140
+  },
+
+  "C6_surgical_gi": {
+    "_note": "Direct scoring, max 5 pts. Source: Q5, Q16, Q17.",
+    "no_surgery_no_gi":                     5,
+    "gi_managed_medically_resolved":        4,
+    "surgery_gt5yr_records_available":      4,
+    "surgery_gt5yr_no_records":             3,
+    "surgery_1to5yr_records_available":     3,
+    "surgery_1to5yr_no_records":            2,
+    "surgery_lt1yr_resolved":               1,
+    "surgery_lt90_days":                    0,
+    "surgery_defer_days":                   90
+  },
+
+  "C7_family_history": {
+    "_note": "Direct scoring, max 5 pts. Source: Q9 only.",
+    "none":                                 5,
+    "diabetes_or_htn_first_degree":         4,
+    "cardiac_first_degree":                 3,
+    "dm_and_htn_first_degree":              3,
+    "stroke_first_degree":                  2,
+    "cancer_first_degree":                  2,
+    "blood_cancer_first_degree":            1,
+    "multiple_risk_factors":                3,
+    "senior_review_trigger": ["cancer", "blood_cancer", "stroke"]
+  },
+
+  "contradiction_matrix": {
+    "_note": "8 cross-checks. Each confirmed contradiction adds 1 to count. See penalty_table for scoring impact.",
+    "C01": { "enabled": true, "description": "HTN confirmed in Q2/Q3/Q48 detail but Q12=No",        "keywords": ["htn","hypertension","high bp","blood pressure","telmisartan","amlodipine","enalapril","ramipril","losartan","metoprolol","coversyl","diovan"], "answer_field": "q12" },
+    "C02": { "enabled": true, "description": "DM confirmed in Q2/Q3/Q48 detail but Q13=No",          "keywords": ["diabetes","dm","blood sugar","bsl","hba1c","metformin","glimepiride","glipizide","insulin","janumet","dapagliflozin"], "answer_field": "q13" },
+    "C03": { "enabled": true, "description": "Gallbladder surgery confirmed but Q17=No",              "keywords": ["gall","gallstone","cholecyst","gallbladder"], "answer_field": "q17" },
+    "C04": { "enabled": true, "description": "Active treatment confirmed but Q4=No",                  "keywords": ["tab ","tablet","medicine","medication","mg od","mg bd","mg tds","1od","1bd","once a day","twice a day","insulin"], "answer_field": "q4" },
+    "C05": { "enabled": true, "description": "DM/thyroid confirmed but Q26=No",                       "keywords": ["diabetes","dm","blood sugar","hypothyroid","thyroid","levothyroxine","thyroxine"], "answer_field": "q26" },
+    "C06": { "enabled": true, "description": "Spine/lumbar surgery confirmed but Q24/Q25=No",         "keywords": ["spine","lumbar","sciatica","laminectomy","discectomy","back surgery","spinal surgery","mri spine"], "answer_fields": ["q24","q25"] },
+    "C07": { "enabled": true, "description": "Cardiac/IHD procedure confirmed but Q14=No",            "keywords": ["stenting","ptca","cabg","open heart","heart attack","myocardial","ischemic heart"], "answer_field": "q14" },
+    "C08": { "enabled": true, "description": "Q48 doctor remarks add new condition not in Q2/Q3",     "keywords": ["htn","dm","diabetes","spine","gallstone","cancer","thyroid","kidney","liver"] }
+  },
+
+  "contradiction_penalty": {
+    "_note": "Penalty deducted from total score. 3+ contradictions triggers MANDATORY_RE_MER override.",
+    "zero":         0,
+    "one":         -5,
+    "two":        -10,
+    "three_plus":  "MANDATORY_RE_MER"
+  },
+
+  "hard_overrides": {
+    "_note": "Evaluated BEFORE scoring. Higher priority number = evaluated first.",
+    "P1_surgery_lt90_days":      { "enabled": true, "action": "AUTO_DEFER",        "days": 90,     "message": "Surgery within 90 days of TeleMER call — post-operative clearance required. Re-evaluate after 90 days." },
+    "P2_identity_mismatch":      { "enabled": true, "action": "AUTO_DEFER",        "keywords": ["voice younger","younger than age","younger one","voice mismatch","verify identity","identity concern","age mismatch"], "message": "Doctor flagged identity/voice mismatch in Q48 — mandatory video KYC before underwriting." },
+    "P3_auto_decline_cancer":    { "enabled": true, "action": "AUTO_DECLINE",      "q_field": "q28", "keywords": ["active cancer","malignancy","cancer treatment","chemotherapy","radiotherapy"], "message": "Active cancer/malignancy declared." },
+    "P3_auto_decline_hiv":       { "enabled": true, "action": "AUTO_DECLINE",      "q_field": "q18", "keywords": ["hiv positive","aids"], "message": "HIV/AIDS declared." },
+    "P3_auto_decline_endstage":  { "enabled": true, "action": "AUTO_DECLINE",      "keywords": ["esrd","dialysis","end stage renal","end stage liver","lvef below 30"], "message": "End-stage organ failure indicated." },
+    "P4_mandatory_re_mer":       { "enabled": true, "action": "MANDATORY_RE_MER",  "min_contradictions": 3, "message": "3 or more material contradictions — TeleMER invalid, fresh call required." },
+    "P5_med_name_unknown":       { "enabled": true, "action": "MANDATORY_DOCS",    "message": "Obtain medication name, dose and prescribing doctor details before binding." },
+    "P6_surgery_no_records":     { "enabled": true, "action": "MANDATORY_DOCS",    "years": 5, "message": "Obtain discharge summary or statutory declaration." },
+    "P7_family_cancer_stroke":   { "enabled": true, "action": "SENIOR_REVIEW",     "message": "First-degree family history of cancer, blood disorder or stroke — senior underwriter review required." },
+    "P8_third_party_proposal":   { "enabled": true, "action": "SENIOR_REVIEW",     "message": "Third-party proposal detected — verify insurable interest." }
+  },
+
+  "decision_bands": {
+    "_note": "Score ranges map to underwriting decisions. Scores are on 100-point scale.",
+    "standard":       { "min": 80, "max": 100, "label": "Standard Accept",   "loading_range": "0%",      "ped_guidance": "Standard 30-day / 2-year IRDAI PED",             "pre_policy_tests": [] },
+    "mild_load":      { "min": 65, "max": 79,  "label": "Mild Load",         "loading_range": "5-15%",   "ped_guidance": "2-year PED on all disclosed conditions",          "pre_policy_tests": ["FBS","Urine R/E"] },
+    "moderate_load":  { "min": 50, "max": 64,  "label": "Moderate Load",     "loading_range": "15-30%",  "ped_guidance": "3-4 year PED — exclusion on primary PEC",        "pre_policy_tests": ["FBS","HbA1c","Lipid profile","ECG","Urine R/E"] },
+    "heavy_load":     { "min": 35, "max": 49,  "label": "Heavy Load",        "loading_range": "30-50%",  "ped_guidance": "4-year PED — permanent exclusion options",        "pre_policy_tests": ["FBS","HbA1c","Lipid profile","ECG","Urine R/E","Full blood panel","Specialist report"] },
+    "decline":        { "min": 0,  "max": 34,  "label": "Decline",           "loading_range": "N/A",     "ped_guidance": "N/A",                                             "pre_policy_tests": [] }
+  },
+
+  "loading_table": {
+    "_note": "Premium loading per condition. All loadings are additive. loading_cap is max total loading allowed.",
+    "loading_cap":                       50,
+    "htn_controlled_onset_lte1yr":       10,
+    "htn_controlled_onset_gt1yr":        15,
+    "htn_uncontrolled":                  25,
+    "dm_controlled_duration_lte3yr":     15,
+    "dm_controlled_duration_3to7yr":     20,
+    "dm_uncontrolled":                   35,
+    "bmi_25to30":                         5,
+    "bmi_30to35":                        10,
+    "bmi_above35":                       20,
+    "htn_dm_comorbidity":                 5,
+    "cardiac_ihd":                      100,
+    "family_history_cancer_stroke":       5,
+    "tobacco_gutkha_current":            25,
+    "smoker_current":                    30,
+    "cholesterol_controlled":             5
+  },
+
+  "ped_table": {
+    "_note": "PED waiting periods per condition. ped_years is number of years. exclusion_type: time_limited or time_limited_plus_exclusion.",
+    "htn_controlled_onset_lte1yr":  { "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Hypertension and cardiovascular events" },
+    "htn_controlled_onset_gt1yr":   { "ped_years": 3, "exclusion_type": "time_limited",                      "scope": "Hypertension and cardiovascular events" },
+    "htn_uncontrolled":             { "ped_years": 4, "exclusion_type": "time_limited",                      "scope": "Hypertension and cardiovascular events" },
+    "dm_no_complications":          { "ped_years": 4, "exclusion_type": "time_limited",                      "scope": "Diabetes and related complications" },
+    "dm_with_complications":        { "ped_years": 4, "exclusion_type": "time_limited_plus_exclusion",       "scope": "Diabetes complications — permanent exclusion on complication organ" },
+    "spine_surgery_resolved":       { "ped_years": 3, "exclusion_type": "time_limited",                      "scope": "Spinal/back conditions" },
+    "spine_surgery_active_recovery":{ "ped_years": 4, "exclusion_type": "time_limited_plus_exclusion",       "scope": "Spine — permanent exclusion" },
+    "gallbladder_surgery_gt5yr":    { "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Gallbladder and GI conditions" },
+    "gallbladder_surgery_lt5yr":    { "ped_years": 3, "exclusion_type": "time_limited",                      "scope": "Gallbladder and GI conditions" },
+    "cholesterol_on_statin":        { "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Dyslipidaemia" },
+    "psoriasis_self_stopped":       { "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Skin conditions" },
+    "varicose_veins_untreated":     { "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Vascular conditions" },
+    "fracture_orthopaedic_resolved":{ "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Orthopaedic conditions" },
+    "thyroid":                      { "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Thyroid disorders" },
+    "asthma_copd":                  { "ped_years": 2, "exclusion_type": "time_limited",                      "scope": "Respiratory conditions" },
+    "generic_pec":                  { "ped_years": 3, "exclusion_type": "time_limited",                      "scope": "Standard PED per IRDAI" }
+  },
+
+  "bmi_rules": {
+    "_note": "BMI scoring and loading. CV proxy protective = below bmi_protective. Underweight deductions from C2.",
+    "severely_underweight_below":   17.5,
+    "underweight_below":            18.5,
+    "normal_min":                   18.5,
+    "normal_max":                   24.9,
+    "overweight_max":               29.9,
+    "obese1_max":                   34.9,
+    "underweight_c2_deduction":       2,
+    "severely_underweight_c2_deduction": 5
+  },
+
+  "confidence_tiers": {
+    "_note": "Confidence score 0-1 on each extracted field determines which scoring tier applies.",
+    "high_min":        0.9,
+    "medium_min":      0.6,
+    "low_min":         0.3,
+    "escalate_below":  0.3
+  },
+
+  "missing_data_fallback": {
+    "_note": "When a required reading is missing, apply the fallback rule and fire mandatory docs.",
+    "normal_without_number_verified": false,
+    "fire_mandatory_docs_when_unverified": true,
+    "condition_implied_only_escalate": true
+  },
+
+  "_last_updated": null,
+  "_updated_by": null
+}

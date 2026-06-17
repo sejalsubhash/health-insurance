@@ -81,6 +81,19 @@ const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for bi
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
+const teleMEREngine = require('./lib/telemer-scoring-engine');
+// In-memory cache for the TeleMER scoring config (loaded from S3 / disk on startup)
+let teleMERScoringConfig = null;
+async function loadTeleMERScoringConfig() {
+  try {
+    const saved = await s3Client.getConfig('telemer-scoring').catch(() => null);
+    if (saved && saved._version) { teleMERScoringConfig = saved; console.log('[Startup] ✅ TeleMER scoring config loaded from S3/DB (version:', saved._version, ')'); return; }
+  } catch(e) { /* fall through to disk */ }
+  try {
+    const diskCfg = teleMEREngine.loadTeleMERConfig();
+    if (diskCfg) { teleMERScoringConfig = diskCfg; console.log('[Startup] ✅ TeleMER scoring config loaded from disk (version:', diskCfg._version, ')'); }
+  } catch(e) { console.error('[Startup] ⚠️  TeleMER scoring config load error:', e.message); }
+}
 const vendorApi = require('./lib/vendor-api');
 const icmrAnalyser = require('./lib/icmr-analyser');
 const workflowEngine = require('./lib/workflow-engine');
@@ -2547,7 +2560,7 @@ async function runAIAnalysis(wf) {
         interview_answers: {},   // no interview answers at doc-upload time
         non_disclosures: []
       };
-      riskResult = riskEngine.calculateTeleMERRisk(teleMERInput, null, correlationData);
+      riskResult = teleMEREngine.calculateTeleMERRiskDynamic(teleMERInput, null, correlationData, teleMERScoringConfig);
     } else {
       // ── Scoring debug log ──────────────────────────────────────────────────
       console.log('[ScoringDebug] CAT:', catForAI?.cat, '| scoring_components:', riskParams._scoring_components ? 'DB config loaded' : 'hardcoded fallback');
@@ -3245,6 +3258,79 @@ app.get('/api/masters/medical-scoring', requireAuth, (req, res) => {
   const fs = require('fs');
   const scoring = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/medical-scoring.json'), 'utf8'));
   res.json(scoring);
+});
+
+// ─── TeleMER Scoring Config — Masters endpoints ───────────────────────────────
+// GET  /api/masters/telemer-scoring   — read current config (all roles)
+// PUT  /api/masters/telemer-scoring   — save new config (Super Admin only)
+// POST /api/masters/telemer-scoring/reset — reset to disk defaults (Super Admin)
+// POST /api/masters/telemer-scoring/preview — dry-run score with a sample payload
+
+app.get('/api/masters/telemer-scoring', requireAuth, async (req, res) => {
+  try {
+    const cfg = teleMERScoringConfig || teleMEREngine.loadTeleMERConfig();
+    if (!cfg) return res.status(500).json({ error: 'TeleMER scoring config not available' });
+    res.json({ ...cfg, _loaded_from: teleMERScoringConfig ? 's3_or_cache' : 'disk', _editable: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/masters/telemer-scoring', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const incoming = req.body;
+    if (!incoming || typeof incoming !== 'object') return res.status(400).json({ error: 'Request body must be a JSON object' });
+    if (!incoming._version) return res.status(400).json({ error: '_version field is required' });
+
+    // Stamp audit fields
+    incoming._last_updated = new Date().toISOString();
+    incoming._updated_by   = req.user?.email || req.user?.name || 'admin';
+
+    // Persist to S3 / mem store
+    await s3Client.saveConfig('telemer-scoring', incoming);
+
+    // Update in-memory cache immediately so next score uses new values
+    teleMERScoringConfig = incoming;
+
+    // Audit log
+    try {
+      const pgClient = require('./lib/pg-client');
+      await pgClient.query(
+        `INSERT INTO audit_log (action, actor, data) VALUES ($1, $2, $3)`,
+        ['telemer_scoring_config_updated', incoming._updated_by, JSON.stringify({ version: incoming._version, updated_at: incoming._last_updated })]
+      );
+    } catch(auditErr) { /* non-fatal */ }
+
+    console.log(`[Masters] TeleMER scoring config saved by ${incoming._updated_by} (version: ${incoming._version})`);
+    res.json({ success: true, version: incoming._version, updated_at: incoming._last_updated, message: 'TeleMER scoring config saved. All new TeleMER scores will use these values immediately.' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/masters/telemer-scoring/reset', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const diskCfg = teleMEREngine.loadTeleMERConfig(null); // force disk read
+    if (!diskCfg) return res.status(500).json({ error: 'Disk config not available' });
+    diskCfg._last_updated = new Date().toISOString();
+    diskCfg._updated_by   = req.user?.email || 'admin';
+    await s3Client.saveConfig('telemer-scoring', diskCfg);
+    teleMERScoringConfig = diskCfg;
+    res.json({ success: true, message: 'TeleMER scoring config reset to document defaults.', version: diskCfg._version });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/masters/telemer-scoring/preview', requireAuth, (req, res) => {
+  try {
+    const { sample_data, config_override } = req.body || {};
+    const cfgToUse = config_override || teleMERScoringConfig || teleMEREngine.loadTeleMERConfig();
+    const samplePayload = sample_data || {
+      calling_date: new Date().toISOString().split('T')[0],
+      answers: {},
+      detail_text: {},
+      examiner_remarks: '',
+      medical_history: { pre_existing_conditions: [], surgical_history: [], hospitalizations: [], family_history: {} },
+      lifestyle: { smoking: { status: 'never' }, alcohol: { status: 'never' }, tobacco_chewing: { status: 'never' } }
+    };
+    const result = teleMEREngine.calculateTeleMERRiskDynamic(samplePayload, null, {}, cfgToUse);
+    res.json({ success: true, preview_score: result, config_version: cfgToUse?._version || 'unknown' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // Policy document upload
@@ -4975,10 +5061,11 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
     if (telemer_recommendation === 'proceed_to_scoring') {
       try {
         const voiceAnalysis = req.body.voice_analysis || null;
-        telemerScore = riskEngine.calculateTeleMERRisk(
+        telemerScore = teleMEREngine.calculateTeleMERRiskDynamic(
           { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures },
           voiceAnalysis,
-          catScoringConfig
+          catScoringConfig,
+          teleMERScoringConfig
         );
         wf.telemer_data.score = telemerScore;
         wf.telemer_data.scored_at = new Date().toISOString();
@@ -6314,6 +6401,7 @@ s3Client.getCustomRules().then(rules => {
 // Phase 0 fix: product/policy seeding runs unconditionally so dev and test modes have the full catalog
 // loadProductPolicyConfig seeds defaults if S3 is empty or unavailable
 loadProductPolicyConfig().catch(e => console.error('[Startup] Product-policy load failed:', e.message));
+loadTeleMERScoringConfig().catch(e => console.error('[Startup] TeleMER scoring config load failed:', e.message));
   loadHistoricalCorpus().catch(e => console.error('[Startup] Historical corpus load failed:', e.message));
 
 // Phase 2: register UW auto-routing hook. Fires when a workflow enters `referred` or `awaiting_additional_info`.
