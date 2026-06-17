@@ -1393,6 +1393,11 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         console.log('[Extraction] Using ConverseCommand — ModelId:', modelId);
 
         const converseContent = [];
+        // Pages successfully parsed via direct text extraction (pdftotext) instead
+        // of image rasterization — merged into pageExtractions after the main
+        // per-page image loop completes. See isPdf branch below for why this exists.
+        const textBasedPages = [];
+        const __textParseClient = await getBedrockClient();
 
         for (const doc of wf.documents) {
           // Lazy-load from S3 if content not in memory (IAM instance role or static keys)
@@ -1431,10 +1436,71 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
             const tmpPdf  = tmpDir + '.pdf';
             let imagesAdded = 0;
 
+            let __handledViaText = false;
             try {
               fs.writeFileSync(tmpPdf, Buffer.from(doc.base64_data, 'base64'));
               fs.mkdirSync(tmpDir, { recursive: true });
 
+              // ── Try direct text extraction FIRST ──────────────────────────────
+              // Some PDFs (e.g. SBI TeleMER forms) are digitally generated — the
+              // Yes/No answers and detail text are typed directly into the form by
+              // the calling system, not handwritten/scanned. For these, pdftotext
+              // extracts perfectly even when pdftoppm rasterizes the page BLANK due
+              // to a font/glyph rendering issue (text extraction reads character
+              // codes directly; rasterization has to draw the actual glyph shapes,
+              // which can fail independently of whether the text itself is intact).
+              // Confirmed on a real failing case: pdftotext returned 100% complete
+              // 48-question content while pdftoppm produced blank images for all
+              // 9 pages of the same file.
+              let __pdfText = '';
+              try {
+                __pdfText = execSync(`pdftotext -layout "${tmpPdf}" -`, { timeout: 30000, maxBuffer: 15 * 1024 * 1024 }).toString('utf8');
+              } catch (textErr) {
+                console.warn('[Extraction] pdftotext failed for', doc.name, ':', textErr.message);
+              }
+
+              if (__pdfText.trim().length > 300) {
+                console.log(`[Extraction] ${doc.name}: pdftotext extracted ${__pdfText.length} chars — attempting TEXT-based parse (skips image rasterization)`);
+                try {
+                  const __textSchema = `Return ONLY valid JSON, no markdown. This is the raw extracted text of a TeleMER (telephonic medical examination) form with numbered questions, Yes/No answers, and free-text detail.
+{"page_type":"exam_form","personal_info":{"height_cm":null,"weight_kg":null,"bmi":null,"calling_date":""},"yes_no":[{"q_number":"","q_text_short":"","answer":"yes|no","handwritten_note":""}],"free_text":[]}
+Extract EVERY numbered question (1, 2, 3... up to whatever the last number is) with its Yes/No answer exactly as printed, and the FULL detail/Details text verbatim into handwritten_note (even though it's typed, not handwritten — same field name for downstream compatibility). Do not skip any question. personal_info comes from the header section (Height, Weight, BMI, Calling Date).`;
+                  const __tRes = await __textParseClient.send(new ConverseCommand({
+                    modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                    system: [{ text: 'You are a precise form-data extraction AI. Parse the structured Q&A table from raw PDF text. Return ONLY valid JSON, no markdown, no prose.' }],
+                    messages: [{ role: 'user', content: [{ text: __textSchema + '\n\nRAW TEXT:\n' + __pdfText.substring(0, 40000) }] }],
+                    inferenceConfig: { maxTokens: 4096, temperature: 0 }
+                  }));
+                  const __tTxt = __tRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+                  const __tMatch = __tTxt.match(/\{[\s\S]*\}/);
+                  if (__tMatch) {
+                    const __tParsed = JSON.parse(__tMatch[0]);
+                    const __qCount = Array.isArray(__tParsed.yes_no) ? __tParsed.yes_no.length : 0;
+                    if (__qCount >= 5) {
+                      textBasedPages.push({
+                        page: 1, page_type: 'exam_form', values: [],
+                        yes_no: __tParsed.yes_no, free_text: Array.isArray(__tParsed.free_text) ? __tParsed.free_text : [],
+                        medications: [], was_split: false,
+                        tokens: { input: __tRes.usage?.inputTokens || 0, output: __tRes.usage?.outputTokens || 0 },
+                        note: 'Extracted via pdftotext + text parse (image rasterization skipped — see extraction logs)'
+                      });
+                      converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — extracted via text layer, ${__qCount} questions parsed]` });
+                      console.log(`[Extraction] ${doc.name}: text-based parse succeeded — ${__qCount} questions, skipping image rasterization`);
+                      __handledViaText = true;
+                    } else {
+                      console.warn(`[Extraction] ${doc.name}: text-based parse returned only ${__qCount} questions — falling back to image rasterization`);
+                    }
+                  } else {
+                    console.warn(`[Extraction] ${doc.name}: text-based parse returned no JSON — falling back to image rasterization`);
+                  }
+                } catch (parseErr) {
+                  console.error(`[Extraction] ${doc.name}: text-based parse call failed (${parseErr.message}) — falling back to image rasterization`);
+                }
+              }
+
+              if (__handledViaText) {
+                // Skip rasterization entirely for this document — text parse already succeeded.
+              } else {
               // Convert all pages to JPEG at 150 DPI (good quality, reasonable size)
               execSync(`pdftoppm -jpeg -r 150 "${tmpPdf}" "${tmpDir}/page"`, { timeout: 60000, stdio: 'pipe' });
 
@@ -1470,6 +1536,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
                   }
                 });
               }
+              } // close: else branch for !__handledViaText (image rasterization path)
             } catch(pdfErr) {
               console.warn('[Extraction] pdftoppm failed for', doc.name, ':', pdfErr.message);
               // Fallback: send as document block
@@ -1709,6 +1776,28 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
           try {
+            // ── ONE-TIME DIAGNOSTIC: ask the model to describe the page in plain
+            // English, completely bypassing the JSON extraction task. This tells us
+            // definitively whether the image has readable content or is genuinely
+            // blank/unreadable after PDF->JPEG conversion — independent of any prompt
+            // wording used for structured extraction. Logs only, does not affect
+            // the extracted data or pageExtractions in any way. Remove once root
+            // cause of "every page no values" is confirmed.
+            if (process.env.TELEMER_DESCRIBE_DEBUG !== '0') {
+              try {
+                const descRes = await __client.send(new ConverseCommand({
+                  modelId,
+                  system: [{ text: 'You are looking at one page image. Describe in plain English exactly what you see — do not return JSON.' }],
+                  messages: [{ role: 'user', content: [ pageImages[pi], { text: 'Describe everything visible on this page: is there printed text, handwriting, tables, tick marks, a photo, or is the page blank/white/unreadable? Be specific and brief (2-4 sentences).' } ] }],
+                  inferenceConfig: { maxTokens: 300, temperature: 0 }
+                }));
+                const descTxt = descRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '(empty response)';
+                console.log(`[DiagDescribe] Page ${pageNum}/${pageImages.length}:`, descTxt.replace(/\n/g, ' '));
+              } catch (descErr) {
+                console.error(`[DiagDescribe] Page ${pageNum} describe call failed:`, descErr.message);
+              }
+            }
+
             // First attempt: one combined call for the whole page.
             let r = await _callPage(pageImages[pi], pagePrompt);
             let _pin = r.in, _pout = r.out;
@@ -1864,6 +1953,17 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
           cost_inr: Math.round(_inr * 100) / 100,
           pages_scanned: pagesScanned, model: modelId, duration_ms: elapsed
         };
+        // Merge in any pages handled via direct text extraction (pdftotext) instead
+        // of image rasterization — these were never part of the per-page image loop.
+        if (textBasedPages.length > 0) {
+          for (const tp of textBasedPages) {
+            wf.extraction_usage.input_tokens  += tp.tokens?.input  || 0;
+            wf.extraction_usage.output_tokens += tp.tokens?.output || 0;
+          }
+          wf.extraction_usage.total_tokens = wf.extraction_usage.input_tokens + wf.extraction_usage.output_tokens;
+          pageExtractions.push(...textBasedPages);
+          console.log(`[Extraction] Merged ${textBasedPages.length} text-extracted page(s) into page_extractions`);
+        }
         // Attach the per-page records for the Page-by-Page Extraction subtab.
         wf.page_extractions = pageExtractions;
         console.log(`[Extraction] Tokens: ${totalInTok} in + ${totalOutTok} out | $${_usd.toFixed(4)} | ₹${_inr.toFixed(2)}`);
