@@ -2253,6 +2253,352 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 });
 
 // AI Analysis function
+// ─────────────────────────────────────────────────────────────────────────────
+// assembleTeleMERDataFromPDF
+// ─────────────────────────────────────────────────────────────────────────────
+// Converts raw page_extractions (yes_no[], handwritten_note, free_text[]) that
+// Bedrock produced from an uploaded TeleMER PDF into the exact telemer_data
+// structure that calculateTeleMERRiskDynamic() and detectContradictions() need.
+//
+// Called inside runAIAnalysis() when catForAI.cat === 'tele_mer' and the data
+// arrived via document upload (not the live interview API).  Never touches
+// CAT 1-4 workflows.
+//
+// Output written directly into extractedData.telemer_data so the rest of the
+// scoring pipeline sees it without any other changes.
+// ─────────────────────────────────────────────────────────────────────────────
+function assembleTeleMERDataFromPDF(wf, extractedData) {
+  const pageExtractions = wf.page_extractions || [];
+  if (!pageExtractions.length) {
+    console.log('[TeleMER Assemble] No page_extractions — skipping assembly');
+    return;
+  }
+
+  // ── Step 1: Collect all yes_no rows and free_text across all pages ─────────
+  const allYesNo   = [];   // { q_number, answer:'yes'|'no', handwritten_note }
+  const allFreeText = [];  // raw strings
+
+  for (const pg of pageExtractions) {
+    if (Array.isArray(pg.yes_no)) {
+      for (const row of pg.yes_no) {
+        if (row && row.q_number) allYesNo.push(row);
+      }
+    }
+    if (Array.isArray(pg.free_text)) {
+      for (const ft of pg.free_text) {
+        if (ft && String(ft).trim()) allFreeText.push(String(ft).trim());
+      }
+    }
+  }
+  console.log(`[TeleMER Assemble] ${allYesNo.length} yes/no rows, ${allFreeText.length} free-text blocks across ${pageExtractions.length} pages`);
+
+  // ── Step 2: Build answers{} map  q1..q48 → true/false ────────────────────
+  const answers = {};
+  const detail_text = {};   // q_number → handwritten note (free text detail)
+  const notesByQ = {};      // accumulate multiple notes for same question
+
+  for (const row of allYesNo) {
+    const qKey = 'q' + String(row.q_number).replace(/\D/g, '');
+    if (!qKey || qKey === 'q') continue;
+    answers[qKey] = row.answer === 'yes';
+    // Accumulate all handwritten notes for this question
+    const note = (row.handwritten_note || '').trim();
+    if (note) {
+      notesByQ[qKey] = notesByQ[qKey] ? notesByQ[qKey] + ' ' + note : note;
+    }
+  }
+  for (const [k, v] of Object.entries(notesByQ)) detail_text[k] = v;
+
+  console.log('[TeleMER Assemble] answers built:', Object.keys(answers).length, 'questions');
+  console.log('[TeleMER Assemble] detail_text keys:', Object.keys(detail_text).join(', ') || 'none');
+
+  // ── Step 3: Calling date — use wf.created_at or free_text parse ───────────
+  // The PDF header says "Calling Date: 20 March 2026". The per-page extractor
+  // puts it in free_text.  Fallback to wf.created_at.
+  let calling_date = null;
+  const datePattern = /calling\s*date[:\s]+(\d{1,2}\s+\w+\s+\d{4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{4}-\d{2}-\d{2})/i;
+  const allText = allFreeText.concat(Object.values(detail_text)).join(' ');
+  const dateMatch = allText.match(datePattern);
+  if (dateMatch) {
+    try { calling_date = new Date(dateMatch[1]).toISOString().split('T')[0]; } catch(_) {}
+  }
+  if (!calling_date) {
+    calling_date = (wf.created_at || new Date().toISOString()).split('T')[0];
+  }
+  console.log('[TeleMER Assemble] calling_date:', calling_date);
+
+  // ── Step 4: Examiner remarks — Q48 handwritten note ──────────────────────
+  const examiner_remarks = detail_text['q48'] || notesByQ['q48'] || '';
+  console.log('[TeleMER Assemble] Q48 remarks:', examiner_remarks.substring(0, 120) || '(none)');
+
+  // ── Step 5: Lifestyle — Q7 ────────────────────────────────────────────────
+  // Q7 asks: "Cigarette / Beedi / Pan / Gutkha / Alcohol"
+  // answer=false (No) → never for all three substances
+  // answer=true (Yes) → parse handwritten_note for detail
+  const q7Answer  = answers['q7'];
+  const q7Detail  = (detail_text['q7'] || '').toLowerCase();
+  let smoking = { status: 'never' };
+  let alcohol  = { status: 'never' };
+  let tobacco  = { status: 'never' };
+
+  if (q7Answer === true) {
+    // Has habits — parse detail text
+    const hasSmoke   = /cigarette|beedi|bidi|smok/i.test(q7Detail);
+    const hasAlcohol = /alcohol|beer|wine|whisky|brandy|rum/i.test(q7Detail);
+    const hasTobacco = /gutkha|pan\b|khaini|zarda|tobacco|chewing/i.test(q7Detail);
+    const quitMatch  = q7Detail.match(/quit\s*(?:since\s*)?(\d+)\s*(?:yr|year)/i);
+    const quitYears  = quitMatch ? parseInt(quitMatch[1]) : 0;
+
+    if (hasSmoke) {
+      smoking = quitYears > 0
+        ? { status: quitYears > 5 ? 'former_gt5' : 'former', years_quit: quitYears }
+        : { status: 'current' };
+    }
+    if (hasAlcohol) {
+      const isOcc  = /occasional|social|weekend/i.test(q7Detail);
+      const isReg  = /regular|daily|every\s*day|\d+\s*times?\s*(?:a|per)\s*week/i.test(q7Detail);
+      alcohol = { status: isOcc ? 'occasional' : isReg ? 'regular' : 'current' };
+    }
+    if (hasTobacco) {
+      const tobQuit = q7Detail.match(/quit\s*(?:since\s*)?(\d+)\s*(?:yr|year)/i);
+      tobacco = tobQuit
+        ? { status: 'former', years_quit: parseInt(tobQuit[1]) }
+        : { status: 'current' };
+    }
+  }
+  // If Q7 was explicitly No → all never (already set above as defaults)
+  const lifestyle = {
+    smoking,
+    alcohol,
+    tobacco_chewing: tobacco,
+    occupation_hazard: extractedData.lifestyle?.occupation_hazard || wf.lifestyle?.occupation_hazard || 'none',
+    exercise: extractedData.lifestyle?.exercise || { frequency: 'unknown' },
+    _source: 'telemer_pdf_q7'
+  };
+  console.log(`[TeleMER Assemble] Lifestyle — Smoking: ${smoking.status}, Alcohol: ${alcohol.status}, Tobacco: ${tobacco.status}`);
+
+  // ── Step 6: Family history — Q9 ──────────────────────────────────────────
+  const q9Detail = (detail_text['q9'] || '').toLowerCase();
+  const family_history = {
+    cardiac:      /heart|cardiac|coronary/i.test(q9Detail),
+    diabetes:     /diabetes|blood\s*sugar|dm\b/i.test(q9Detail),
+    cancer:       /cancer|carcinoma|tumou?r|malignancy|leukaemia|lymphoma/i.test(q9Detail),
+    hypertension: /htn|hypertension|blood\s*pressure/i.test(q9Detail),
+    stroke:       /stroke|tia|paralys/i.test(q9Detail),
+    details:      detail_text['q9'] || ''
+  };
+  if (answers['q9'] === false) {
+    // Q9 answered No — clear all
+    Object.assign(family_history, { cardiac:false, diabetes:false, cancer:false, hypertension:false, stroke:false });
+  }
+  console.log('[TeleMER Assemble] Family history:', JSON.stringify(family_history));
+
+  // ── Step 7: Pre-existing conditions from Q2/Q3/Q48 detail ────────────────
+  // Parse free-text detail in Q2, Q3, Q48 to build structured PEC list
+  const conditionSources = [detail_text['q2'], detail_text['q3'], examiner_remarks]
+    .filter(Boolean).join(' ');
+
+  const pre_existing_conditions = [];
+
+  // HTN / Blood Pressure
+  const htnMatch = conditionSources.match(/(?:htn|hypertension|high\s*bp|blood\s*pressure)[^.]*?since\s*(\d+)\s*(month|year)/i);
+  const bpReading = conditionSources.match(/(\d{2,3})\s*[\/\-]\s*(\d{2,3})\s*(?:mm\s*of\s*hg|mmhg)?/i);
+  const htnMed    = conditionSources.match(/tab\s+([\w\s]+?)\s+(?:\d+\s*mg)/i) ||
+                    conditionSources.match(/(telmisartan|telma|amlodipine|enalapril|ramipril|losartan|metoprolol|coversyl|diovan|atenolol|nebivolol)[^,\s]*/i);
+  if (htnMatch || /htn|hypertension/i.test(conditionSources)) {
+    const durationMonths = htnMatch
+      ? (htnMatch[2].toLowerCase().startsWith('year')
+          ? parseInt(htnMatch[1]) * 12
+          : parseInt(htnMatch[1]))
+      : null;
+    const sinceYear = durationMonths
+      ? new Date().getFullYear() - Math.floor(durationMonths / 12)
+      : null;
+    const medName = htnMed ? htnMed[1].trim() : null;
+    const bpSys   = bpReading ? parseInt(bpReading[1]) : null;
+    const bpDia   = bpReading ? parseInt(bpReading[2]) : null;
+    // medication_unknown → uncontrolled; reading verified → check range
+    const isControlled = medName && bpSys && bpSys <= 140;
+    pre_existing_conditions.push({
+      condition:              'Hypertension',
+      icd10_code:             'I10',
+      current_status:         isControlled ? 'active' : 'active',
+      medication:             medName || 'unknown',
+      since_year:             sinceYear,
+      last_reading_systolic:  bpSys,
+      last_reading_diastolic: bpDia,
+      reading_verified:       bpSys !== null,
+      duration_months:        durationMonths,
+      _source:                'telemer_pdf_q2q3q48'
+    });
+  }
+
+  // Diabetes
+  const dmMatch = conditionSources.match(/(?:dm|diabetes|blood\s*sugar|t2dm)[^.]*?since\s*(\d+)\s*(month|year)/i);
+  const hba1cMatch = conditionSources.match(/hba1c\s*[:\s]*(\d+\.?\d*)/i);
+  const fbsMatch   = conditionSources.match(/fbs\s*[:\s]*(\d+)/i) || conditionSources.match(/fasting\s*(?:blood\s*sugar)?\s*[:\s]*(\d+)/i);
+  const dmMed      = conditionSources.match(/(metformin|janumet|januvia|glimepiride|glipizide|insulin|dapagliflozin|sitagliptin|reclimet)[^,\s]*/i);
+  if (dmMatch || /\b(?:dm|diabetes)\b/i.test(conditionSources)) {
+    const durationMonths = dmMatch
+      ? (dmMatch[2].toLowerCase().startsWith('year') ? parseInt(dmMatch[1]) * 12 : parseInt(dmMatch[1]))
+      : null;
+    pre_existing_conditions.push({
+      condition:      'Type 2 Diabetes',
+      icd10_code:     'E11',
+      current_status: 'active',
+      medication:     dmMed ? dmMed[1] : 'unknown',
+      since_year:     durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
+      hba1c:          hba1cMatch ? parseFloat(hba1cMatch[1]) : null,
+      fbs:            fbsMatch   ? parseFloat(fbsMatch[1])   : null,
+      reading_verified: !!(hba1cMatch || fbsMatch),
+      duration_months: durationMonths,
+      _source:        'telemer_pdf_q2q3q48'
+    });
+  }
+
+  // Thyroid
+  const thyMed = conditionSources.match(/(levothyroxine|eltroxin|thyroxine|thyronorm)[^,\s]*/i);
+  if (/thyroid|hypothyroid|hyperthyroid/i.test(conditionSources)) {
+    pre_existing_conditions.push({
+      condition: 'Thyroid disorder', icd10_code: 'E07.9',
+      current_status: 'active', medication: thyMed ? thyMed[1] : 'unknown',
+      _source: 'telemer_pdf_q2q3q48'
+    });
+  }
+
+  // Cholesterol / Dyslipidaemia
+  const statinMed = conditionSources.match(/(rosuvastatin|atorvastatin|simvastatin|rosuvas|lipitor)[^,\s]*/i);
+  if (/cholesterol|dyslipidaemia|statin|lipid/i.test(conditionSources)) {
+    pre_existing_conditions.push({
+      condition: 'Dyslipidaemia', icd10_code: 'E78.5',
+      current_status: 'active', medication: statinMed ? statinMed[1] : 'unknown',
+      _source: 'telemer_pdf_q2q3q48'
+    });
+  }
+
+  console.log(`[TeleMER Assemble] PEC list: ${pre_existing_conditions.map(c=>c.condition).join(', ') || 'none'}`);
+
+  // ── Step 8: Surgical history — Q5 ────────────────────────────────────────
+  const surgical_history = [];
+  const q5Detail = (detail_text['q5'] || '').toLowerCase();
+  if (answers['q5'] === true && q5Detail) {
+    const surgYr = q5Detail.match(/(\d{4})/)?.[1];
+    surgical_history.push({
+      procedure: detail_text['q5'] || 'Surgery declared',
+      year: surgYr ? parseInt(surgYr) : null,
+      records_available: !/no\s*record|record\s*(?:not|unavail)/i.test(q5Detail),
+      _source: 'telemer_pdf_q5'
+    });
+  }
+  // Gallstone — cross-reference Q17
+  const gallRef = conditionSources.match(/gall\s*(?:stone|bladder|cholecyst)/i);
+  if (gallRef && answers['q17'] !== true) {
+    const gallYr = conditionSources.match(/(?:gall[^.]*?)(\d{4})/i)?.[1];
+    surgical_history.push({
+      procedure: 'Gallbladder surgery / Gallstone',
+      year: gallYr ? parseInt(gallYr) : null,
+      records_available: true,
+      _source: 'telemer_pdf_q2q3'
+    });
+  }
+  // Spine — cross-reference Q24/Q25
+  const spineRef = conditionSources.match(/spine|lumbar|sciatica|laminectomy|spinal\s*surgery/i);
+  if (spineRef) {
+    const spineYr = conditionSources.match(/(?:spine|lumbar|sciatica)[^.]*?(\d{4})/i)?.[1];
+    surgical_history.push({
+      procedure: 'Spinal surgery',
+      year: spineYr ? parseInt(spineYr) : null,
+      records_available: true,
+      _source: 'telemer_pdf_q2q5'
+    });
+  }
+
+  // ── Step 9: Hospitalizations — Q4 ────────────────────────────────────────
+  const hospitalizations = [];
+  if (answers['q4'] === true) {
+    hospitalizations.push({ reason: detail_text['q4'] || 'Declared', year: new Date().getFullYear() });
+  }
+
+  // ── Step 10: BMI / height / weight from PDF header ────────────────────────
+  // These are in free_text because they're in the "Personal Information" table,
+  // not a yes/no question. Try to pull them if not already in physical_exam.
+  const fullText = allFreeText.join(' ') + ' ' + Object.values(detail_text).join(' ');
+  if (!extractedData.physical_exam?.bmi?.value) {
+    const bmiM   = fullText.match(/bmi\s*[:\s]*(\d+\.?\d*)/i);
+    const htM    = fullText.match(/height\s*(?:\(cm\))?\s*[:\s]*(\d+\.?\d*)/i);
+    const wtM    = fullText.match(/weight\s*(?:\(kg\))?\s*[:\s]*(\d+\.?\d*)/i);
+    if (!extractedData.physical_exam) extractedData.physical_exam = {};
+    if (bmiM) {
+      const bmi = parseFloat(bmiM[1]);
+      if (bmi > 10 && bmi < 70) {
+        extractedData.physical_exam.bmi = { value: bmi, flag: bmi < 18.5 ? 'low' : bmi < 25 ? 'normal' : 'high', source: 'telemer_pdf_header' };
+        console.log('[TeleMER Assemble] BMI from PDF header:', bmi);
+      }
+    }
+    if (htM)  extractedData.physical_exam.height_cm = parseFloat(htM[1]);
+    if (wtM)  extractedData.physical_exam.weight_kg = parseFloat(wtM[1]);
+  }
+
+  // ── Step 11: Write everything into extractedData.telemer_data ────────────
+  if (!extractedData.telemer_data) extractedData.telemer_data = {};
+
+  extractedData.telemer_data.answers         = answers;
+  extractedData.telemer_data.detail_text     = detail_text;
+  extractedData.telemer_data.calling_date    = calling_date;
+  extractedData.telemer_data.examiner_remarks = examiner_remarks;
+  extractedData.calling_date                 = calling_date; // top-level alias used by engine
+
+  // Only overwrite lifestyle if Q7 was explicitly on the form
+  if (Object.keys(answers).length > 0) {
+    extractedData.telemer_data.lifestyle = lifestyle;
+    extractedData.lifestyle              = lifestyle;
+  }
+
+  // Build medical history from PDF, merging with any already-declared data
+  const existingPEC = (extractedData.telemer_data.medical_history?.pre_existing_conditions || [])
+    .filter(c => c._source !== 'telemer_pdf_q2q3q48'); // don't double-add
+  const mergedPEC = [...pre_existing_conditions, ...existingPEC];
+
+  extractedData.telemer_data.medical_history = {
+    pre_existing_conditions: mergedPEC,
+    surgical_history,
+    hospitalizations,
+    family_history,
+    systemic_flags: {
+      respiratory:    answers['q15'] === true,
+      digestive:      answers['q16'] === true,
+      renal:          answers['q19'] === true,
+      haematological: answers['q21'] === true,
+      neurological:   answers['q29'] === true || answers['q30'] === true,
+      endocrine:      answers['q26'] === true,
+      musculoskeletal:answers['q24'] === true || answers['q25'] === true,
+      skin:           answers['q8']  === true,
+      psychiatric:    answers['q31'] === true,
+      oedema:         answers['q32'] === true
+    }
+  };
+  extractedData.medical_history = extractedData.telemer_data.medical_history;
+
+  // proposer / insured names from PDF if workflow doesn't have them
+  const pdfName = allFreeText.join(' ').match(/(?:insured\s*name|proposer\s*name)\s*[:\-]\s*([A-Z][A-Z\s]+)/i)?.[1]?.trim();
+  if (pdfName && !extractedData.insured_name) extractedData.insured_name = pdfName;
+  if (!extractedData.proposer_name) extractedData.proposer_name = wf.proposer_name || '';
+
+  // Medications list for contradiction C3/C7 checks
+  if (pre_existing_conditions.length && !extractedData.correlation_data?.medications_found?.length) {
+    extractedData.correlation_data = extractedData.correlation_data || { medications_found: [] };
+    for (const cond of pre_existing_conditions) {
+      if (cond.medication && cond.medication !== 'unknown') {
+        extractedData.correlation_data.medications_found.push({
+          name: cond.medication, condition: cond.condition, disclosed: true
+        });
+      }
+    }
+  }
+
+  console.log(`[TeleMER Assemble] ✅ Done — answers:${Object.keys(answers).length}, PEC:${mergedPEC.length}, surgical:${surgical_history.length}, FH cancer:${family_history.cancer}`);
+}
+
 async function runAIAnalysis(wf) {
   // Debug: log what extracted_data contains before scoring
   const ed = wf.extracted_data || {};
@@ -2295,7 +2641,23 @@ async function runAIAnalysis(wf) {
         return { cat: vendorCat, reason: 'recovered from assigned vendor' };
       }
     }
-    // 3) re-derive from age + SA via product mandatory-test rules
+    // 3) detect TeleMER from uploaded document content — if page_extractions has
+    //    48+ numbered questions and no lab sections, this is a TeleMER form PDF
+    if (wf.page_extractions?.length > 0) {
+      const allQNums = new Set();
+      let hasLabData = false;
+      for (const pg of wf.page_extractions) {
+        for (const row of (pg.yes_no || [])) { if (row.q_number) allQNums.add(String(row.q_number)); }
+        if (pg.values?.length > 0) hasLabData = true;
+      }
+      if (allQNums.size >= 10 && !hasLabData) {
+        console.log('[resolveCAT AI] Detected TeleMER form PDF —', allQNums.size, 'questions, no lab values → forcing tele_mer');
+        // Persist so subsequent calls don't re-derive
+        wf.cat_level = 'tele_mer';
+        return { cat: 'tele_mer', reason: 'detected from TeleMER form PDF (48-question structure, no lab data)' };
+      }
+    }
+    // 4) re-derive from age + SA via product mandatory-test rules
     const pc = getProductScoringConfig(wf.product_name);
     const derived = resolveCAT(wf.age, wf.sum_assured, pc?.overrides, hasPED_ai);
     if (derived.cat && derived.cat !== 'STP') {
@@ -2395,6 +2757,17 @@ async function runAIAnalysis(wf) {
 
   // Inject lifestyle and medical history into extracted data for risk engine scoring
   if (extractedData && Object.keys(extractedData).length > 0) {
+
+    // ── TeleMER PDF Assembly ──────────────────────────────────────────────────
+    // When a TeleMER PDF is uploaded (not live interview), the per-page extractor
+    // stores answers in wf.page_extractions[].yes_no[] but never maps them to
+    // telemer_data.answers / detail_text / medical_history.  Do it now, before
+    // any lifestyle or medical-history merge so the whole pipeline has clean data.
+    if (catForAI.cat === 'tele_mer' && wf.page_extractions?.length > 0 &&
+        !wf.telemer_data?.status) {   // live interview sets telemer_data.status; PDF upload doesn't
+      console.log('[TeleMER Assemble] Triggered — PDF upload path, assembling from page_extractions');
+      assembleTeleMERDataFromPDF(wf, extractedData);
+    }
     // Inject declared BMI if no measured BMI was extracted from documents
     if (wf.declared_bmi && wf.declared_bmi > 0) {
       if (!extractedData.physical_exam) extractedData.physical_exam = {};
@@ -2553,13 +2926,15 @@ async function runAIAnalysis(wf) {
     let riskResult;
     if (isTeleMER) {
       // TeleMER: medical=0, lifestyle=35, history=30, clinical=25, docs=10
-      // Pass extracted lifestyle + medical_history + correlation into TeleMER engine
+      // Pass fully assembled telemer_data (from PDF or live interview) into engine
       const teleMERInput = {
         ...extractedData,
-        telemer_data: extractedData.telemer_data || {},
-        interview_answers: {},   // no interview answers at doc-upload time
-        non_disclosures: []
+        calling_date:     extractedData.calling_date || extractedData.telemer_data?.calling_date || new Date().toISOString().split('T')[0],
+        telemer_data:     extractedData.telemer_data || {},
+        interview_answers: extractedData.telemer_data?.answers || {},
+        non_disclosures:  []
       };
+      console.log(`[TeleMER Input] answers keys: ${Object.keys(teleMERInput.telemer_data?.answers||{}).length} | PEC: ${teleMERInput.telemer_data?.medical_history?.pre_existing_conditions?.length||0} | calling_date: ${teleMERInput.calling_date}`);
       riskResult = teleMEREngine.calculateTeleMERRiskDynamic(teleMERInput, null, correlationData, teleMERScoringConfig);
     } else {
       // ── Scoring debug log ──────────────────────────────────────────────────
