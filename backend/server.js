@@ -81,19 +81,6 @@ const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for bi
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
-const teleMEREngine = require('./lib/telemer-scoring-engine');
-// In-memory cache for the TeleMER scoring config (loaded from S3 / disk on startup)
-let teleMERScoringConfig = null;
-async function loadTeleMERScoringConfig() {
-  try {
-    const saved = await s3Client.getConfig('telemer-scoring').catch(() => null);
-    if (saved && saved._version) { teleMERScoringConfig = saved; console.log('[Startup] ✅ TeleMER scoring config loaded from S3/DB (version:', saved._version, ')'); return; }
-  } catch(e) { /* fall through to disk */ }
-  try {
-    const diskCfg = teleMEREngine.loadTeleMERConfig();
-    if (diskCfg) { teleMERScoringConfig = diskCfg; console.log('[Startup] ✅ TeleMER scoring config loaded from disk (version:', diskCfg._version, ')'); }
-  } catch(e) { console.error('[Startup] ⚠️  TeleMER scoring config load error:', e.message); }
-}
 const vendorApi = require('./lib/vendor-api');
 const icmrAnalyser = require('./lib/icmr-analyser');
 const workflowEngine = require('./lib/workflow-engine');
@@ -2925,17 +2912,55 @@ async function runAIAnalysis(wf) {
 
     let riskResult;
     if (isTeleMER) {
-      // TeleMER: medical=0, lifestyle=35, history=30, clinical=25, docs=10
-      // Pass fully assembled telemer_data (from PDF or live interview) into engine
-      const teleMERInput = {
-        ...extractedData,
-        calling_date:     extractedData.calling_date || extractedData.telemer_data?.calling_date || new Date().toISOString().split('T')[0],
-        telemer_data:     extractedData.telemer_data || {},
-        interview_answers: extractedData.telemer_data?.answers || {},
-        non_disclosures:  []
-      };
-      console.log(`[TeleMER Input] answers keys: ${Object.keys(teleMERInput.telemer_data?.answers||{}).length} | PEC: ${teleMERInput.telemer_data?.medical_history?.pre_existing_conditions?.length||0} | calling_date: ${teleMERInput.calling_date}`);
-      riskResult = teleMEREngine.calculateTeleMERRiskDynamic(teleMERInput, null, correlationData, teleMERScoringConfig);
+      // TeleMER scores through the same calculateAll() path as CAT 1-4,
+      // using the Per-CAT Scoring Config (tele_mer tab in Masters).
+      // riskParams._scoring_components / _component_weights / _score_thresholds
+      // were already set above from catScoringConfig['tele_mer'].
+      // The contradiction penalty and hard-override flags are applied separately below.
+      console.log('[ScoringDebug] TeleMER → calculateAll with Per-CAT tele_mer config');
+      console.log('[ScoringDebug] tele_mer components:', Object.keys(riskParams._scoring_components || {}).join(',') || 'none (fallback)');
+      riskResult = riskEngine.calculateAll(extractedData, correlationData, {
+        component_weights:  riskParams._component_weights  || null,
+        scoring_components: riskParams._scoring_components || null,
+        score_thresholds:   riskParams._score_thresholds   || null
+      });
+
+      // Apply TeleMER contradiction penalty on top of calculateAll score
+      const contrResult = riskEngine.scoreContradictions
+        ? riskEngine.scoreContradictions(extractedData.telemer_data || extractedData)
+        : { contradiction_count: 0, contradiction_list: [], contradiction_penalty: 0 };
+      const overrideResult = riskEngine.evaluateHardOverrides
+        ? riskEngine.evaluateHardOverrides(
+            extractedData.telemer_data || extractedData,
+            extractedData,
+            contrResult
+          )
+        : { override_action: null, override_flags: [], should_stop: false, mandatory_docs: [] };
+
+      // Attach TeleMER-specific fields to the result for display
+      riskResult.contradiction_count   = contrResult.contradiction_count;
+      riskResult.contradiction_list    = contrResult.contradiction_list;
+      riskResult.contradiction_penalty = contrResult.contradiction_penalty;
+      riskResult.override_action       = overrideResult.override_action;
+      riskResult.override_flags        = overrideResult.override_flags;
+      riskResult.mandatory_docs        = overrideResult.mandatory_docs;
+      riskResult.senior_review_required = overrideResult.override_flags.some(f => f.type === 'SENIOR_REVIEW');
+
+      // Deduct contradiction penalty from normalized score
+      if (contrResult.contradiction_penalty > 0 && riskResult.risk_score) {
+        const orig = riskResult.risk_score.normalized || 0;
+        riskResult.risk_score.normalized = Math.max(0, Math.round((orig - contrResult.contradiction_penalty) * 100) / 100);
+        riskResult.risk_score.contradiction_penalty_applied = contrResult.contradiction_penalty;
+        console.log(`[TeleMER] Contradiction penalty -${contrResult.contradiction_penalty} pts: ${orig} → ${riskResult.risk_score.normalized}`);
+      }
+
+      // If a stop-override fired, override the decision
+      if (overrideResult.should_stop) {
+        const decMap = { AUTO_DEFER:'defer', AUTO_DECLINE:'decline', MANDATORY_RE_MER:'mandatory_re_mer' };
+        if (riskResult.decision) riskResult.decision.recommendation = decMap[overrideResult.override_action] || 'refer';
+        riskResult.auto_decision_eligible = false;
+      }
+      console.log(`[TeleMER] Score: ${riskResult.risk_score?.normalized}/100 | Contradictions: ${contrResult.contradiction_count} | Override: ${overrideResult.override_action || 'none'}`);
     } else {
       // ── Scoring debug log ──────────────────────────────────────────────────
       console.log('[ScoringDebug] CAT:', catForAI?.cat, '| scoring_components:', riskParams._scoring_components ? 'DB config loaded' : 'hardcoded fallback');
@@ -3635,79 +3660,6 @@ app.get('/api/masters/medical-scoring', requireAuth, (req, res) => {
   res.json(scoring);
 });
 
-// ─── TeleMER Scoring Config — Masters endpoints ───────────────────────────────
-// GET  /api/masters/telemer-scoring   — read current config (all roles)
-// PUT  /api/masters/telemer-scoring   — save new config (Super Admin only)
-// POST /api/masters/telemer-scoring/reset — reset to disk defaults (Super Admin)
-// POST /api/masters/telemer-scoring/preview — dry-run score with a sample payload
-
-app.get('/api/masters/telemer-scoring', requireAuth, async (req, res) => {
-  try {
-    const cfg = teleMERScoringConfig || teleMEREngine.loadTeleMERConfig();
-    if (!cfg) return res.status(500).json({ error: 'TeleMER scoring config not available' });
-    res.json({ ...cfg, _loaded_from: teleMERScoringConfig ? 's3_or_cache' : 'disk', _editable: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.put('/api/masters/telemer-scoring', requireRole('Super Admin'), async (req, res) => {
-  try {
-    const incoming = req.body;
-    if (!incoming || typeof incoming !== 'object') return res.status(400).json({ error: 'Request body must be a JSON object' });
-    if (!incoming._version) return res.status(400).json({ error: '_version field is required' });
-
-    // Stamp audit fields
-    incoming._last_updated = new Date().toISOString();
-    incoming._updated_by   = req.user?.email || req.user?.name || 'admin';
-
-    // Persist to S3 / mem store
-    await s3Client.saveConfig('telemer-scoring', incoming);
-
-    // Update in-memory cache immediately so next score uses new values
-    teleMERScoringConfig = incoming;
-
-    // Audit log
-    try {
-      const pgClient = require('./lib/pg-client');
-      await pgClient.query(
-        `INSERT INTO audit_log (action, actor, data) VALUES ($1, $2, $3)`,
-        ['telemer_scoring_config_updated', incoming._updated_by, JSON.stringify({ version: incoming._version, updated_at: incoming._last_updated })]
-      );
-    } catch(auditErr) { /* non-fatal */ }
-
-    console.log(`[Masters] TeleMER scoring config saved by ${incoming._updated_by} (version: ${incoming._version})`);
-    res.json({ success: true, version: incoming._version, updated_at: incoming._last_updated, message: 'TeleMER scoring config saved. All new TeleMER scores will use these values immediately.' });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/masters/telemer-scoring/reset', requireRole('Super Admin'), async (req, res) => {
-  try {
-    const diskCfg = teleMEREngine.loadTeleMERConfig(null); // force disk read
-    if (!diskCfg) return res.status(500).json({ error: 'Disk config not available' });
-    diskCfg._last_updated = new Date().toISOString();
-    diskCfg._updated_by   = req.user?.email || 'admin';
-    await s3Client.saveConfig('telemer-scoring', diskCfg);
-    teleMERScoringConfig = diskCfg;
-    res.json({ success: true, message: 'TeleMER scoring config reset to document defaults.', version: diskCfg._version });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/masters/telemer-scoring/preview', requireAuth, (req, res) => {
-  try {
-    const { sample_data, config_override } = req.body || {};
-    const cfgToUse = config_override || teleMERScoringConfig || teleMEREngine.loadTeleMERConfig();
-    const samplePayload = sample_data || {
-      calling_date: new Date().toISOString().split('T')[0],
-      answers: {},
-      detail_text: {},
-      examiner_remarks: '',
-      medical_history: { pre_existing_conditions: [], surgical_history: [], hospitalizations: [], family_history: {} },
-      lifestyle: { smoking: { status: 'never' }, alcohol: { status: 'never' }, tobacco_chewing: { status: 'never' } }
-    };
-    const result = teleMEREngine.calculateTeleMERRiskDynamic(samplePayload, null, {}, cfgToUse);
-    res.json({ success: true, preview_score: result, config_version: cfgToUse?._version || 'unknown' });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
 // Policy document upload
 app.post('/api/policies/:id/document', requireRole('Super Admin'), upload.single('document'), validateFileContent, async (req, res) => {
   try {
@@ -4299,12 +4251,12 @@ function buildDefaultCatScoring() {
           // C4 — Cardiovascular + HTN (15 pts direct)
           // C6 — Surgical + GI (5 pts direct)
           // C7 — Family History (5 pts direct)
-          // These 3 are scored directly by telemer-scoring-engine.js using the dynamic config.
+          // These 3 are scored directly by the engine using factor extractors in scoreComponentFromConfig.
           // They are shown here for visibility and weight display only.
           documentation: {
             label: 'C4 Cardiovascular (15) + C6 Surgical/GI (5) + C7 Family History (5)',
             weight: 25,
-            _note: 'These 3 components (C4+C6+C7=25 pts) are scored directly by the TeleMER engine using telemer-scoring.json config. Edit their thresholds in Masters → TeleMER Scoring Config.',
+            _note: 'These 3 components (C4+C6+C7=25 pts) are scored directly by the engine using the factor bands configured here.',
             factors: [
               mkFactor('c4_cardiovascular', 'C4 — Cardiovascular + HTN (Q10–Q14)', 15, [
                 { label: 'No cardiac history, no HTN — all Q10–Q14 clear',            value: 'clean',              points: 15 },
@@ -5590,24 +5542,25 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
     wf.state_history.push({ state: 'telemer_completed', timestamp: new Date().toISOString(), actor: req.user?.email || 'examiner', note: `Tele-MER interview completed. Duration: ${Math.round((call_duration_seconds||0)/60)}min. Recommendation: ${telemer_recommendation}. ${medications.length} medication(s) detected.` });
     workflowEngine.updateWorkflow(wf.id, wf);
 
-    // Run TeleMER scoring if proceeding (new — does not affect existing flow if it fails)
+    // Run TeleMER scoring if proceeding — uses Per-CAT tele_mer config (same as document upload path)
     let telemerScore = null;
     if (telemer_recommendation === 'proceed_to_scoring') {
       try {
-        const voiceAnalysis = req.body.voice_analysis || null;
-        telemerScore = teleMEREngine.calculateTeleMERRiskDynamic(
-          { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures },
-          voiceAnalysis,
-          catScoringConfig,
-          teleMERScoringConfig
-        );
-        wf.telemer_data.score = telemerScore;
+        const telemerCatCfg = catScoringConfig?.['tele_mer'] || {};
+        const telemerInput  = { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures };
+        const telemerDynCfg = {
+          component_weights:  telemerCatCfg.components ? Object.fromEntries(Object.entries(telemerCatCfg.components).map(([k,c])=>[k,c.weight])) : null,
+          scoring_components: telemerCatCfg.components || null,
+          score_thresholds:   telemerCatCfg.thresholds || null
+        };
+        telemerScore = riskEngine.calculateAll(telemerInput, {}, telemerDynCfg);
+        wf.telemer_data.score = telemerScore?.risk_score?.normalized;
         wf.telemer_data.scored_at = new Date().toISOString();
         if (!wf.risk_result) wf.risk_result = {};
-        wf.risk_result.telemer_score    = telemerScore.score;
-        wf.risk_result.telemer_grade    = telemerScore.grade;
-        wf.risk_result.telemer_decision = telemerScore.decision;
-        console.log(`[TeleMER] ${wf.id} scored: ${telemerScore.score}/100 Grade=${telemerScore.grade} Decision=${telemerScore.decision}`);
+        wf.risk_result.telemer_score    = telemerScore?.risk_score?.normalized;
+        wf.risk_result.telemer_grade    = telemerScore?.risk_score?.grade;
+        wf.risk_result.telemer_decision = telemerScore?.decision?.recommendation;
+        console.log(`[TeleMER] ${wf.id} scored via Per-CAT config: ${telemerScore?.risk_score?.normalized}/100 Grade=${telemerScore?.risk_score?.grade} Decision=${telemerScore?.decision?.recommendation}`);
       } catch(scoreErr) { console.error('[TeleMER] Scoring error (non-fatal):', scoreErr.message); }
       wf.docs_submitted = true;
       wf.docs_submitted_at = new Date().toISOString();
@@ -6935,7 +6888,6 @@ s3Client.getCustomRules().then(rules => {
 // Phase 0 fix: product/policy seeding runs unconditionally so dev and test modes have the full catalog
 // loadProductPolicyConfig seeds defaults if S3 is empty or unavailable
 loadProductPolicyConfig().catch(e => console.error('[Startup] Product-policy load failed:', e.message));
-loadTeleMERScoringConfig().catch(e => console.error('[Startup] TeleMER scoring config load failed:', e.message));
   loadHistoricalCorpus().catch(e => console.error('[Startup] Historical corpus load failed:', e.message));
 
 // Phase 2: register UW auto-routing hook. Fires when a workflow enters `referred` or `awaiting_additional_info`.

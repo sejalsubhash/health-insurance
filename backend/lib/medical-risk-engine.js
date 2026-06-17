@@ -843,12 +843,35 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
       if (undisclosed.length <= 1) return 'minor gap';
       return 'non-disclosure';
     },
+    // TeleMER variant — factor id used in Per-CAT tele_mer config
+    drug_condition_match: (ed, corr) => {
+      const meds   = corr?.medications_found || [];
+      const mismatches = (corr?.drug_condition_mismatches || []).filter(m => !m.disclosed);
+      if (mismatches.length > 0)  return 'mismatch';
+      if (meds.length > 0)        return 'match';
+      const pec = (ed?.telemer_data?.medical_history?.pre_existing_conditions || []);
+      if (pec.some(c => c.medication && c.medication !== 'unknown')) return 'match';
+      if (pec.some(c => !c.medication || c.medication === 'unknown')) return 'med_unknown';
+      return 'na_clean';
+    },
     multi_system: (ed, corr) => {
       const ms = corr?.multi_system_correlations || [];
       const sig = ms.filter(m => m.clinical_significance === 'high' || m.clinical_significance === 'critical');
       if (sig.length === 0) return 'none';
       if (sig.length === 1) return '1 cluster';
       return '2+ clusters';
+    },
+    // TeleMER variant — count of active PEC across different systems
+    multi_system_risk: (ed) => {
+      const h = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const active = (h.pre_existing_conditions || []).filter(c =>
+        c.current_status === 'active' || c.current_status === 'poorly_controlled' || c.current_status === 'uncontrolled'
+      );
+      if (active.length === 0) return 'zero';
+      if (active.length === 1) return 'one_single';
+      if (active.length === 2) return 'two_diff';
+      if (active.length === 3) return 'three';
+      return 'four_plus';
     },
     cv_risk: (ed, corr) => {
       const cat = corr?.cardiovascular_risk?.framingham_risk_category || 'unknown';
@@ -857,6 +880,130 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
       if (cat === 'moderate')     return 'moderate';
       if (cat === 'high')         return 'high';
       return 'low'; // default
+    },
+    // TeleMER CV proxy — 5 protective factors
+    cv_proxy: (ed) => {
+      const age    = parseFloat(ed?._proposer_age || 0);
+      const gender = (ed?._proposer_gender || '').toLowerCase();
+      const bmi    = parseFloat(ed?.physical_exam?.bmi?.value || ed?.bmi || 0);
+      const h      = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const conds  = h.pre_existing_conditions || [];
+      const hasDM  = conds.some(c => /diabetes|dm\b/i.test(c.condition || ''));
+      const hasHTN = conds.some(c => /hypertension|htn\b|blood pressure/i.test(c.condition || ''));
+      let factors = 0;
+      if (age > 0 && age < 45)         factors++;
+      if (gender.startsWith('f'))       factors++;
+      if (!hasDM)                       factors++;
+      if (bmi > 0 && bmi < 25)         factors++;
+      if (!hasHTN)                      factors++;
+      if (factors >= 5) return '5_factors';
+      if (factors === 4) return '4_factors';
+      if (factors === 3) return '3_factors';
+      if (factors === 2) return '2_factors';
+      return '1_or_less';
+    },
+
+    // TeleMER PEC severity tier — maps to C2 pec_severity factor
+    pec_severity: (ed) => {
+      const h     = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const conds = h.pre_existing_conditions || [];
+      if (conds.length === 0) return 'none';
+      // Check for acute/post-surgical
+      const callingDate = ed?.calling_date || new Date().toISOString().split('T')[0];
+      const hasAcute = conds.some(c => {
+        if (!c.surgery_date) return false;
+        const days = Math.floor((new Date(callingDate) - new Date(c.surgery_date)) / 86400000);
+        return days < 90;
+      });
+      if (hasAcute) return 'acute';
+      // Check controlled vs uncontrolled
+      const hasUncontrolled = conds.some(c => {
+        const medUnknown = !c.medication || c.medication === 'unknown';
+        const bp = parseFloat(c.last_reading_systolic || 0);
+        const hba1c = parseFloat(c.hba1c || 0);
+        if (medUnknown) return true;
+        if (bp > 0 && bp > 140) return true;
+        if (hba1c > 0 && hba1c > 7.5) return true;
+        return false;
+      });
+      const hasActive = conds.some(c => c.current_status === 'active' || c.current_status === 'poorly_controlled');
+      const allResolved = conds.every(c => c.current_status === 'resolved');
+      if (allResolved) return 'resolved';
+      if (hasUncontrolled) return 'active_uncontrolled';
+      if (hasActive) return 'active_controlled';
+      return 'resolved';
+    },
+
+    // TeleMER systemic flags (C2 sub-factor)
+    systemic_flags: (ed) => {
+      const sf = ed?.telemer_data?.medical_history?.systemic_flags || {};
+      const count = Object.values(sf).filter(v => v === true).length;
+      if (count === 0) return 'none';
+      if (count === 1) return 'one_minor';
+      return 'two_plus';
+    },
+
+    // TeleMER C4 cardiovascular+HTN direct scoring
+    c4_cardiovascular: (ed) => {
+      const h    = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const conds = h.pre_existing_conditions || [];
+      const htn  = conds.find(c => /hypertension|htn\b|blood pressure/i.test(c.condition || ''));
+      const cardiac = conds.find(c => /cardiac|heart|ischemic|coronary|stenting|cabg/i.test(c.condition || ''));
+      if (!htn && !cardiac) return 'clean';
+      if (cardiac) return 'cardiac_ihd';
+      // HTN scoring
+      const bp       = parseFloat(htn.last_reading_systolic || 0);
+      const medUnknown = !htn.medication || htn.medication === 'unknown';
+      const calYr    = ed?.calling_date ? new Date(ed.calling_date).getFullYear() : new Date().getFullYear();
+      const durationYrs = htn.since_year ? calYr - htn.since_year : null;
+      const recentOnset = durationYrs !== null && durationYrs <= 1;
+      if (medUnknown) return 'htn_med_unknown';
+      if (bp > 0 && bp > 140) return 'htn_uncontrolled';
+      if (bp === 0) return 'htn_med_no_reading';
+      if (recentOnset) return 'htn_ctrl_lte1yr';
+      return 'htn_ctrl_gt1yr';
+    },
+
+    // TeleMER C6 surgical/GI
+    c6_surgical_gi: (ed) => {
+      const h       = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const surgs   = h.surgical_history || [];
+      const calling = ed?.calling_date || new Date().toISOString().split('T')[0];
+      if (surgs.length === 0) return 'none';
+      const calYr = new Date(calling).getFullYear();
+      for (const s of surgs) {
+        const surgDays = s.surgery_date
+          ? Math.floor((new Date(calling) - new Date(s.surgery_date)) / 86400000)
+          : null;
+        const surgYrs  = s.year ? calYr - s.year : null;
+        const hasRecords = s.records_available !== false;
+        if (surgDays !== null && surgDays < 90)    return 'lt90days';
+        if (surgYrs !== null && surgYrs < 1)       return 'lt1yr';
+        if (surgYrs !== null && surgYrs < 5 && !hasRecords) return 'lt5yr_no_records';
+        if (surgYrs !== null && surgYrs < 5)       return 'lt5yr_records';
+        if (!hasRecords)                           return 'gt5yr_no_records';
+        return 'gt5yr_records';
+      }
+      return 'none';
+    },
+
+    // TeleMER C7 family history
+    c7_family_history: (ed) => {
+      const h   = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const fam = h.family_history || {};
+      const det = (fam.details || '').toLowerCase();
+      const hasBloodCancer = det.includes('blood cancer') || det.includes('leukaemia') || det.includes('lymphoma');
+      const hasCancer  = fam.cancer === true || det.includes('cancer') || hasBloodCancer;
+      const hasStroke  = fam.stroke === true;
+      const hasCardiac = fam.cardiac === true;
+      const hasDM      = fam.diabetes === true;
+      const hasHTN     = fam.hypertension === true;
+      if (hasBloodCancer)         return 'blood_cancer';
+      if (hasCancer || hasStroke) return 'cancer';
+      if (hasCardiac)             return 'cardiac';
+      if (hasDM && hasHTN)        return 'dm_and_htn';
+      if (hasDM || hasHTN)        return 'dm_or_htn';
+      return 'none';
     },
 
     // Documentation quality factors
