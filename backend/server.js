@@ -3202,6 +3202,16 @@ async function runAIAnalysis(wf) {
     extractedData._proposer_age = wf.age;
     extractedData._proposer_gender = wf.gender;
 
+    // ── DIAGNOSTIC — pinpoint where PEC data is lost between assembly and scoring ──
+    // Temporary: confirms whether pre_existing_conditions is still intact on the
+    // exact object/path the FACTOR_VALUE_EXTRACTORS will read a few lines below.
+    // Remove once root cause of "PEC:3 confirmed in assembly, but scoring sees zero"
+    // is found and fixed.
+    console.log('[PEC-Diag] extractedData.telemer_data exists:', !!extractedData.telemer_data);
+    console.log('[PEC-Diag] extractedData.telemer_data.medical_history exists:', !!extractedData.telemer_data?.medical_history);
+    console.log('[PEC-Diag] pre_existing_conditions right before scoring:', JSON.stringify(extractedData.telemer_data?.medical_history?.pre_existing_conditions || 'MISSING'));
+    console.log('[PEC-Diag] extractedData object identity check — wf.extracted_data === extractedData:', wf.extracted_data === extractedData);
+
     // ── Route to correct scoring function based on CAT level ──────────────────
     // tele_mer has medical weight=0 and uses the 6-component hybrid engine.
     // All PPHC CATs (CAT_1–4) use calculateAll with the lab-results engine.
