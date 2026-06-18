@@ -81,6 +81,7 @@ const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for bi
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
+const telemerModel = require('./lib/telemer-score');
 const vendorApi = require('./lib/vendor-api');
 const icmrAnalyser = require('./lib/icmr-analyser');
 const workflowEngine = require('./lib/workflow-engine');
@@ -2459,7 +2460,7 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 // Output written directly into extractedData.telemer_data so the rest of the
 // scoring pipeline sees it without any other changes.
 // ─────────────────────────────────────────────────────────────────────────────
-function assembleTeleMERDataFromPDF(wf, extractedData) {
+async function assembleTeleMERDataFromPDF(wf, extractedData) {
   const pageExtractions = wf.page_extractions || [];
   if (!pageExtractions.length) {
     console.log('[TeleMER Assemble] No page_extractions — skipping assembly');
@@ -2591,84 +2592,163 @@ function assembleTeleMERDataFromPDF(wf, extractedData) {
     .filter(Boolean).join(' ');
 
   const pre_existing_conditions = [];
+  let __pecFromAI = false;
 
-  // HTN / Blood Pressure
-  const htnMatch = conditionSources.match(/(?:htn|hypertension|high\s*bp|blood\s*pressure)[^.]*?since\s*(\d+)\s*(month|year)/i);
-  const bpReading = conditionSources.match(/(\d{2,3})\s*[\/\-]\s*(\d{2,3})\s*(?:mm\s*of\s*hg|mmhg)?/i);
-  const htnMed    = conditionSources.match(/tab\s+([\w\s]+?)\s+(?:\d+\s*mg)/i) ||
-                    conditionSources.match(/(telmisartan|telma|amlodipine|enalapril|ramipril|losartan|metoprolol|coversyl|diovan|atenolol|nebivolol)[^,\s]*/i);
-  if (htnMatch || /htn|hypertension/i.test(conditionSources)) {
-    const durationMonths = htnMatch
-      ? (htnMatch[2].toLowerCase().startsWith('year')
-          ? parseInt(htnMatch[1]) * 12
-          : parseInt(htnMatch[1]))
-      : null;
-    const sinceYear = durationMonths
-      ? new Date().getFullYear() - Math.floor(durationMonths / 12)
-      : null;
-    const medName = htnMed ? htnMed[1].trim() : null;
-    const bpSys   = bpReading ? parseInt(bpReading[1]) : null;
-    const bpDia   = bpReading ? parseInt(bpReading[2]) : null;
-    // medication_unknown → uncontrolled; reading verified → check range
-    const isControlled = medName && bpSys && bpSys <= 140;
-    pre_existing_conditions.push({
-      condition:              'Hypertension',
-      icd10_code:             'I10',
-      current_status:         isControlled ? 'active' : 'active',
-      medication:             medName || 'unknown',
-      since_year:             sinceYear,
-      last_reading_systolic:  bpSys,
-      last_reading_diastolic: bpDia,
-      reading_verified:       bpSys !== null,
-      duration_months:        durationMonths,
-      _source:                'telemer_pdf_q2q3q48'
-    });
+  // ── PRIMARY: AI-based structured condition extraction ──────────────────
+  // Reading Q2/Q3/Q48 with fixed keyword regex means every new condition
+  // wording (e.g. "C/O-VARICOSE VEINS", "K/C/O-DM") has to be anticipated and
+  // hand-coded in advance, and numeric patterns like "since 6-7 years" silently
+  // fail when they don't match the exact expected shape. Ask the model to read
+  // the same text directly and return whatever conditions are actually present,
+  // instead of pattern-matching against a fixed list. Falls back to the regex
+  // blocks below (now also fixed for both issues) if this call fails for any
+  // reason — never leaves pre_existing_conditions silently empty.
+  if (conditionSources.trim().length > 20) {
+    try {
+      const __pecClient = await getBedrockClient();
+      const __pecPrompt = `Extract every medical condition mentioned in this TeleMER declaration text into structured JSON. Return ONLY valid JSON, no markdown.
+{"conditions":[{"condition_name":"","medication":null,"duration_years_min":null,"duration_years_max":null,"bp_systolic":null,"bp_diastolic":null,"hba1c":null,"fbs_mgdl":null,"complications_declared":false,"compliance_note":""}]}
+Rules: include EVERY condition mentioned (diabetes, hypertension, varicose veins, thyroid, cholesterol, cardiac, or anything else) — do not skip any, even ones without medication or readings. If a duration is given as a range like "6-7 years", set duration_years_min=6 and duration_years_max=7. If a single number, set both to that number. bp_systolic/diastolic only for hypertension-type readings (e.g. "130/86"). hba1c/fbs_mgdl only for diabetes-type readings. compliance_note should capture anything about irregular/non-standard dosing (e.g. "takes alternate day" when prescribed once daily) — leave empty string if nothing notable. condition_name should be a clean clinical name (e.g. "Hypertension", "Type 2 Diabetes", "Varicose Veins"), not the raw abbreviation.
+
+TEXT:
+${conditionSources.substring(0, 8000)}`;
+      const __pecRes = await __pecClient.send(new ConverseCommand({
+        modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+        system: [{ text: 'You are a precise medical text extraction AI. Return ONLY valid JSON, no markdown, no prose.' }],
+        messages: [{ role: 'user', content: [{ text: __pecPrompt }] }],
+        inferenceConfig: { maxTokens: 2048, temperature: 0 }
+      }));
+      const __pecTxt = __pecRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+      const __pecMatch = __pecTxt.match(/\{[\s\S]*\}/);
+      if (__pecMatch) {
+        const __pecParsed = JSON.parse(__pecMatch[0]);
+        if (Array.isArray(__pecParsed.conditions) && __pecParsed.conditions.length > 0) {
+          for (const c of __pecParsed.conditions) {
+            if (!c.condition_name) continue;
+            const durMin = c.duration_years_min != null ? Number(c.duration_years_min) : null;
+            const sinceYear = durMin != null ? new Date().getFullYear() - durMin : null;
+            pre_existing_conditions.push({
+              condition:              c.condition_name,
+              icd10_code:             null,
+              current_status:         'active',
+              medication:             c.medication || 'unknown',
+              since_year:             sinceYear,
+              last_reading_systolic:  c.bp_systolic  != null ? Number(c.bp_systolic)  : null,
+              last_reading_diastolic: c.bp_diastolic != null ? Number(c.bp_diastolic) : null,
+              hba1c:                  c.hba1c        != null ? Number(c.hba1c)        : null,
+              fbs:                    c.fbs_mgdl     != null ? Number(c.fbs_mgdl)     : null,
+              reading_verified:       c.bp_systolic != null || c.hba1c != null || c.fbs_mgdl != null,
+              duration_months:        durMin != null ? durMin * 12 : null,
+              complications_declared: !!c.complications_declared,
+              compliance_note:        c.compliance_note || '',
+              _source:                'telemer_pdf_ai_extraction'
+            });
+          }
+          __pecFromAI = pre_existing_conditions.length > 0;
+          console.log(`[TeleMER Assemble] PEC extracted via AI: ${pre_existing_conditions.map(c=>c.condition).join(', ')} | tokens: ${__pecRes.usage?.inputTokens}/${__pecRes.usage?.outputTokens}`);
+        }
+      }
+    } catch (pecErr) {
+      console.warn('[TeleMER Assemble] AI-based PEC extraction failed:', pecErr.message, '— falling back to regex parsing');
+    }
   }
 
-  // Diabetes
-  const dmMatch = conditionSources.match(/(?:dm|diabetes|blood\s*sugar|t2dm)[^.]*?since\s*(\d+)\s*(month|year)/i);
-  const hba1cMatch = conditionSources.match(/hba1c\s*[:\s]*(\d+\.?\d*)/i);
-  const fbsMatch   = conditionSources.match(/fbs\s*[:\s]*(\d+)/i) || conditionSources.match(/fasting\s*(?:blood\s*sugar)?\s*[:\s]*(\d+)/i);
-  const dmMed      = conditionSources.match(/(metformin|janumet|januvia|glimepiride|glipizide|insulin|dapagliflozin|sitagliptin|reclimet)[^,\s]*/i);
-  if (dmMatch || /\b(?:dm|diabetes)\b/i.test(conditionSources)) {
-    const durationMonths = dmMatch
-      ? (dmMatch[2].toLowerCase().startsWith('year') ? parseInt(dmMatch[1]) * 12 : parseInt(dmMatch[1]))
-      : null;
-    pre_existing_conditions.push({
-      condition:      'Type 2 Diabetes',
-      icd10_code:     'E11',
-      current_status: 'active',
-      medication:     dmMed ? dmMed[1] : 'unknown',
-      since_year:     durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
-      hba1c:          hba1cMatch ? parseFloat(hba1cMatch[1]) : null,
-      fbs:            fbsMatch   ? parseFloat(fbsMatch[1])   : null,
-      reading_verified: !!(hba1cMatch || fbsMatch),
-      duration_months: durationMonths,
-      _source:        'telemer_pdf_q2q3q48'
-    });
+  // ── FALLBACK: regex-based condition parsing ─────────────────────────────
+  // Only runs if the AI extraction above failed or found nothing. Two fixes
+  // applied vs the original version: (1) duration regex now handles ranges
+  // like "6-7 years" / "3-4 years" instead of silently failing on them —
+  // confirmed via direct testing that the original pattern returned NULL on
+  // this exact wording; (2) Varicose Veins added as a recognized condition
+  // type — confirmed it was entirely absent from the keyword list before.
+  if (!__pecFromAI) {
+    // HTN / Blood Pressure
+    const htnMatch = conditionSources.match(/(?:htn|hypertension|high\s*bp|blood\s*pressure)[^.]*?since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const bpReading = conditionSources.match(/(\d{2,3})\s*[\/\-]\s*(\d{2,3})\s*(?:mm\s*of\s*hg|mmhg)?/i);
+    const htnMed    = conditionSources.match(/tab\s+([\w\s]+?)\s+(?:\d+\s*mg)/i) ||
+                      conditionSources.match(/(telmisartan|telma|amlodipine|enalapril|ramipril|losartan|metoprolol|coversyl|diovan|atenolol|nebivolol)[^,\s]*/i);
+    if (htnMatch || /htn|hypertension/i.test(conditionSources)) {
+      const durationMonths = htnMatch
+        ? (htnMatch[2].toLowerCase().startsWith('year')
+            ? parseInt(htnMatch[1]) * 12
+            : parseInt(htnMatch[1]))
+        : null;
+      const sinceYear = durationMonths
+        ? new Date().getFullYear() - Math.floor(durationMonths / 12)
+        : null;
+      const medName = htnMed ? htnMed[1].trim() : null;
+      const bpSys   = bpReading ? parseInt(bpReading[1]) : null;
+      const bpDia   = bpReading ? parseInt(bpReading[2]) : null;
+      const isControlled = medName && bpSys && bpSys <= 140;
+      pre_existing_conditions.push({
+        condition:              'Hypertension',
+        icd10_code:             'I10',
+        current_status:         isControlled ? 'active' : 'active',
+        medication:             medName || 'unknown',
+        since_year:             sinceYear,
+        last_reading_systolic:  bpSys,
+        last_reading_diastolic: bpDia,
+        reading_verified:       bpSys !== null,
+        duration_months:        durationMonths,
+        _source:                'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Diabetes
+    const dmMatch = conditionSources.match(/(?:dm|diabetes|blood\s*sugar|t2dm)[^.]*?since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const hba1cMatch = conditionSources.match(/hba1c\s*[:\s]*(\d+\.?\d*)/i);
+    const fbsMatch   = conditionSources.match(/fbs\s*[:\s]*(\d+)/i) || conditionSources.match(/fasting\s*(?:blood\s*sugar)?\s*[:\s]*(\d+)/i);
+    const dmMed      = conditionSources.match(/(metformin|janumet|januvia|glimepiride|glipizide|insulin|dapagliflozin|sitagliptin|reclimet)[^,\s]*/i);
+    if (dmMatch || /\b(?:dm|diabetes)\b/i.test(conditionSources)) {
+      const durationMonths = dmMatch
+        ? (dmMatch[2].toLowerCase().startsWith('year') ? parseInt(dmMatch[1]) * 12 : parseInt(dmMatch[1]))
+        : null;
+      pre_existing_conditions.push({
+        condition:      'Type 2 Diabetes',
+        icd10_code:     'E11',
+        current_status: 'active',
+        medication:     dmMed ? dmMed[1] : 'unknown',
+        since_year:     durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
+        hba1c:          hba1cMatch ? parseFloat(hba1cMatch[1]) : null,
+        fbs:            fbsMatch   ? parseFloat(fbsMatch[1])   : null,
+        reading_verified: !!(hba1cMatch || fbsMatch),
+        duration_months: durationMonths,
+        _source:        'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Thyroid
+    const thyMed = conditionSources.match(/(levothyroxine|eltroxin|thyroxine|thyronorm)[^,\s]*/i);
+    if (/thyroid|hypothyroid|hyperthyroid/i.test(conditionSources)) {
+      pre_existing_conditions.push({
+        condition: 'Thyroid disorder', icd10_code: 'E07.9',
+        current_status: 'active', medication: thyMed ? thyMed[1] : 'unknown',
+        _source: 'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Cholesterol / Dyslipidaemia
+    const statinMed = conditionSources.match(/(rosuvastatin|atorvastatin|simvastatin|rosuvas|lipitor)[^,\s]*/i);
+    if (/cholesterol|dyslipidaemia|statin|lipid/i.test(conditionSources)) {
+      pre_existing_conditions.push({
+        condition: 'Dyslipidaemia', icd10_code: 'E78.5',
+        current_status: 'active', medication: statinMed ? statinMed[1] : 'unknown',
+        _source: 'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Varicose Veins — was entirely missing before; confirmed via grep on a
+    // real case where this is explicitly declared (Q8) and is the only
+    // condition type with zero handling anywhere in this file.
+    if (/varicose/i.test(conditionSources)) {
+      pre_existing_conditions.push({
+        condition: 'Varicose Veins', icd10_code: 'I83.9',
+        current_status: 'active', medication: 'none',
+        _source: 'telemer_pdf_q2q3q48_regex'
+      });
+    }
   }
 
-  // Thyroid
-  const thyMed = conditionSources.match(/(levothyroxine|eltroxin|thyroxine|thyronorm)[^,\s]*/i);
-  if (/thyroid|hypothyroid|hyperthyroid/i.test(conditionSources)) {
-    pre_existing_conditions.push({
-      condition: 'Thyroid disorder', icd10_code: 'E07.9',
-      current_status: 'active', medication: thyMed ? thyMed[1] : 'unknown',
-      _source: 'telemer_pdf_q2q3q48'
-    });
-  }
-
-  // Cholesterol / Dyslipidaemia
-  const statinMed = conditionSources.match(/(rosuvastatin|atorvastatin|simvastatin|rosuvas|lipitor)[^,\s]*/i);
-  if (/cholesterol|dyslipidaemia|statin|lipid/i.test(conditionSources)) {
-    pre_existing_conditions.push({
-      condition: 'Dyslipidaemia', icd10_code: 'E78.5',
-      current_status: 'active', medication: statinMed ? statinMed[1] : 'unknown',
-      _source: 'telemer_pdf_q2q3q48'
-    });
-  }
-
-  console.log(`[TeleMER Assemble] PEC list: ${pre_existing_conditions.map(c=>c.condition).join(', ') || 'none'}`);
+  console.log(`[TeleMER Assemble] PEC list (${__pecFromAI ? 'AI' : 'regex fallback'}): ${pre_existing_conditions.map(c=>c.condition).join(', ') || 'none'}`);
 
   // ── Step 8: Surgical history — Q5 ────────────────────────────────────────
   const surgical_history = [];
@@ -2972,7 +3052,7 @@ async function runAIAnalysis(wf) {
     if (catForAI.cat === 'tele_mer' && wf.page_extractions?.length > 0 &&
         !wf.telemer_data?.status) {   // live interview sets telemer_data.status; PDF upload doesn't
       console.log('[TeleMER Assemble] Triggered — PDF upload path, assembling from page_extractions');
-      assembleTeleMERDataFromPDF(wf, extractedData);
+      await assembleTeleMERDataFromPDF(wf, extractedData);
     }
     // Inject declared BMI if no measured BMI was extracted from documents
     if (wf.declared_bmi && wf.declared_bmi > 0) {
@@ -3123,6 +3203,16 @@ async function runAIAnalysis(wf) {
     extractedData._proposer_age = wf.age;
     extractedData._proposer_gender = wf.gender;
 
+    // ── DIAGNOSTIC — pinpoint where PEC data is lost between assembly and scoring ──
+    // Temporary: confirms whether pre_existing_conditions is still intact on the
+    // exact object/path the FACTOR_VALUE_EXTRACTORS will read a few lines below.
+    // Remove once root cause of "PEC:3 confirmed in assembly, but scoring sees zero"
+    // is found and fixed.
+    console.log('[PEC-Diag] extractedData.telemer_data exists:', !!extractedData.telemer_data);
+    console.log('[PEC-Diag] extractedData.telemer_data.medical_history exists:', !!extractedData.telemer_data?.medical_history);
+    console.log('[PEC-Diag] pre_existing_conditions right before scoring:', JSON.stringify(extractedData.telemer_data?.medical_history?.pre_existing_conditions || 'MISSING'));
+    console.log('[PEC-Diag] extractedData object identity check — wf.extracted_data === extractedData:', wf.extracted_data === extractedData);
+
     // ── Route to correct scoring function based on CAT level ──────────────────
     // tele_mer has medical weight=0 and uses the 6-component hybrid engine.
     // All PPHC CATs (CAT_1–4) use calculateAll with the lab-results engine.
@@ -3131,55 +3221,65 @@ async function runAIAnalysis(wf) {
 
     let riskResult;
     if (isTeleMER) {
-      // TeleMER scores through the same calculateAll() path as CAT 1-4,
-      // using the Per-CAT Scoring Config (tele_mer tab in Masters).
-      // riskParams._scoring_components / _component_weights / _score_thresholds
-      // were already set above from catScoringConfig['tele_mer'].
-      // The contradiction penalty and hard-override flags are applied separately below.
-      console.log('[ScoringDebug] TeleMER → calculateAll with Per-CAT tele_mer config');
-      console.log('[ScoringDebug] tele_mer components:', Object.keys(riskParams._scoring_components || {}).join(',') || 'none (fallback)');
-      riskResult = riskEngine.calculateAll(extractedData, correlationData, {
-        component_weights:  riskParams._component_weights  || null,
-        scoring_components: riskParams._scoring_components || null,
-        score_thresholds:   riskParams._score_thresholds   || null
+      // NEW 5-parameter remarks-driven model (telemer-score.js).
+      // extractedData.telemer_data already carries answers{}, detail_text{}, and
+      // examiner_remarks assembled by assembleTeleMERDataFromPDF().
+      console.log('[ScoringDebug] TeleMER → new 5-parameter remarks-driven model');
+      const td = extractedData.telemer_data || {};
+
+      // Reconstruct combined remarks from Q2/Q3/Q48 detail text + examiner remarks
+      const detail = td.detail_text || {};
+      const combinedRemarks = [detail.q2, detail.q3, td.examiner_remarks || detail.q48]
+        .filter(Boolean).join('. ') || td.examiner_remarks_verbatim || td.remarks || '';
+
+      const modelInput = telemerModel.fromExtractorData(td, {
+        bmi: td.proposer_info?.bmi || wf.declared_bmi || 0,
+        answers: td.answers || td.question_answers || {},
+        raw_remarks: combinedRemarks,
+        examiner: td.examiner || {},
+        reports_available: true
       });
+      const modelOut = telemerModel.scoreTeleMER(modelInput);
+      const fe = telemerModel.toFrontendShape(modelOut);
 
-      // Apply TeleMER contradiction penalty on top of calculateAll score
-      const contrResult = riskEngine.scoreContradictions
-        ? riskEngine.scoreContradictions(extractedData.telemer_data || extractedData)
-        : { contradiction_count: 0, contradiction_list: [], contradiction_penalty: 0 };
-      const overrideResult = riskEngine.evaluateHardOverrides
-        ? riskEngine.evaluateHardOverrides(
-            extractedData.telemer_data || extractedData,
-            extractedData,
-            contrResult
-          )
-        : { override_action: null, override_flags: [], should_stop: false, mandatory_docs: [] };
+      // Shape into the riskResult contract the rest of runAIAnalysis expects:
+      // risk_score.components is read at line ~3294 to build componentAnalysis.
+      riskResult = {
+        risk_score: {
+          normalized: fe.risk_score.normalized,
+          grade: fe.risk_score.grade,
+          total: fe.risk_score.total,
+          max: 100,
+          components: fe.component_analysis   // {param:{score,max,percentage,breakdown}}
+        },
+        decision: {
+          recommendation: modelOut.total_score >= 80 ? 'accept_standard'
+                        : modelOut.total_score >= 65 ? 'accept_with_loading'
+                        : modelOut.total_score >= 50 ? 'refer' : 'decline',
+          rationale: modelOut.decision_basis,
+          band: modelOut.decision_band
+        },
+        review_notes: modelOut.review_notes
+      };
 
-      // Attach TeleMER-specific fields to the result for display
-      riskResult.contradiction_count   = contrResult.contradiction_count;
-      riskResult.contradiction_list    = contrResult.contradiction_list;
-      riskResult.contradiction_penalty = contrResult.contradiction_penalty;
-      riskResult.override_action       = overrideResult.override_action;
-      riskResult.override_flags        = overrideResult.override_flags;
-      riskResult.mandatory_docs        = overrideResult.mandatory_docs;
-      riskResult.senior_review_required = overrideResult.override_flags.some(f => f.type === 'SENIOR_REVIEW');
+      // Contradictions: the new model already counts them inside Documentation Quality.
+      // Surface the count for display, but do NOT double-penalize the score.
+      const contraCount = (modelOut.review_notes || []).length;
+      riskResult.contradiction_count = contraCount;
+      riskResult.contradiction_list  = modelOut.review_notes || [];
+      riskResult.contradiction_penalty = 0;  // already reflected in Documentation Quality sub-score
+      riskResult.senior_review_required = contraCount >= 3;
+      riskResult.override_action = contraCount >= 3 ? 'MANDATORY_RE_MER' : null;
+      riskResult.override_flags = contraCount >= 3
+        ? [{ type: 'MANDATORY_RE_MER', reason: `${contraCount} remark-vs-form contradictions — fresh TeleMER recommended.` }]
+        : [];
+      riskResult.mandatory_docs = [];
 
-      // Deduct contradiction penalty from normalized score
-      if (contrResult.contradiction_penalty > 0 && riskResult.risk_score) {
-        const orig = riskResult.risk_score.normalized || 0;
-        riskResult.risk_score.normalized = Math.max(0, Math.round((orig - contrResult.contradiction_penalty) * 100) / 100);
-        riskResult.risk_score.contradiction_penalty_applied = contrResult.contradiction_penalty;
-        console.log(`[TeleMER] Contradiction penalty -${contrResult.contradiction_penalty} pts: ${orig} → ${riskResult.risk_score.normalized}`);
-      }
-
-      // If a stop-override fired, override the decision
-      if (overrideResult.should_stop) {
-        const decMap = { AUTO_DEFER:'defer', AUTO_DECLINE:'decline', MANDATORY_RE_MER:'mandatory_re_mer' };
-        if (riskResult.decision) riskResult.decision.recommendation = decMap[overrideResult.override_action] || 'refer';
+      if (contraCount >= 3 && riskResult.decision) {
+        riskResult.decision.recommendation = 'mandatory_re_mer';
         riskResult.auto_decision_eligible = false;
       }
-      console.log(`[TeleMER] Score: ${riskResult.risk_score?.normalized}/100 | Contradictions: ${contrResult.contradiction_count} | Override: ${overrideResult.override_action || 'none'}`);
+      console.log(`[TeleMER] New model score: ${riskResult.risk_score.normalized}/100 (${riskResult.risk_score.grade}) | Contradictions: ${contraCount}`);
     } else {
       // ── Scoring debug log ──────────────────────────────────────────────────
       console.log('[ScoringDebug] CAT:', catForAI?.cat, '| scoring_components:', riskParams._scoring_components ? 'DB config loaded' : 'hardcoded fallback');

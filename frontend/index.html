@@ -1594,34 +1594,24 @@ function showWfTab(tab, wfId) {
         </div>
       </div>
 
-      <!-- Component 1: Medical Parameters — hidden for TeleMER (no lab tests) -->
-      ${wf.cat_level === 'tele_mer' ? `
-      <div class="card" style="margin-bottom:12px;border-left:3px solid var(--info)">
-        <div class="card-body" style="padding:12px 16px;font-size:13px;color:var(--text-muted)">
-          <i data-lucide="info"></i> <strong>TeleMER case</strong> — No lab tests required. Medical Parameters scoring does not apply.
-        </div>
-      </div>` : `
+      <!-- Component 1: Medical Parameters — always shown (remark-derived for TeleMER) -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="stethoscope"></i> Medical Parameters <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_parameters?.percentage>=80?'var(--success)':compA.medical_parameters?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_parameters?.score||0}/${compA.medical_parameters?.max||35} (${compA.medical_parameters?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="stethoscope"></i> Medical Parameters <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_parameters?.percentage>=80?'var(--success)':compA.medical_parameters?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_parameters?.score||0}/${compA.medical_parameters?.max||40} (${compA.medical_parameters?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.medical_parameters?.percentage||0}%;background:${compA.medical_parameters?.percentage>=80?'var(--success)':compA.medical_parameters?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Normal Range</th><th>Score</th><th>Rating</th><th style="text-align:right">EM</th></tr></thead><tbody>
-          ${Object.entries(compA.medical_parameters?.breakdown||{}).map(([pk,pv])=>{
-            const emParam = emS?.param_details?.find(p => p.param === pk || p.param === pk.replace(/\s/g,'_'));
-            const ranges = {bmi:'18.5-24.9',blood_pressure:'<120 mmHg',fasting_glucose:'<100 mg/dL',hba1c:'<5.7%',tc_hdl_ratio:'<3.5',sgpt:'<40 U/L',creatinine:'<1.3 mg/dL',ecg:'Normal',hemoglobin:'>13 g/dL (M), >12 (F)',urine_protein:'Nil'};
-            return `<tr>
+          ${wf.cat_level === 'tele_mer' ? `<div style="padding:8px 16px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--border-light)"><i data-lucide="info"></i> TeleMER — values derived from examiner remarks, not lab reports.</div>` : ''}
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
+          ${Object.entries(compA.medical_parameters?.breakdown||{}).map(([pk,pv])=>`<tr>
               <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
-              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${actualValues[pk] !== null && actualValues[pk] !== undefined ? actualValues[pk] + (paramUnits[pk] ? ' <span style="font-weight:400;color:var(--text-muted)">'+paramUnits[pk]+'</span>' : '') : '<span style="color:var(--text-muted)">—</span>'}</td>
-              <td style="font-size:11px;color:var(--text-muted)">${ranges[pk]||''}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
-              <td><span class="badge ${pv.status==='excellent'||pv.status==='normal'?'badge-success':pv.status==='good'?'badge-info':pv.status==='fair'||pv.status==='borderline'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
-              <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;color:${emParam?.em>0?'var(--danger)':'var(--text-muted)'}">${emParam?'+'+emParam.em:'—'}</td>
-            </tr>`}).join('')}
+              <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
+              <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+            </tr>`).join('')}
           </tbody></table>
         </div>
-      </div>`}
+      </div>
 
       <!-- EM: Additional Parameters Not in Core 10 -->
       ${emS?.param_details?.filter(p => !['bmi','systolic_bp','diastolic_bp','fasting_glucose','hba1c','tc_hdl_ratio','sgpt_alt','serum_creatinine','hemoglobin'].includes(p.param)).length ? `
@@ -1657,7 +1647,7 @@ function showWfTab(tab, wfId) {
       <!-- Component 2: Lifestyle -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="activity"></i> Lifestyle Risk <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.lifestyle_risk?.score||0}/${compA.lifestyle_risk?.max||25} (${compA.lifestyle_risk?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="activity"></i> Lifestyle Risk <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.lifestyle_risk?.score||0}/${compA.lifestyle_risk?.max||15} (${compA.lifestyle_risk?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.lifestyle_risk?.percentage||0}%;background:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
@@ -1675,7 +1665,7 @@ function showWfTab(tab, wfId) {
       <!-- Component 3: Medical History -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="clipboard-list"></i> Medical History <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_history?.percentage>=80?'var(--success)':compA.medical_history?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_history?.score||0}/${compA.medical_history?.max||15} (${compA.medical_history?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="clipboard-list"></i> Medical History <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_history?.percentage>=80?'var(--success)':compA.medical_history?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_history?.score||0}/${compA.medical_history?.max||20} (${compA.medical_history?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.medical_history?.percentage||0}%;background:${compA.medical_history?.percentage>=80?'var(--success)':compA.medical_history?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
@@ -1723,7 +1713,7 @@ function showWfTab(tab, wfId) {
       <!-- Component 5: Documentation Quality — Enhanced -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="file-text"></i> Documentation Quality <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.documentation_quality?.score||0}/${compA.documentation_quality?.max||15} (${compA.documentation_quality?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="file-text"></i> Documentation Quality <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.documentation_quality?.score||0}/${compA.documentation_quality?.max||10} (${compA.documentation_quality?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.documentation_quality?.percentage||0}%;background:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body">
@@ -1802,7 +1792,7 @@ function showWfTab(tab, wfId) {
       </div>` : ''}
 
       <!-- ── HYBRID: Phase 1 scaling note ── -->
-      ${analysis.risk_score?.phase === 1 ? `<div style="padding:8px 14px;background:var(--surface-alt);border-radius:6px;font-size:11px;color:var(--text-muted);margin-bottom:12px"><i data-lucide="info"></i> Phase 1 scoring — 6 components totalling 90 pts scaled to 100. Documentation Quality (10 pts) will be added in Phase 2.</div>` : ''}
+      ${analysis.risk_score?.phase === 1 ? `<div style="padding:8px 14px;background:var(--surface-alt);border-radius:6px;font-size:11px;color:var(--text-muted);margin-bottom:12px"><i data-lucide="info"></i> TeleMER scoring — 5 parameters (Medical Parameters, Medical History, Lifestyle Risk, Clinical Correlation, Documentation Quality) totalling 100 pts. Higher score = lower risk.</div>` : ''}
 
       <!-- Loading Factors -->
       ${analysis.loading_factors?.length?`<div class="card"><div class="card-header"><h3><i data-lucide="indian-rupee"></i> Premium Loading Factors</h3></div><div class="card-body">
@@ -1838,7 +1828,7 @@ function showWfTab(tab, wfId) {
           {id:'2.3',title:'Occupation',text:'High-risk occupations (mining, offshore, aviation, military combat) require additional loading of 25-100% or exclusion clauses.'}
         ]},
         { id:'medical', title:'Medical Parameters', clauses:[
-          {id:'3.1',title:'Scoring Components',text:'Risk assessment uses: Medical Parameters (35 pts), Lifestyle Risk (20 pts), Medical History (15 pts), Clinical Correlation (15 pts), Documentation Quality (15 pts). EM scoring covers all extracted parameters.'},
+          {id:'3.1',title:'Scoring Components',text:'Risk assessment uses 5 parameters: Medical Parameters (40 pts), Medical History (20 pts), Lifestyle Risk (15 pts), Clinical Correlation (15 pts), Documentation Quality (10 pts). Total 100; higher score = lower risk. Clinical scoring is driven by the examiner free-text remarks.'},
           {id:'3.2',title:'Critical Thresholds',text:'Auto-decline: BMI >40, Systolic BP >180, Fasting Glucose >300, HbA1c >10, Creatinine >3.0, LVEF <30%, HIV positive.'},
           {id:'3.3',title:'Decision Thresholds',text:'Product-specific. Example — Prime: Accept ≥75, Refer ≥55, Decline <40. Platinum Infinite: Accept ≥82, Refer ≥62, Decline <46.'}
         ]},
