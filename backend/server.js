@@ -3175,8 +3175,18 @@ async function runAIAnalysis(wf) {
     const _meds = extractedData.correlation_data?.medications_found || [];
     const _validMeds = _meds.filter(m => m && m.name); if (_validMeds.length) console.log('[MedExtract] Medications: ' + _validMeds.map(m => m.name + (m.disclosed ? '' : ' (UNDISCLOSED)')).join(', ')); else if (_meds.length) console.log('[MedExtract] Medications array has', _meds.length, 'entries but no valid names');
     console.log('[MedExtract] ---------- End ----------');
-    // Merge declared medical history
-    if (wf.medical_history && Object.keys(wf.medical_history).length > 0) {
+    // Merge declared medical history — but ONLY as a fallback. If
+    // assembleTeleMERDataFromPDF() already populated telemer_data.medical_history
+    // with real PEC data from the uploaded TeleMER form (Q2/Q3/Q48), that data is
+    // far richer (medication, readings, since_year, reading_verified) than the
+    // generic wf.medical_history.pre_existing_conditions from the original
+    // proposal-level intake JSON, which is frequently empty/absent because PEC
+    // details live in the TeleMER form, not the proposal itself. Without this
+    // guard, this block ran unconditionally and silently overwrote a correctly
+    // assembled 3-condition list with an empty array on every single case —
+    // confirmed live via diagnostic logging (assembly: PEC:3, scoring: PEC:[]).
+    const __alreadyHasPDFAssembledPEC = (extractedData.telemer_data?.medical_history?.pre_existing_conditions?.length || 0) > 0;
+    if (wf.medical_history && Object.keys(wf.medical_history).length > 0 && !__alreadyHasPDFAssembledPEC) {
       if (!extractedData.telemer_data) extractedData.telemer_data = {};
       extractedData.telemer_data.medical_history = {
         pre_existing_conditions: (wf.medical_history.pre_existing_conditions || []).map(c => ({
@@ -3191,6 +3201,8 @@ async function runAIAnalysis(wf) {
         surgical_history: (wf.medical_history.surgery_types || []).map(type => ({ type, year: new Date().getFullYear(), status: 'declared' }))
       };
       extractedData.medical_history = extractedData.telemer_data.medical_history;
+    } else if (__alreadyHasPDFAssembledPEC) {
+      console.log(`[MedExtract] Skipping declared medical_history fallback — telemer_data.medical_history already has ${extractedData.telemer_data.medical_history.pre_existing_conditions.length} condition(s) from PDF assembly`);
     }
   }
 
@@ -3201,16 +3213,6 @@ async function runAIAnalysis(wf) {
     // Inject proposer demographics for CV risk calculation in clinical correlation
     extractedData._proposer_age = wf.age;
     extractedData._proposer_gender = wf.gender;
-
-    // ── DIAGNOSTIC — pinpoint where PEC data is lost between assembly and scoring ──
-    // Temporary: confirms whether pre_existing_conditions is still intact on the
-    // exact object/path the FACTOR_VALUE_EXTRACTORS will read a few lines below.
-    // Remove once root cause of "PEC:3 confirmed in assembly, but scoring sees zero"
-    // is found and fixed.
-    console.log('[PEC-Diag] extractedData.telemer_data exists:', !!extractedData.telemer_data);
-    console.log('[PEC-Diag] extractedData.telemer_data.medical_history exists:', !!extractedData.telemer_data?.medical_history);
-    console.log('[PEC-Diag] pre_existing_conditions right before scoring:', JSON.stringify(extractedData.telemer_data?.medical_history?.pre_existing_conditions || 'MISSING'));
-    console.log('[PEC-Diag] extractedData object identity check — wf.extracted_data === extractedData:', wf.extracted_data === extractedData);
 
     // ── Route to correct scoring function based on CAT level ──────────────────
     // tele_mer has medical weight=0 and uses the 6-component hybrid engine.
