@@ -1462,19 +1462,46 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               if (__pdfText.trim().length > 300) {
                 console.log(`[Extraction] ${doc.name}: pdftotext extracted ${__pdfText.length} chars — attempting TEXT-based parse (skips image rasterization)`);
                 try {
+                  // NOTE: q_text_short deliberately omitted from the schema — it is
+                  // never read by assembleTeleMERDataFromPDF() downstream, and many SBI
+                  // TeleMER questions are 2-4 lines long, so repeating them per-entry
+                  // across 48 questions wastes a large share of the output budget for
+                  // zero benefit. Dropping it leaves much more room for the actual
+                  // answer + detail text, which is what matters.
                   const __textSchema = `Return ONLY valid JSON, no markdown. This is the raw extracted text of a TeleMER (telephonic medical examination) form with numbered questions, Yes/No answers, and free-text detail.
-{"page_type":"exam_form","personal_info":{"height_cm":null,"weight_kg":null,"bmi":null,"calling_date":""},"yes_no":[{"q_number":"","q_text_short":"","answer":"yes|no","handwritten_note":""}],"free_text":[]}
-Extract EVERY numbered question (1, 2, 3... up to whatever the last number is) with its Yes/No answer exactly as printed, and the FULL detail/Details text verbatim into handwritten_note (even though it's typed, not handwritten — same field name for downstream compatibility). Do not skip any question. personal_info comes from the header section (Height, Weight, BMI, Calling Date).`;
+{"page_type":"exam_form","personal_info":{"height_cm":null,"weight_kg":null,"bmi":null,"calling_date":""},"yes_no":[{"q_number":"","answer":"yes|no","handwritten_note":""}],"free_text":[]}
+Extract EVERY numbered question (1, 2, 3... up to whatever the last number is) with its Yes/No answer exactly as printed, and the FULL detail/Details text verbatim into handwritten_note (even though it's typed, not handwritten — same field name for downstream compatibility). Do NOT include the question text itself, only q_number + answer + handwritten_note. Do not skip any question — there may be 40-50+. If the identical detail text repeats for multiple questions (e.g. the same condition mentioned under several questions), write it in full every time it appears — do not abbreviate or reference earlier entries. personal_info comes from the header section (Height, Weight, BMI, Calling Date).`;
                   const __tRes = await __textParseClient.send(new ConverseCommand({
                     modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
                     system: [{ text: 'You are a precise form-data extraction AI. Parse the structured Q&A table from raw PDF text. Return ONLY valid JSON, no markdown, no prose.' }],
                     messages: [{ role: 'user', content: [{ text: __textSchema + '\n\nRAW TEXT:\n' + __pdfText.substring(0, 40000) }] }],
-                    inferenceConfig: { maxTokens: 4096, temperature: 0 }
+                    inferenceConfig: { maxTokens: 8192, temperature: 0 }
                   }));
                   const __tTxt = __tRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
-                  const __tMatch = __tTxt.match(/\{[\s\S]*\}/);
+                  console.log(`[Extraction] ${doc.name}: text-parse stop reason: ${__tRes.stopReason}, output chars: ${__tTxt.length}`);
+                  let __tMatch = __tTxt.match(/\{[\s\S]*\}/);
+                  let __tParsed = null;
                   if (__tMatch) {
-                    const __tParsed = JSON.parse(__tMatch[0]);
+                    try {
+                      __tParsed = JSON.parse(__tMatch[0]);
+                    } catch (firstParseErr) {
+                      // Likely truncated mid-array (hit token limit). Salvage whatever
+                      // complete question entries exist rather than discarding everything.
+                      console.warn(`[Extraction] ${doc.name}: direct JSON parse failed (${firstParseErr.message}) — attempting salvage of complete entries`);
+                      const __entryMatches = __tTxt.match(/\{\s*"q_number"\s*:[^{}]*?"handwritten_note"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g);
+                      if (__entryMatches && __entryMatches.length > 0) {
+                        const __salvaged = [];
+                        for (const em of __entryMatches) {
+                          try { __salvaged.push(JSON.parse(em)); } catch(_) {}
+                        }
+                        if (__salvaged.length > 0) {
+                          __tParsed = { page_type: 'exam_form', personal_info: {}, yes_no: __salvaged, free_text: [] };
+                          console.log(`[Extraction] ${doc.name}: salvaged ${__salvaged.length} complete question entries out of a truncated response`);
+                        }
+                      }
+                    }
+                  }
+                  if (__tParsed) {
                     const __qCount = Array.isArray(__tParsed.yes_no) ? __tParsed.yes_no.length : 0;
                     if (__qCount >= 5) {
                       textBasedPages.push({
