@@ -1462,63 +1462,132 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
               if (__pdfText.trim().length > 300) {
                 console.log(`[Extraction] ${doc.name}: pdftotext extracted ${__pdfText.length} chars — attempting TEXT-based parse (skips image rasterization)`);
                 try {
-                  // NOTE: q_text_short deliberately omitted from the schema — it is
-                  // never read by assembleTeleMERDataFromPDF() downstream, and many SBI
-                  // TeleMER questions are 2-4 lines long, so repeating them per-entry
-                  // across 48 questions wastes a large share of the output budget for
-                  // zero benefit. Dropping it leaves much more room for the actual
-                  // answer + detail text, which is what matters.
-                  const __textSchema = `Return ONLY valid JSON, no markdown. This is the raw extracted text of a TeleMER (telephonic medical examination) form with numbered questions, Yes/No answers, and free-text detail.
+                  // ── Helper: parse one chunk of raw TeleMER text into structured
+                  // Yes/No entries via a single Bedrock call. Returns null on total
+                  // failure; salvages partial results if the JSON is truncated.
+                  const __parseTeleMERChunk = async (chunkText, chunkLabel) => {
+                    const __textSchema = `Return ONLY valid JSON, no markdown. This is a PORTION of the raw extracted text of a TeleMER (telephonic medical examination) form with numbered questions, Yes/No answers, and free-text detail. It may start or end mid-question if it was split from a longer document — only extract questions that are fully present in this portion.
 {"page_type":"exam_form","personal_info":{"height_cm":null,"weight_kg":null,"bmi":null,"calling_date":""},"yes_no":[{"q_number":"","answer":"yes|no","handwritten_note":""}],"free_text":[]}
-Extract EVERY numbered question (1, 2, 3... up to whatever the last number is) with its Yes/No answer exactly as printed, and the FULL detail/Details text verbatim into handwritten_note (even though it's typed, not handwritten — same field name for downstream compatibility). Do NOT include the question text itself, only q_number + answer + handwritten_note. Do not skip any question — there may be 40-50+. If the identical detail text repeats for multiple questions (e.g. the same condition mentioned under several questions), write it in full every time it appears — do not abbreviate or reference earlier entries. personal_info comes from the header section (Height, Weight, BMI, Calling Date).`;
-                  const __tRes = await __textParseClient.send(new ConverseCommand({
-                    modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
-                    system: [{ text: 'You are a precise form-data extraction AI. Parse the structured Q&A table from raw PDF text. Return ONLY valid JSON, no markdown, no prose.' }],
-                    messages: [{ role: 'user', content: [{ text: __textSchema + '\n\nRAW TEXT:\n' + __pdfText.substring(0, 40000) }] }],
-                    inferenceConfig: { maxTokens: 8192, temperature: 0 }
-                  }));
-                  const __tTxt = __tRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
-                  console.log(`[Extraction] ${doc.name}: text-parse stop reason: ${__tRes.stopReason}, output chars: ${__tTxt.length}`);
-                  let __tMatch = __tTxt.match(/\{[\s\S]*\}/);
-                  let __tParsed = null;
-                  if (__tMatch) {
-                    try {
-                      __tParsed = JSON.parse(__tMatch[0]);
-                    } catch (firstParseErr) {
-                      // Likely truncated mid-array (hit token limit). Salvage whatever
-                      // complete question entries exist rather than discarding everything.
-                      console.warn(`[Extraction] ${doc.name}: direct JSON parse failed (${firstParseErr.message}) — attempting salvage of complete entries`);
-                      const __entryMatches = __tTxt.match(/\{\s*"q_number"\s*:[^{}]*?"handwritten_note"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g);
-                      if (__entryMatches && __entryMatches.length > 0) {
-                        const __salvaged = [];
-                        for (const em of __entryMatches) {
-                          try { __salvaged.push(JSON.parse(em)); } catch(_) {}
-                        }
-                        if (__salvaged.length > 0) {
-                          __tParsed = { page_type: 'exam_form', personal_info: {}, yes_no: __salvaged, free_text: [] };
-                          console.log(`[Extraction] ${doc.name}: salvaged ${__salvaged.length} complete question entries out of a truncated response`);
+Extract EVERY numbered question fully present here with its Yes/No answer exactly as printed, and the FULL detail/Details text verbatim into handwritten_note (even though it's typed, not handwritten — same field name for downstream compatibility). Do NOT include the question text itself, only q_number + answer + handwritten_note. If the identical detail text repeats for multiple questions, write it in full every time — do not abbreviate or reference earlier entries. personal_info comes from the header section if present in this portion (Height, Weight, BMI, Calling Date) — otherwise leave fields null/empty.`;
+                    const __tRes = await __textParseClient.send(new ConverseCommand({
+                      modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                      system: [{ text: 'You are a precise form-data extraction AI. Parse the structured Q&A table from raw PDF text. Return ONLY valid JSON, no markdown, no prose.' }],
+                      messages: [{ role: 'user', content: [{ text: __textSchema + '\n\nRAW TEXT (' + chunkLabel + '):\n' + chunkText }] }],
+                      inferenceConfig: { maxTokens: 4096, temperature: 0 }
+                    }));
+                    const __tTxt = __tRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+                    console.log(`[Extraction] ${doc.name} [${chunkLabel}]: stop reason: ${__tRes.stopReason}, output chars: ${__tTxt.length}, tokens in/out: ${__tRes.usage?.inputTokens}/${__tRes.usage?.outputTokens}`);
+                    const __tMatch = __tTxt.match(/\{[\s\S]*\}/);
+                    let __parsed = null;
+                    if (__tMatch) {
+                      try {
+                        __parsed = JSON.parse(__tMatch[0]);
+                      } catch (firstParseErr) {
+                        console.warn(`[Extraction] ${doc.name} [${chunkLabel}]: direct JSON parse failed (${firstParseErr.message}) — attempting salvage`);
+                        const __entryMatches = __tTxt.match(/\{\s*"q_number"\s*:[^{}]*?"handwritten_note"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g);
+                        if (__entryMatches && __entryMatches.length > 0) {
+                          const __salvaged = [];
+                          for (const em of __entryMatches) { try { __salvaged.push(JSON.parse(em)); } catch(_) {} }
+                          if (__salvaged.length > 0) {
+                            __parsed = { page_type: 'exam_form', personal_info: {}, yes_no: __salvaged, free_text: [] };
+                            console.log(`[Extraction] ${doc.name} [${chunkLabel}]: salvaged ${__salvaged.length} complete entries out of a truncated response`);
+                          }
                         }
                       }
                     }
+                    return {
+                      parsed: __parsed,
+                      tokensIn: __tRes.usage?.inputTokens || 0,
+                      tokensOut: __tRes.usage?.outputTokens || 0
+                    };
+                  };
+
+                  // ── Split the raw text into N small chunks at clean question
+                  // boundaries, instead of one call for the whole form. A single call
+                  // on the full 48-question text exceeded the model's hard 4096-output-
+                  // token ceiling (confirmed live). Target ~6 questions per chunk —
+                  // small enough that even a form with much longer repeated detail
+                  // blocks stays comfortably under that ceiling on every chunk, and
+                  // adapts automatically to shorter or longer forms by chunk count
+                  // rather than a fixed split.
+                  const __QUESTIONS_PER_CHUNK_TARGET = 6;
+                  // Question numbers in pdftotext -layout output sit at the START of a
+                  // column-wrapped line followed by a wide whitespace gap before the next
+                  // column's content (e.g. "        2          complaints, ... Yes ...") —
+                  // they are NOT alone on their own line. Verified against a real extracted
+                  // 48-question form: this pattern matches all 48 boundaries in sequence;
+                  // the earlier \n\s*\d{1,2}\s*\n attempt matched only 2 (start/end), which
+                  // would have silently collapsed back to a single oversized chunk.
+                  const __boundaryRegex = /\n[ \t]*(\d{1,2})[ \t]{2,}/g;
+                  const __boundaries = [0];
+                  let __bm;
+                  while ((__bm = __boundaryRegex.exec(__pdfText)) !== null) __boundaries.push(__bm.index);
+                  __boundaries.push(__pdfText.length);
+                  const __uniqueBoundaries = [...new Set(__boundaries)].sort((a,b) => a-b);
+
+                  // Estimate roughly how many question-boundary markers exist, then
+                  // group consecutive boundaries into chunks of ~__QUESTIONS_PER_CHUNK_TARGET
+                  // questions each.
+                  const __estimatedQuestions = Math.max(1, __uniqueBoundaries.length - 2);
+                  const __numChunks = Math.max(1, Math.ceil(__estimatedQuestions / __QUESTIONS_PER_CHUNK_TARGET));
+                  const __boundariesPerChunk = Math.max(1, Math.ceil((__uniqueBoundaries.length - 1) / __numChunks));
+
+                  const __chunks = [];
+                  for (let bi = 0; bi < __uniqueBoundaries.length - 1; bi += __boundariesPerChunk) {
+                    const startIdx = __uniqueBoundaries[bi];
+                    const endBi = Math.min(bi + __boundariesPerChunk, __uniqueBoundaries.length - 1);
+                    const endIdx = __uniqueBoundaries[endBi];
+                    if (endIdx > startIdx) __chunks.push(__pdfText.substring(startIdx, endIdx));
                   }
-                  if (__tParsed) {
-                    const __qCount = Array.isArray(__tParsed.yes_no) ? __tParsed.yes_no.length : 0;
-                    if (__qCount >= 5) {
-                      textBasedPages.push({
-                        page: 1, page_type: 'exam_form', values: [],
-                        yes_no: __tParsed.yes_no, free_text: Array.isArray(__tParsed.free_text) ? __tParsed.free_text : [],
-                        medications: [], was_split: false,
-                        tokens: { input: __tRes.usage?.inputTokens || 0, output: __tRes.usage?.outputTokens || 0 },
-                        note: 'Extracted via pdftotext + text parse (image rasterization skipped — see extraction logs)'
-                      });
-                      converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — extracted via text layer, ${__qCount} questions parsed]` });
-                      console.log(`[Extraction] ${doc.name}: text-based parse succeeded — ${__qCount} questions, skipping image rasterization`);
-                      __handledViaText = true;
-                    } else {
-                      console.warn(`[Extraction] ${doc.name}: text-based parse returned only ${__qCount} questions — falling back to image rasterization`);
+                  if (__chunks.length === 0) __chunks.push(__pdfText); // safety net — never send zero chunks
+
+                  console.log(`[Extraction] ${doc.name}: split text into ${__chunks.length} chunk(s) (~${__QUESTIONS_PER_CHUNK_TARGET} questions each, estimated ${__estimatedQuestions} questions total)`);
+
+                  const __chunkResults = [];
+                  for (let ci = 0; ci < __chunks.length; ci++) {
+                    __chunkResults.push(await __parseTeleMERChunk(__chunks[ci], `part ${ci+1} of ${__chunks.length}`));
+                  }
+
+                  const __mergedYesNo = [];
+                  const __mergedFreeText = [];
+                  let __totalTokensIn = 0, __totalTokensOut = 0;
+                  const __perChunkCounts = [];
+                  for (const r of __chunkResults) {
+                    const yn = Array.isArray(r.parsed?.yes_no) ? r.parsed.yes_no : [];
+                    __mergedYesNo.push(...yn);
+                    __perChunkCounts.push(yn.length);
+                    if (Array.isArray(r.parsed?.free_text)) __mergedFreeText.push(...r.parsed.free_text);
+                    __totalTokensIn  += r.tokensIn;
+                    __totalTokensOut += r.tokensOut;
+                  }
+                  // De-duplicate by q_number in case overlapping boundary text caused
+                  // the same question to appear in two adjacent chunks — keep whichever
+                  // occurrence has the longer (more complete) handwritten_note.
+                  const __byQNumber = new Map();
+                  for (const row of __mergedYesNo) {
+                    const key = String(row.q_number || '').trim();
+                    if (!key) continue;
+                    const existing = __byQNumber.get(key);
+                    if (!existing || (row.handwritten_note || '').length > (existing.handwritten_note || '').length) {
+                      __byQNumber.set(key, row);
                     }
+                  }
+                  const __dedupedYesNo = Array.from(__byQNumber.values());
+                  const __qCount = __dedupedYesNo.length;
+
+                  if (__qCount >= 5) {
+                    textBasedPages.push({
+                      page: 1, page_type: 'exam_form', values: [],
+                      yes_no: __dedupedYesNo, free_text: __mergedFreeText,
+                      medications: [], was_split: true,
+                      tokens: { input: __totalTokensIn, output: __totalTokensOut },
+                      note: `Extracted via pdftotext + ${__chunks.length}-chunk text parse (image rasterization skipped — see extraction logs)`
+                    });
+                    converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — extracted via text layer (${__chunks.length} chunks), ${__qCount} questions parsed]` });
+                    console.log(`[Extraction] ${doc.name}: text-based parse succeeded — ${__qCount} unique questions (raw per-chunk: ${__perChunkCounts.join(', ')}), skipping image rasterization`);
+                    __handledViaText = true;
                   } else {
-                    console.warn(`[Extraction] ${doc.name}: text-based parse returned no JSON — falling back to image rasterization`);
+                    console.warn(`[Extraction] ${doc.name}: text-based parse returned only ${__qCount} unique questions total — falling back to image rasterization`);
                   }
                 } catch (parseErr) {
                   console.error(`[Extraction] ${doc.name}: text-based parse call failed (${parseErr.message}) — falling back to image rasterization`);
