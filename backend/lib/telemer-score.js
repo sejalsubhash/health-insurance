@@ -37,55 +37,55 @@ const DEFAULTS = {
     bmi: {
       max: 8,
       bands: [
-        { max_val: 0,    pts: 4,  label: 'BMI unknown'         },
-        { max_val: 18.4, pts: 5,  label: 'Underweight'         },
-        { max_val: 24.9, pts: 8,  label: 'Normal'              },
-        { max_val: 29.9, pts: 5,  label: 'Overweight'          },
-        { max_val: 34.9, pts: 3,  label: 'Obese I'             },
-        { max_val: 999,  pts: 1,  label: 'Obese II+'           }
+        { max_val: 0,    pts: 4,  label: 'BMI unknown',          dbValue: 'unknown'     },
+        { max_val: 18.4, pts: 5,  label: 'Underweight',          dbValue: 'underweight' },
+        { max_val: 24.9, pts: 8,  label: 'Normal',               dbValue: 'normal'      },
+        { max_val: 29.9, pts: 5,  label: 'Overweight',           dbValue: 'overweight'  },
+        { max_val: 34.9, pts: 3,  label: 'Obese I',              dbValue: 'obese_1'     },
+        { max_val: 999,  pts: 1,  label: 'Obese II+',            dbValue: 'obese_2'     }
       ]
     },
     blood_pressure: {
       max: 10,
       bands: [
-        { max_val: 0,   pts: 5,  label: 'No reading'                    },
-        { max_val: 119, pts: 10, label: 'Optimal (<120)'                },
-        { max_val: 129, pts: 9,  label: 'Normal (120-129)'              },
-        { max_val: 139, pts: 7,  label: 'High-normal / controlled'      },
-        { max_val: 159, pts: 4,  label: 'Stage 1 (140-159)'             },
-        { max_val: 999, pts: 1,  label: 'Stage 2 (≥160)'                }
+        { max_val: 0,   pts: 5,  label: 'No reading',            dbValue: 'no_reading'  },
+        { max_val: 119, pts: 10, label: 'Optimal (<120)',         dbValue: 'optimal'     },
+        { max_val: 129, pts: 9,  label: 'Normal (120-129)',       dbValue: 'normal'      },
+        { max_val: 139, pts: 7,  label: 'High-normal 130-139',   dbValue: 'high_normal' },
+        { max_val: 159, pts: 4,  label: 'Stage 1 HTN 140-159',   dbValue: 'stage_1'     },
+        { max_val: 999, pts: 1,  label: 'Stage 2 HTN ≥160',      dbValue: 'stage_2'     }
       ]
     },
     fasting_glucose: {
       max: 10,
       bands: [
-        { max_val: 0,   pts: 5,  label: 'No reading'                    },
-        { max_val: 99,  pts: 10, label: 'Normal (<100)'                 },
-        { max_val: 110, pts: 8,  label: 'Well-controlled (100-110)'     },
-        { max_val: 125, pts: 6,  label: 'Impaired / controlled (111-125)'},
-        { max_val: 180, pts: 3,  label: 'Elevated (126-180)'            },
-        { max_val: 999, pts: 1,  label: 'Poor (>180)'                   }
+        { max_val: 0,   pts: 5,  label: 'No reading',            dbValue: 'no_reading'  },
+        { max_val: 99,  pts: 10, label: 'Normal (<100)',          dbValue: 'normal'      },
+        { max_val: 110, pts: 8,  label: 'Well-controlled 100-110',dbValue: 'controlled'  },
+        { max_val: 125, pts: 6,  label: 'Impaired 111-125',       dbValue: 'impaired'    },
+        { max_val: 180, pts: 3,  label: 'Elevated 126-180',       dbValue: 'elevated'    },
+        { max_val: 999, pts: 1,  label: 'Poor >180',              dbValue: 'poor'        }
       ]
     },
     hba1c: {
       max: 6,
       bands: [
-        { max_val: 0,   pts: 4,  label: 'Not available (neutral)'       },
-        { max_val: 5.6, pts: 6,  label: 'Normal (<5.7%)'                },
-        { max_val: 6.4, pts: 4,  label: 'Pre-diabetic (5.7-6.4%)'       },
-        { max_val: 7.4, pts: 3,  label: 'Controlled DM (6.5-7.4%)'      },
-        { max_val: 999, pts: 1,  label: 'Uncontrolled (≥7.5%)'          }
+        { max_val: 0,   pts: 4,  label: 'Not available',         dbValue: 'na'          },
+        { max_val: 5.6, pts: 6,  label: 'Normal (<5.7%)',         dbValue: 'normal'      },
+        { max_val: 6.4, pts: 4,  label: 'Pre-diabetic 5.7-6.4%', dbValue: 'pre_dm'      },
+        { max_val: 7.4, pts: 3,  label: 'Controlled DM 6.5-7.4%',dbValue: 'ctrl_dm'     },
+        { max_val: 999, pts: 1,  label: 'Uncontrolled ≥7.5%',    dbValue: 'unctrl_dm'   }
       ]
     },
     age_band: {
       max: 6,
       bands: [
-        { max_val: 0,  pts: 3,  label: 'Age unknown'                    },
-        { max_val: 34, pts: 6,  label: 'Under 35'                       },
-        { max_val: 44, pts: 5,  label: '35-44'                          },
-        { max_val: 54, pts: 4,  label: '45-54'                          },
-        { max_val: 64, pts: 3,  label: '55-64'                          },
-        { max_val: 999,pts: 2,  label: '65+'                            }
+        { max_val: 0,  pts: 3,  label: 'Age unknown',            dbValue: 'unknown'     },
+        { max_val: 34, pts: 6,  label: 'Under 35',               dbValue: 'lt_35'       },
+        { max_val: 44, pts: 5,  label: '35-44',                  dbValue: '35_44'       },
+        { max_val: 54, pts: 4,  label: '45-54',                  dbValue: '45_54'       },
+        { max_val: 64, pts: 3,  label: '55-64',                  dbValue: '55_64'       },
+        { max_val: 999,pts: 2,  label: '65+',                    dbValue: 'gte_65'      }
       ]
     }
   },
@@ -218,28 +218,54 @@ function ageFromDOB(dob) {
 }
 
 // ─── BAND LOOKUP ─────────────────────────────────────────────────────────────
-// Handles TWO band shapes:
-//   DEFAULTS shape: { max_val: Number, pts: Number, label: String }  — numeric range lookup
-//   DB/mkFactor shape: { value: String, points: Number, label: String } — categorical, no numeric range
-// When DB bands are detected, scoring falls back to DEFAULTS for numeric lookup.
-// sentinel: max_val===0 → "unknown/no reading", only matched when value is 0/null.
+// Two-layer scoring:
+//   Layer 1 — NUMERIC RANGE LOOKUP on DEFAULTS bands → resolves a band value string
+//              e.g. BMI 22 → 'normal', systolic 130 → 'high_normal', fbs 0 → 'no_reading'
+//   Layer 2 — POINTS LOOKUP: if DB bands exist (from Masters Config), read points from
+//              the DB band whose `value` matches. If no DB band matches, use DEFAULTS pts.
+//
+// This means Masters Config edits are always honoured, including "no reading" = 0.
+//
+// DEFAULTS band shape:  { max_val: Number, pts: Number, label: String, dbValue: String }
+// DB/mkFactor band shape: { value: String, points: Number, label: String }
+
+function resolveNumericBandValue(numericVal, defaultsBands) {
+  // Returns the dbValue string for the matching DEFAULTS band.
+  if (!numericVal || numericVal === 0) {
+    const sentinel = defaultsBands.find(b => b.max_val === 0);
+    return sentinel ? sentinel.dbValue : 'no_reading';
+  }
+  const realBands = defaultsBands.filter(b => b.max_val > 0);
+  for (const b of realBands) { if (numericVal <= b.max_val) return b.dbValue || b.label; }
+  const last = realBands[realBands.length - 1];
+  return last ? last.dbValue || last.label : 'unknown';
+}
+
+function lookupPoints(numericVal, defaultsBands, dbBands) {
+  // Step 1: resolve which band this numeric value falls into (using DEFAULTS ranges)
+  const bandValue = resolveNumericBandValue(numericVal, defaultsBands);
+  // Step 2: find matching band label/points — DB first, then DEFAULTS
+  if (dbBands && dbBands.length > 0) {
+    const dbMatch = dbBands.find(b => b.value === bandValue);
+    if (dbMatch) return { pts: dbMatch.points, label: dbMatch.label };
+  }
+  // Fall back to DEFAULTS
+  if (!numericVal || numericVal === 0) {
+    const sentinel = defaultsBands.find(b => b.max_val === 0);
+    return sentinel ? { pts: sentinel.pts, label: sentinel.label } : { pts: 0, label: 'unknown' };
+  }
+  const realBands = defaultsBands.filter(b => b.max_val > 0);
+  for (const b of realBands) { if (numericVal <= b.max_val) return { pts: b.pts, label: b.label }; }
+  const last = realBands[realBands.length - 1];
+  return last ? { pts: last.pts, label: last.label } : { pts: 0, label: 'unknown' };
+}
+
+// Legacy wrapper — only used by non-Medical-Parameters scorers that use DEFAULTS bands only
 function lookupBand(value, bands) {
-  if (!bands || bands.length === 0) return { pts: 0, points: 0, label: 'no bands' };
-
-  // DB/mkFactor bands have string `value` field and no `max_val`
-  const isDbShape = bands[0].max_val === undefined && bands[0].value !== undefined;
-  if (isDbShape) {
-    // Cannot do numeric range lookup on categorical DB bands.
-    // Return first band as safe default — caller should use DEFAULTS for scoring.
-    return { points: bands[0].points ?? 0, pts: bands[0].points ?? 0, label: bands[0].label ?? '' };
-  }
-
-  // DEFAULTS shape: numeric range lookup
-  if (!value || value === 0) {
-    return bands.find(b => b.max_val === 0) || bands[0];
-  }
+  if (!bands || bands.length === 0) return { pts: 0, label: 'no bands' };
+  if (!value || value === 0) return bands.find(b => b.max_val === 0) || bands[0];
   const realBands = bands.filter(b => b.max_val > 0);
-  if (realBands.length === 0) return bands[bands.length - 1] || { pts: 0, points: 0 };
+  if (realBands.length === 0) return bands[bands.length - 1] || { pts: 0 };
   for (const b of realBands) { if (value <= b.max_val) return b; }
   return realBands[realBands.length - 1];
 }
@@ -253,50 +279,44 @@ function scoreMedicalParameters(d, resolver) {
   const D  = DEFAULTS.medical_parameters;
   const gb = (id) => resolver.getBands('medical', id);
 
-  // BMI
+  // BMI — two-layer: DEFAULTS ranges → DB points override if available
   const bmi = num(d.bmi) || 0;
   const bmiCfg = gb('bmi');
-  // Always use DEFAULTS for numeric band lookup (DB bands are categorical labels, not numeric ranges)
-  const bmiB = lookupBand(bmi, D.bmi.bands);
-  const bmiPts = bmiB.pts; const bmiLabel = bmiB.label;
-  add('BMI', bmiPts, bmiCfg?.max || D.bmi.max,
-    `BMI ${bmi || 'unknown'} — ${bmiLabel} → ${bmiPts}`, bmi || null);
+  const bmiR = lookupPoints(bmi, D.bmi.bands, bmiCfg?.bands);
+  add('BMI', bmiR.pts, bmiCfg?.max || D.bmi.max,
+    `BMI ${bmi || 'unknown'} — ${bmiR.label} → ${bmiR.pts}`, bmi || null);
 
-  // Blood Pressure (systolic from conditions, fallback to remarks parse)
+  // Blood Pressure — two-layer: DEFAULTS ranges → DB points override
   const remarkReadings = parseReadingsFromRemarks(d.remarks);
   const sys = maxReading(d.conditions, 'systolic') || remarkReadings.systolic || 0;
   const bpCfg = gb('blood_pressure');
-  const bpBand = lookupBand(sys, D.blood_pressure.bands);
-  const bpPts = bpBand.pts; const bpLabel = bpBand.label;
-  add('Blood Pressure', bpPts, bpCfg?.max || D.blood_pressure.max,
-    `${sys ? sys + ' mmHg systolic' : 'No BP reading'} — ${bpLabel} → ${bpPts}`,
+  const bpR = lookupPoints(sys, D.blood_pressure.bands, bpCfg?.bands);
+  add('Blood Pressure', bpR.pts, bpCfg?.max || D.blood_pressure.max,
+    `${sys ? sys + ' mmHg systolic' : 'No BP reading'} — ${bpR.label} → ${bpR.pts}`,
     sys ? `${sys}/${maxReading(d.conditions,'diastolic')||remarkReadings.diastolic||'?'} mmHg` : null);
 
-  // Fasting Glucose
+  // Fasting Glucose — two-layer
   const fbs = maxReading(d.conditions, 'fbs') || remarkReadings.fbs || 0;
   const fbsCfg = gb('fasting_glucose');
-  const fbsB = lookupBand(fbs, D.fasting_glucose.bands);
-  const fbsPts = fbsB.pts; const fbsLabel = fbsB.label;
-  add('Fasting Glucose', fbsPts, fbsCfg?.max || D.fasting_glucose.max,
-    `${fbs ? fbs + ' mg/dl' : 'No reading'} — ${fbsLabel} → ${fbsPts}`,
+  const fbsR = lookupPoints(fbs, D.fasting_glucose.bands, fbsCfg?.bands);
+  add('Fasting Glucose', fbsR.pts, fbsCfg?.max || D.fasting_glucose.max,
+    `${fbs ? fbs + ' mg/dl' : 'No reading'} — ${fbsR.label} → ${fbsR.pts}`,
     fbs ? `${fbs} mg/dl` : null);
 
-  // HbA1c
+  // HbA1c — two-layer
   const hba1c = maxReading(d.conditions, 'hba1c') || remarkReadings.hba1c || 0;
   const a1cCfg = gb('hba1c');
-  const a1cB = lookupBand(hba1c, D.hba1c.bands);
-  const a1cPts = a1cB.pts; const a1cLabel = a1cB.label;
-  add('HbA1c', a1cPts, a1cCfg?.max || D.hba1c.max,
-    `${hba1c ? hba1c + '%' : 'Not available'} — ${a1cLabel} → ${a1cPts}`,
+  const a1cR = lookupPoints(hba1c, D.hba1c.bands, a1cCfg?.bands);
+  add('HbA1c', a1cR.pts, a1cCfg?.max || D.hba1c.max,
+    `${hba1c ? hba1c + '%' : 'Not available'} — ${a1cR.label} → ${a1cR.pts}`,
     hba1c ? `${hba1c}%` : null);
 
-  // Age Band (prefer DOB-derived age)
+  // Age Band — two-layer
   const age = d.age || 0;
   const ageCfg = gb('age_band');
-  const ageB = lookupBand(age, D.age_band.bands);
-  const agePts = ageB.pts; const ageLabel = ageB.label;
-  add('Age Band', agePts, ageCfg?.max || D.age_band.max,
-    `Age ${age || 'unknown'} — ${ageLabel} → ${agePts}`,
+  const ageR = lookupPoints(age, D.age_band.bands, ageCfg?.bands);
+  add('Age Band', ageR.pts, ageCfg?.max || D.age_band.max,
+    `Age ${age || 'unknown'} — ${ageR.label} → ${ageR.pts}`,
     age ? `${age} yrs` : null);
 
   const maxPts = (ageCfg?.max||D.age_band.max) + (bmiCfg?.max||D.bmi.max) +
