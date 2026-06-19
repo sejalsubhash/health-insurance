@@ -4213,7 +4213,7 @@ const CAT_VENDOR_MAP = {
 // Each CAT has: thresholds + 5 components. Each component has a weight + factors[].
 // Each factor: { id, label, max, bands:[{label,value,points}] }
 // The engine scores every factor, sums per component, scales to weight, sums to 100.
-const SCORING_VERSION = 'dynamic-v6-telemer';
+const SCORING_VERSION = 'dynamic-v7-telemer5param';
 
 function mkFactor(id, label, max, bands) { return { id, label, max, bands }; }
 
@@ -4756,11 +4756,16 @@ async function loadProductPolicyConfig() {
       const telemerStored = catScoringConfig['tele_mer'];
       const telemerNeedsUpgrade = !telemerStored || telemerStored._version !== SCORING_VERSION;
       if (telemerNeedsUpgrade) {
-        const savedTelemerThresholds = telemerStored?.thresholds; // preserve UW-edited thresholds
+        // Check if old thresholds are compatible with the new 5-parameter model.
+        // The new model uses decision_bands[], deductions{}, consistency_bands[] etc.
+        // Old C1-C7 model thresholds are incompatible — don't preserve them.
+        const isNewModel = telemerStored?.thresholds?.decision_bands != null;
+        const savedTelemerThresholds = isNewModel ? telemerStored.thresholds : null;
         catScoringConfig['tele_mer'] = defaults['tele_mer'];
         if (savedTelemerThresholds) catScoringConfig['tele_mer'].thresholds = savedTelemerThresholds;
         merged = true;
-        console.log('[Startup] ✅ TeleMER Per-CAT factors upgraded to', SCORING_VERSION, '(thresholds preserved)');
+        console.log('[Startup] ✅ TeleMER Per-CAT upgraded to', SCORING_VERSION,
+          isNewModel ? '(compatible thresholds preserved)' : '(full re-seed — old C1-C7 thresholds discarded)');
       }
       if (merged) await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(()=>{});
       console.log('[Startup] ✅ CAT scoring loaded from database (' + Object.keys(catScoringConfig).length + ' CATs, user edits preserved)');

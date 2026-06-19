@@ -218,12 +218,20 @@ function ageFromDOB(dob) {
 }
 
 // ─── BAND LOOKUP ─────────────────────────────────────────────────────────────
-// Given a numeric value and a bands array [{max_val, pts, label}], returns
-// the matching band (first where value <= max_val, or last).
+// Bands are sorted ascending by max_val.
+// Bands with max_val === 0 are "unknown/no reading" sentinels — only match when value is 0/null.
+// For real values (>0), skip the sentinel and find the first band where value <= max_val.
 function lookupBand(value, bands) {
-  if (!value || value === 0) return bands[0]; // zero/null → first band (typically "unknown/no reading")
-  for (const b of bands) { if (value <= b.max_val) return b; }
-  return bands[bands.length - 1];
+  if (!value || value === 0) {
+    // Return sentinel band (max_val=0) if it exists, else first band
+    return bands.find(b => b.max_val === 0) || bands[0];
+  }
+  // Skip sentinel bands (max_val=0) for real values
+  const realBands = bands.filter(b => b.max_val > 0);
+  for (const b of realBands) {
+    if (value <= b.max_val) return b;
+  }
+  return realBands[realBands.length - 1]; // fallback to last real band
 }
 
 // ─── 1) MEDICAL PARAMETERS ───────────────────────────────────────────────────
