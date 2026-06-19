@@ -349,8 +349,7 @@ const DEMO_USERS = {
   'junioruw@sbigic.com':  { password: 'JuniorUW@123',  name: 'Neha Gupta',     role: 'Junior UW',      authority_tier: 'junior',          authority_limit_sa: 5000000,   authority_limit_loading_pct: 50,   specialties: ['general','metabolic'], max_concurrent_cases: 10 },
   'cmo@sbigic.com':       { password: 'CMO@123',       name: 'Dr. Suresh Iyer',role: 'Medical Officer', authority_tier: 'medical_officer', authority_limit_sa: null,      authority_limit_loading_pct: null,  specialties: ['general','cardiac','metabolic','renal','hepatic','oncology','neurological'], max_concurrent_cases: 20 },
   'vendor@medcheck.com':  { password: 'Vendor@123',    name: 'MedCheck Ops',   role: 'Vendor User',    authority_tier: null,              vendor_id: 'VEND-001' },
-
-  // Testing access — SBI General team (added for UAT)
+ // Testing access — SBI General team (added for UAT)
   'vishal.patil2@sbigeneral.in':      { password: 'Admin@123', name: 'Vishal Patil',          role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
   'abhijit.mithare@sbigeneral.in':    { password: 'Admin@123', name: 'Abhijit Mithare',       role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
   'sunayana.sali@sbigeneral.in':      { password: 'Admin@123', name: 'Sunayana Sali',         role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
@@ -363,6 +362,7 @@ const DEMO_USERS = {
   'harshad.kandalkar@sbigeneral.in':  { password: 'Admin@123', name: 'Harshad Kandalkar',     role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
   'nilaya.kadu@sbigeneral.in':        { password: 'Admin@123', name: 'Nilaya Kadu',           role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null }
 };
+ 
 
 // Helper: get users from S3 with fallback to DEMO_USERS
 async function getActiveUsers() {
@@ -3082,11 +3082,178 @@ async function runAIAnalysis(wf) {
       }
     }
 
-    // Merge lifestyle data — prefer Claude-extracted from document, fall back to declared occupation_hazard only
+    // ── MER Form Parser — reads page_extractions for CAT 1-4 PPHC forms ────────
+    // The page extractor captures tick marks and handwritten notes from the MER
+    // questionnaire but doesn't translate them into lifestyle/surgical fields.
+    // This block does that translation before the lifestyle merge below.
+    //
+    // MER Part 2 question mapping (SBI General Health MER form):
+    //   Q2 — Habits/Addictions: Cigarettes/Bidis/Paan/Gutkha
+    //         No tick = no_col → smoking.status='never' AND tobacco_chewing.status='never'
+    //         Yes tick with note → parse note for smoking vs tobacco keywords
+    //   Q3 — Alcohol consumption
+    //         No tick = no_col → alcohol.status='never'
+    //         Yes tick with note → parse quantity/duration for occasional/regular/heavy
+    //   Q5 — Hospitalisation (Accident / Medical Treatment / Surgery)
+    //         Yes tick with handwritten note → populate surgical_history / hospitalizations
+    //   Q12 — Hypertension treatment (Yes + note → PEC)
+    //   Q13 — Diabetes treatment (Yes + note → PEC)
+    //   Q27 — Currently on medication (Yes → flag)
+
+    const _merFromPages = (() => {
+      const result = {
+        smoking:           null,  // { status, note }
+        alcohol:           null,  // { status, note }
+        tobacco_chewing:   null,  // { status, note }
+        surgical_history:  [],
+        hospitalizations:  [],
+        on_medication:     false,
+        htn_declared:      false,
+        dm_declared:       false,
+        htn_note:          '',
+        dm_note:           '',
+        source:            'mer_page_extraction'
+      };
+
+      const pages = wf.page_extractions || [];
+      if (!pages.length) return result;
+
+      // Flatten all yes_no rows across all pages into one map: q_number → {tick, note}
+      const qMap = {};
+      for (const pg of pages) {
+        const rows = pg.yes_no || [];
+        for (const row of rows) {
+          const qn = String(row.q_number || '').trim().toLowerCase();
+          if (!qn) continue;
+          // Normalise q_number: "2", "2.", "q2", "q.2" → "2"
+          const norm = qn.replace(/^q\.?/, '').replace(/\.$/, '').trim();
+          if (!qMap[norm]) {
+            qMap[norm] = { tick: row.tick_column, note: (row.handwritten_note || '').trim() };
+          }
+        }
+      }
+
+      // ── Q2: Habits/Addictions (Cigarettes, Bidis, Paan, Gutkha) ─────────────
+      const q2 = qMap['2'];
+      if (q2) {
+        if (q2.tick === 'no_col') {
+          // No tick → clean for both smoking AND tobacco
+          result.smoking         = { status: 'never', note: '' };
+          result.tobacco_chewing = { status: 'never', note: '' };
+        } else if (q2.tick === 'yes_col' || q2.tick === 'unclear') {
+          const note = q2.note.toLowerCase();
+          // Your clarification: cigarettes/bidis = smoking, paan/gutkha = tobacco_chewing
+          const hasSmoking  = /cigarette|bidi|beedi|smoke|smok/i.test(q2.note);
+          const hasTobacco  = /paan|pan\b|gutkha|khaini|tobacco|chew/i.test(q2.note);
+          // Duration/quantity hints for former vs current
+          const isStopped   = /stop|quit|cessation|ex.smok|former|gave up|years ago/i.test(q2.note);
+          const status      = isStopped ? 'former' : 'current';
+          if (hasSmoking)  result.smoking         = { status, note: q2.note };
+          else             result.smoking         = { status: 'never', note: '' };
+          if (hasTobacco)  result.tobacco_chewing = { status, note: q2.note };
+          else             result.tobacco_chewing = { status: 'never', note: '' };
+          // If Yes tick but empty note — mark current conservatively
+          if (!hasSmoking && !hasTobacco && q2.tick === 'yes_col') {
+            result.smoking         = { status: 'current', note: q2.note };
+            result.tobacco_chewing = { status: 'current', note: q2.note };
+          }
+        }
+      }
+
+      // ── Q3: Alcohol consumption ───────────────────────────────────────────────
+      const q3 = qMap['3'];
+      if (q3) {
+        if (q3.tick === 'no_col') {
+          result.alcohol = { status: 'never', note: '' };
+        } else if (q3.tick === 'yes_col' || q3.tick === 'unclear') {
+          const note = q3.note.toLowerCase();
+          const isOcc   = /occasion|social|weekend|rare|seldom|1.2\s*per/i.test(note);
+          const isHeavy = /daily|every\s*day|>?\s*[7-9]\s*unit|binge/i.test(note);
+          const status  = isHeavy ? 'heavy' : isOcc ? 'occasional' : 'regular';
+          result.alcohol = { status, note: q3.note };
+        }
+      }
+
+      // ── Q5: Hospitalisation / Surgery ────────────────────────────────────────
+      const q5 = qMap['5'];
+      if (q5 && (q5.tick === 'yes_col' || q5.tick === 'unclear') && q5.note) {
+        const note    = q5.note;
+        const noteLc  = note.toLowerCase();
+        // Try to extract year — "15 yrs ago", "2010", "15 years ago"
+        const yrsAgo  = note.match(/(\d+)\s*(?:yr|year)s?\s*ago/i);
+        const absYear = note.match(/\b(19|20)\d{2}\b/);
+        let year = null;
+        if (yrsAgo)    year = new Date().getFullYear() - parseInt(yrsAgo[1]);
+        else if (absYear) year = parseInt(absYear[0]);
+
+        const isSurg  = /surg|operat|cholecyst|appendix|appendec|hernia|bypass|cabg|angioplasty|stent|gallbladder|gall bladder|hysterectomy|caesarean|c-section|laminectomy|nephrect|prostatectomy/i.test(note);
+        const isHosp  = /accident|fracture|injury|treatment|admitted|hospital|ward/i.test(note);
+
+        if (isSurg) {
+          result.surgical_history.push({
+            procedure:          note,
+            year,
+            outcome:            'successful',
+            records_available:  !/no\s*record|unavail/i.test(noteLc),
+            _source:            'mer_form_q5_handwritten'
+          });
+        }
+        if (isHosp || !isSurg) {
+          result.hospitalizations.push({
+            reason: note, year,
+            _source: 'mer_form_q5_handwritten'
+          });
+        }
+      }
+
+      // ── Q12: Hypertension treatment ──────────────────────────────────────────
+      const q12 = qMap['12'];
+      if (q12 && q12.tick === 'yes_col') {
+        result.htn_declared = true;
+        result.htn_note     = q12.note;
+      }
+
+      // ── Q13: Diabetes treatment ───────────────────────────────────────────────
+      const q13 = qMap['13'];
+      if (q13 && q13.tick === 'yes_col') {
+        result.dm_declared = true;
+        result.dm_note     = q13.note;
+      }
+
+      // ── Q27: Currently on medication ─────────────────────────────────────────
+      const q27 = qMap['27'];
+      if (q27 && q27.tick === 'yes_col') result.on_medication = true;
+
+      return result;
+    })();
+
+    // Log what we found from the MER form
+    if (wf.page_extractions?.length) {
+      console.log(`[MERForm] Smoking: ${_merFromPages.smoking?.status||'not found'}, Alcohol: ${_merFromPages.alcohol?.status||'not found'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'not found'}`);
+      if (_merFromPages.surgical_history.length) console.log(`[MERForm] Surgical history from Q5:`, _merFromPages.surgical_history.map(s=>s.procedure).join('; '));
+      if (_merFromPages.hospitalizations.length)  console.log(`[MERForm] Hospitalizations from Q5:`, _merFromPages.hospitalizations.map(h=>h.reason).join('; '));
+    }
+
+    // Merge lifestyle data — priority: MER form page_extractions > Claude document extraction > fallback
     if (!extractedData.telemer_data) extractedData.telemer_data = {};
     const _claudeLifestyle = extractedData.lifestyle;
-    const _hasClaudeLifestyle = _claudeLifestyle?.smoking?.status && _claudeLifestyle.smoking.status !== 'unknown';
-    if (_hasClaudeLifestyle) {
+    const _hasClaudeLifestyle = _claudeLifestyle?.smoking?.status &&
+                                _claudeLifestyle.smoking.status !== 'unknown' &&
+                                _claudeLifestyle.smoking.status !== '';
+    const _hasMERLifestyle = _merFromPages.smoking !== null;
+
+    if (_hasMERLifestyle) {
+      // MER form ticks are the authoritative source — use them
+      extractedData.telemer_data.lifestyle = {
+        smoking:          { status: _merFromPages.smoking.status,         note: _merFromPages.smoking.note         },
+        alcohol:          _merFromPages.alcohol         ? { status: _merFromPages.alcohol.status,         note: _merFromPages.alcohol.note         } : (_claudeLifestyle?.alcohol || { status: 'unknown' }),
+        tobacco_chewing:  _merFromPages.tobacco_chewing ? { status: _merFromPages.tobacco_chewing.status, note: _merFromPages.tobacco_chewing.note } : (_claudeLifestyle?.tobacco_chewing || { status: 'unknown' }),
+        occupation_hazard: _claudeLifestyle?.occupation_hazard || wf.lifestyle?.occupation_hazard || 'unknown',
+        exercise:          _claudeLifestyle?.exercise || { frequency: 'unknown' },
+        _source:           'mer_form_page_extraction'
+      };
+      console.log(`[Lifestyle] MER-form-extracted — Smoking: ${_merFromPages.smoking.status}, Alcohol: ${_merFromPages.alcohol?.status||'unknown'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'unknown'}`);
+    } else if (_hasClaudeLifestyle) {
       // Claude found lifestyle data in the document — use it directly
       extractedData.telemer_data.lifestyle = {
         smoking:          _claudeLifestyle.smoking,
@@ -3098,7 +3265,7 @@ async function runAIAnalysis(wf) {
       };
       console.log(`[Lifestyle] Document-extracted — Smoking: ${_claudeLifestyle.smoking?.status}, Alcohol: ${_claudeLifestyle.alcohol?.status}, Tobacco: ${_claudeLifestyle.tobacco_chewing?.status}`);
     } else {
-      // Claude found nothing (doc has no habits section) — use occupation_hazard for STP gating, rest unknown
+      // Nothing found — unknown
       extractedData.telemer_data.lifestyle = {
         smoking:          { status: 'unknown' },
         alcohol:          { status: 'unknown' },
@@ -3107,10 +3274,33 @@ async function runAIAnalysis(wf) {
         exercise:         { frequency: 'unknown' },
         _source: 'declared_fallback'
       };
-      console.log(`[Lifestyle] No lifestyle data in document — using declared fallback (occupation_hazard: ${wf.lifestyle?.occupation_hazard||'unknown'})`);
+      console.log(`[Lifestyle] No lifestyle data found — using unknown fallback`);
     }
     // Always sync top-level for risk engine compatibility
     extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+
+    // ── Merge MER form surgical/hospitalization data into medical_history ──────
+    // If the MER form Q5 detected surgery/hospitalization from handwritten notes,
+    // merge into medical_history so scoreMedicalHistory can deduct for them.
+    if (_merFromPages.surgical_history.length || _merFromPages.hospitalizations.length) {
+      if (!extractedData.telemer_data) extractedData.telemer_data = {};
+      if (!extractedData.telemer_data.medical_history) extractedData.telemer_data.medical_history = {};
+      // Merge surgical_history — avoid duplicates
+      const _existingSurg = extractedData.telemer_data.medical_history.surgical_history || [];
+      const _newSurg = _merFromPages.surgical_history.filter(ns =>
+        !_existingSurg.some(es => (es.procedure||'').toLowerCase().includes((ns.procedure||'').toLowerCase().substring(0,15)))
+      );
+      extractedData.telemer_data.medical_history.surgical_history = [..._existingSurg, ..._newSurg];
+      // Merge hospitalizations
+      const _existingHosp = extractedData.telemer_data.medical_history.hospitalizations || [];
+      const _newHosp = _merFromPages.hospitalizations.filter(nh =>
+        !_existingHosp.some(eh => (eh.reason||'').toLowerCase().includes((nh.reason||'').toLowerCase().substring(0,15)))
+      );
+      extractedData.telemer_data.medical_history.hospitalizations = [..._existingHosp, ..._newHosp];
+      // Sync top-level
+      extractedData.medical_history = extractedData.telemer_data.medical_history;
+      console.log(`[MERForm] Merged ${_newSurg.length} surgical + ${_newHosp.length} hospitalization record(s) into medical_history`);
+    }
 
     // ── Medical parameters normalisation — path aliases ───────────────────────
     // Fixes mismatched key names between Bedrock output and FACTOR_VALUE_EXTRACTORS
