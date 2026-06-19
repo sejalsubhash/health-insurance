@@ -2631,7 +2631,7 @@ ${conditionSources.substring(0, 8000)}`;
               condition:              c.condition_name,
               icd10_code:             null,
               current_status:         'active',
-              medication:             c.medication || 'unknown',
+              medication:             (typeof c.medication === 'string' && c.medication.trim()) ? c.medication.trim() : 'unknown',
               since_year:             sinceYear,
               last_reading_systolic:  c.bp_systolic  != null ? Number(c.bp_systolic)  : null,
               last_reading_diastolic: c.bp_diastolic != null ? Number(c.bp_diastolic) : null,
@@ -3246,12 +3246,15 @@ async function runAIAnalysis(wf) {
 
       const modelInput = telemerModel.fromExtractorData(td, {
         bmi: td.proposer_info?.bmi || wf.declared_bmi || 0,
+        age: wf.age || 0,
+        dob: td.proposer_info?.date_of_birth || td.proposer_info?.dob || null,
         answers: td.answers || td.question_answers || {},
         raw_remarks: combinedRemarks,
         examiner: td.examiner || {},
         reports_available: true
       });
-      const modelOut = telemerModel.scoreTeleMER(modelInput);
+      const catCfg = catScoringConfig?.['tele_mer'] || null;
+      const modelOut = telemerModel.scoreTeleMER(modelInput, catCfg);
       const fe = telemerModel.toFrontendShape(modelOut);
 
       // Shape into the riskResult contract the rest of runAIAnalysis expects:
@@ -4478,146 +4481,215 @@ function buildDefaultCatScoring() {
     const shared  = sharedComponents(weights);
 
     if (cat === 'tele_mer') {
-      // ── TeleMER: 6-component hybrid engine, Phase 1 scores ──────────────────
-      // C1 Lifestyle (25 pts normalised from 18 raw)  — Q7 source
-      // C2 Medical History (20 pts normalised from 13 raw) — severity-tier PEC
-      // C3 Clinical Correlation (20 pts normalised from 15 raw) — drug-match + multi-system + CV proxy
-      // C4 Cardiovascular+HTN (15 pts direct) — Q10-Q14
-      // C6 Surgical+GI (5 pts direct) — Q5, Q16, Q17
-      // C7 Family History (5 pts direct) — Q9
-      // Contradiction penalty: -5/-10/RE-MER
-      // Phase 1 total = 90 raw pts scaled to 100
+      // ── TeleMER: 5-parameter remarks-driven model (telemer-score.js v2) ────
+      // All bands and weights are editable in Masters Config → Per-CAT Scoring → Tele MER.
+      // The scoring engine reads these at runtime — no code change needed to adjust thresholds.
+      //
+      // Parameter weights (sum = 100):
+      //   medical_parameters    40  (BMI, BP, FBS, HbA1c, Age — derived from remarks)
+      //   medical_history       20  (PEC burden, condition control, family history)
+      //   lifestyle_risk        15  (tobacco, alcohol, weight stability, BMI proxy)
+      //   clinical_correlation  15  (drug-match, multi-system, CV proxy)
+      //   documentation_quality 10  (completeness, examiner detail, form consistency)
       cfg[cat] = {
         _version: SCORING_VERSION,
-        thresholds: { ...CAT_THRESHOLDS[cat] },
+        thresholds: {
+          // Decision bands (min_score → label + loading)
+          decision_bands: [
+            { min_score: 80, label: 'Standard Accept',  loading: '0%'     },
+            { min_score: 65, label: 'Mild Load',        loading: '5-15%'  },
+            { min_score: 50, label: 'Moderate Load',    loading: '15-30%' },
+            { min_score: 35, label: 'Heavy Load',       loading: '30-50%' },
+            { min_score: 0,  label: 'Refer / Decline',  loading: 'N/A'    }
+          ],
+          // Medical History thresholds
+          pec_max:  12,
+          deductions: { controlled: 2, uncontrolled: 5, untreated: 1, active: 2 },
+          control_max: 4, control_deduction_per_uncontrolled: 2,
+          family_history: {
+            none: 4, minor: 2, serious: 1,
+            serious_conditions: ['cancer','stroke','cardiac','heart']
+          },
+          // Lifestyle thresholds
+          tobacco_alcohol_max: 7, tobacco_deduction: 4, alcohol_deduction: 3,
+          weight_stable_pts: 4, weight_change_pts: 1, weight_max: 4,
+          bmi_proxy: {
+            max: 4,
+            bands: [
+              { max_val: 0,    pts: 2 }, { max_val: 24.9, pts: 4 },
+              { max_val: 29.9, pts: 3 }, { max_val: 34.9, pts: 2 }, { max_val: 999, pts: 1 }
+            ]
+          },
+          // Clinical Correlation thresholds
+          drug_match:   { all_match: 5, partial: 3, none: 1, no_conditions: 5, max: 5 },
+          multi_system: {
+            max: 5,
+            bands: [
+              { systems: 0, pts: 5 }, { systems: 1, pts: 4 }, { systems: 2, pts: 3 },
+              { systems: 3, pts: 2 }, { systems: 999, pts: 1 }
+            ]
+          },
+          cv_proxy: { max: 5, min: 1 },
+          // Documentation Quality thresholds
+          completeness_max: 4,
+          examiner_max: 3, examiner_name_pts: 1.5, examiner_reg_pts: 0.5, reports_pts: 1,
+          consistency_bands: [
+            { contradictions: 0, pts: 3 }, { contradictions: 1, pts: 2 },
+            { contradictions: 2, pts: 1 }, { contradictions: 999, pts: 0 }
+          ]
+        },
         components: {
-          // Medical Parameters is NOT used for TeleMER (no lab tests)
-          medical: { label: 'Medical Parameters (Not used in TeleMER)', weight: 0, factors: [] },
-
-          // C1 — Lifestyle Risk (25 pts normalised from raw 18)
-          lifestyle: {
-            label: 'C1 — Lifestyle Risk (25 pts, raw 18)',
-            weight: 25,
-            _note: 'Raw max 18 → normalised to 25 using (raw/18)×25. Source: Q7.',
+          // 1) Medical Parameters (40 pts) — objective vitals from remarks
+          medical: {
+            label: 'Medical Parameters (40 pts) — from examiner remarks',
+            weight: 40,
+            _note: 'Values extracted from free-text remarks. BP and glucose parsed directly if not in structured fields.',
             factors: [
-              mkFactor('smoking', 'Smoking / Cigarette / Beedi (Q7)', 8, [
-                { label: 'Never smoked',                  value: 'never',        points: 8 },
-                { label: 'Former — quit >5 years ago',    value: 'former_gt5',   points: 6 },
-                { label: 'Former — quit 1–5 years ago',   value: 'former_lt5',   points: 3 },
-                { label: 'Current smoker',                value: 'current',      points: 0 },
-                { label: 'Unknown (Q7=Yes, no detail)',   value: 'unknown',      points: 5 }
+              mkFactor('bmi', 'BMI', 8, [
+                { label: 'Unknown',          value: 'unknown',     points: 4 },
+                { label: 'Underweight <18.5',value: 'underweight', points: 5 },
+                { label: 'Normal 18.5-24.9', value: 'normal',      points: 8 },
+                { label: 'Overweight 25-29.9',value:'overweight',  points: 5 },
+                { label: 'Obese I 30-34.9',  value: 'obese_1',    points: 3 },
+                { label: 'Obese II+ ≥35',    value: 'obese_2',    points: 1 }
               ]),
-              mkFactor('alcohol', 'Alcohol Use (Q7)', 6, [
-                { label: 'Never',                         value: 'never',        points: 6 },
-                { label: 'Occasional (<2×/week)',         value: 'occasional',   points: 5 },
-                { label: 'Regular (2+×/week)',            value: 'regular',      points: 2 },
-                { label: 'Heavy / daily',                 value: 'heavy',        points: 0 },
-                { label: 'Unknown',                       value: 'unknown',      points: 4 }
+              mkFactor('blood_pressure', 'Blood Pressure (systolic mmHg)', 10, [
+                { label: 'No reading',              value: 'no_reading', points: 5 },
+                { label: 'Optimal <120',            value: 'optimal',    points: 10 },
+                { label: 'Normal 120-129',          value: 'normal',     points: 9 },
+                { label: 'High-normal 130-139',     value: 'high_normal',points: 7 },
+                { label: 'Stage 1 HTN 140-159',     value: 'stage_1',    points: 4 },
+                { label: 'Stage 2 HTN ≥160',        value: 'stage_2',    points: 1 }
               ]),
-              mkFactor('tobacco_chewing', 'Tobacco Chewing / Gutkha / Pan (Q7)', 4, [
-                { label: 'Never',                         value: 'never',        points: 4 },
-                { label: 'Former — quit >3 years ago',   value: 'former',       points: 2 },
-                { label: 'Current user',                  value: 'current',      points: 0 },
-                { label: 'Unknown',                       value: 'unknown',      points: 3 }
+              mkFactor('fasting_glucose', 'Fasting Glucose (mg/dl)', 10, [
+                { label: 'No reading',              value: 'no_reading', points: 5 },
+                { label: 'Normal <100',             value: 'normal',     points: 10 },
+                { label: 'Well-controlled 100-110', value: 'controlled', points: 8 },
+                { label: 'Impaired 111-125',        value: 'impaired',   points: 6 },
+                { label: 'Elevated 126-180',        value: 'elevated',   points: 3 },
+                { label: 'Poor >180',               value: 'poor',       points: 1 }
+              ]),
+              mkFactor('hba1c', 'HbA1c (%)', 6, [
+                { label: 'Not available',           value: 'na',         points: 4 },
+                { label: 'Normal <5.7%',            value: 'normal',     points: 6 },
+                { label: 'Pre-diabetic 5.7-6.4%',  value: 'pre_dm',     points: 4 },
+                { label: 'Controlled DM 6.5-7.4%', value: 'ctrl_dm',    points: 3 },
+                { label: 'Uncontrolled ≥7.5%',     value: 'unctrl_dm',  points: 1 }
+              ]),
+              mkFactor('age_band', 'Age Band (years)', 6, [
+                { label: 'Unknown',   value: 'unknown', points: 3 },
+                { label: 'Under 35', value: 'lt_35',   points: 6 },
+                { label: '35-44',    value: '35_44',   points: 5 },
+                { label: '45-54',    value: '45_54',   points: 4 },
+                { label: '55-64',    value: '55_64',   points: 3 },
+                { label: '65+',      value: 'gte_65',  points: 2 }
               ])
             ]
           },
 
-          // C2 — Medical History / PEC (20 pts normalised from raw 13)
+          // 2) Medical History (20 pts)
           history: {
-            label: 'C2 — Medical History / PEC (20 pts, raw 13)',
+            label: 'Medical History (20 pts)',
             weight: 20,
-            _note: 'Severity-tier based — NOT count-based. Raw max 13 → normalised to 20.',
+            _note: 'PEC burden (12) + Condition control (4) + Family history (4). Thresholds editable above.',
             factors: [
-              mkFactor('pec_severity', 'PEC Severity Tier (Q2, Q3, Q10–Q32)', 9, [
-                { label: 'No PEC declared anywhere',                                    value: 'none',               points: 9 },
-                { label: 'Resolved / minor — no current meds, >2yr ago',               value: 'resolved',           points: 8 },
-                { label: 'Active — managed, controlled (meds known, readings in range)',value: 'active_controlled',  points: 6 },
-                { label: 'Active — uncontrolled (med unknown OR readings outside range)',value: 'active_uncontrolled',points: 4 },
-                { label: 'Acute / post-surgical (<90 days) — AUTO-DEFER also fires',   value: 'acute',              points: 0 }
+              mkFactor('pec_burden', 'Pre-existing Condition Burden', 12, [
+                { label: 'No PEC',                      value: 'none',         points: 12 },
+                { label: '1 controlled PEC',            value: '1_ctrl',       points: 10 },
+                { label: '2 controlled PECs',           value: '2_ctrl',       points: 8  },
+                { label: '3+ controlled PECs',          value: '3plus_ctrl',   points: 6  },
+                { label: '1 uncontrolled PEC',          value: '1_unctrl',     points: 7  },
+                { label: '2+ uncontrolled PECs',        value: '2plus_unctrl', points: 2  }
               ]),
-              mkFactor('hospitalizations', 'Hospitalisation History (Q4, Q5)', 2, [
-                { label: 'None declared',                                               value: 'none',               points: 2 },
-                { label: '1–2 hospitalisations, resolved, >1yr ago',                   value: '1_2_resolved',       points: 1 },
-                { label: '3+ hospitalisations OR any within last 6 months',            value: '3plus_or_recent',    points: 0 }
+              mkFactor('condition_control', 'Condition Control Quality', 4, [
+                { label: 'All conditions controlled',   value: 'all_ctrl',     points: 4 },
+                { label: '1 uncontrolled condition',    value: '1_unctrl',     points: 2 },
+                { label: '2+ uncontrolled conditions',  value: '2plus_unctrl', points: 0 }
               ]),
-              mkFactor('systemic_flags', 'Other Systemic Conditions (Q15–Q32)', 2, [
-                { label: '0 flags — all systemic questions clear',                      value: 'none',               points: 2 },
-                { label: '1 minor systemic flag',                                       value: 'one_minor',          points: 1 },
-                { label: '2+ flags OR any serious systemic condition',                  value: 'two_plus',           points: 0 }
+              mkFactor('family_history_factor', 'Family History (Q9)', 4, [
+                { label: 'No family history',           value: 'none',         points: 4 },
+                { label: 'Minor (DM/HTN)',              value: 'minor',        points: 2 },
+                { label: 'Serious (cardiac/cancer/stroke)',value:'serious',    points: 1 }
               ])
             ]
           },
 
-          // C3 — Clinical Correlation (20 pts normalised from raw 15)
+          // 3) Lifestyle Risk (15 pts)
+          lifestyle: {
+            label: 'Lifestyle Risk (15 pts)',
+            weight: 15,
+            _note: 'Tobacco/alcohol (7) + weight stability (4) + BMI proxy (4). Source: Q6, Q7, BMI.',
+            factors: [
+              mkFactor('tobacco_alcohol', 'Tobacco & Alcohol Use (Q7)', 7, [
+                { label: 'None',              value: 'none',    points: 7 },
+                { label: 'Alcohol only',      value: 'alc',     points: 4 },
+                { label: 'Tobacco only',      value: 'tob',     points: 3 },
+                { label: 'Both',              value: 'both',    points: 0 }
+              ]),
+              mkFactor('weight_stability', 'Weight Stability (Q6)', 4, [
+                { label: 'Stable weight',         value: 'stable',  points: 4 },
+                { label: 'Recent weight change',  value: 'changed', points: 1 }
+              ]),
+              mkFactor('bmi_lifestyle', 'BMI (lifestyle proxy)', 4, [
+                { label: 'Unknown',             value: 'unknown',    points: 2 },
+                { label: 'Normal ≤24.9',        value: 'normal',     points: 4 },
+                { label: 'Overweight 25-29.9',  value: 'overweight', points: 3 },
+                { label: 'Obese I 30-34.9',     value: 'obese_1',   points: 2 },
+                { label: 'Obese II+ ≥35',       value: 'obese_2',   points: 1 }
+              ])
+            ]
+          },
+
+          // 4) Clinical Correlation (15 pts)
           clinical: {
-            label: 'C3 — Clinical Correlation (20 pts, raw 15)',
-            weight: 20,
-            _note: 'Drug-match + multi-system risk + CV proxy. Raw max 15 → normalised to 20.',
+            label: 'Clinical Correlation (15 pts)',
+            weight: 15,
+            _note: 'Drug-condition match (5) + multi-system load (5) + CV risk proxy (5).',
             factors: [
-              mkFactor('drug_condition_match', 'Drug–Condition Match (Q3 medications)', 5, [
-                { label: 'Condition declared, medication known, drug class matches',    value: 'match',              points: 5 },
-                { label: 'No condition, no medication — not applicable',               value: 'na_clean',           points: 5 },
-                { label: 'Condition declared, medication name unknown',                 value: 'med_unknown',        points: 3 },
-                { label: 'Drug class does NOT match declared condition',               value: 'mismatch',           points: 1 }
+              mkFactor('drug_condition_match', 'Drug-Condition Match', 5, [
+                { label: 'No conditions — N/A',         value: 'na',      points: 5 },
+                { label: 'All conditions medicated',    value: 'all',     points: 5 },
+                { label: 'Partial medication coverage', value: 'partial', points: 3 },
+                { label: 'No medications declared',     value: 'none',    points: 1 }
               ]),
-              mkFactor('multi_system_risk', 'Multi-System Active Condition Count', 5, [
-                { label: '0 active conditions',                                        value: 'zero',               points: 5 },
-                { label: '1 active condition — single system',                         value: 'one_single',         points: 4 },
-                { label: '2 active — same system',                                     value: 'two_same',           points: 3 },
-                { label: '2 active — different systems',                               value: 'two_diff',           points: 2 },
-                { label: '3 active conditions — multi-system',                         value: 'three',              points: 1 },
-                { label: '4+ active — complex multi-system',                           value: 'four_plus',          points: 0 }
+              mkFactor('multi_system_load', 'Multi-System Load', 5, [
+                { label: 'No active conditions',        value: '0',       points: 5 },
+                { label: '1 system affected',           value: '1',       points: 4 },
+                { label: '2 systems affected',          value: '2',       points: 3 },
+                { label: '3 systems affected',          value: '3',       points: 2 },
+                { label: '4+ systems affected',         value: '4plus',   points: 1 }
               ]),
-              mkFactor('cv_proxy', 'CV Risk Proxy (age + gender + DM + BMI + HTN)', 5, [
-                { label: '5/5 protective factors present',                             value: '5_factors',          points: 5 },
-                { label: '4/5 protective factors',                                     value: '4_factors',          points: 4 },
-                { label: '3/5 protective factors',                                     value: '3_factors',          points: 3 },
-                { label: '2/5 protective factors',                                     value: '2_factors',          points: 2 },
-                { label: '1 or fewer protective factors',                              value: '1_or_less',          points: 1 }
+              mkFactor('cv_risk_proxy', 'Cardiovascular Risk Proxy', 5, [
+                { label: '5/5 protective factors',      value: '5',       points: 5 },
+                { label: '4/5 protective factors',      value: '4',       points: 4 },
+                { label: '3/5 protective factors',      value: '3',       points: 3 },
+                { label: '2/5 protective factors',      value: '2',       points: 2 },
+                { label: '1 or fewer protective factors',value:'1',       points: 1 }
               ])
             ]
           },
 
-          // C4 — Cardiovascular + HTN (15 pts direct)
-          // C6 — Surgical + GI (5 pts direct)
-          // C7 — Family History (5 pts direct)
-          // These 3 are scored directly by the engine using factor extractors in scoreComponentFromConfig.
-          // They are shown here for visibility and weight display only.
+          // 5) Documentation Quality (10 pts)
           documentation: {
-            label: 'C4 Cardiovascular (15) + C6 Surgical/GI (5) + C7 Family History (5)',
-            weight: 25,
-            _note: 'These 3 components (C4+C6+C7=25 pts) are scored directly by the engine using the factor bands configured here.',
+            label: 'Documentation Quality (10 pts)',
+            weight: 10,
+            _note: 'Completeness (4) + examiner detail (3) + form consistency (3). Contradictions reduce consistency.',
             factors: [
-              mkFactor('c4_cardiovascular', 'C4 — Cardiovascular + HTN (Q10–Q14)', 15, [
-                { label: 'No cardiac history, no HTN — all Q10–Q14 clear',            value: 'clean',              points: 15 },
-                { label: 'HTN controlled >1yr on medication, BP ≤140/90',             value: 'htn_ctrl_gt1yr',     points: 14 },
-                { label: 'HTN med known, no reading declared',                         value: 'htn_med_no_reading', points: 13 },
-                { label: 'HTN controlled ≤1yr on medication, BP ≤140/90',             value: 'htn_ctrl_lte1yr',    points: 12 },
-                { label: 'Prior HTN, self-stopped medication',                         value: 'htn_self_stopped',   points: 12 },
-                { label: 'HTN active, medication name unknown',                        value: 'htn_med_unknown',    points: 8  },
-                { label: 'HTN active, reading >140/90 on medication (uncontrolled)',   value: 'htn_uncontrolled',   points: 7  },
-                { label: 'IHD / stenting / PTCA / CABG / valve disorder',             value: 'cardiac_ihd',        points: 2  },
-                { label: 'Recent cardiac event <1 year — AUTO-DECLINE trigger',       value: 'cardiac_recent',     points: 0  }
+              mkFactor('completeness', 'Record Completeness', 4, [
+                { label: 'All conditions fully described', value: 'full',    points: 4 },
+                { label: '≥50% conditions complete',      value: 'partial', points: 2 },
+                { label: 'No conditions or incomplete',   value: 'poor',    points: 0 }
               ]),
-              mkFactor('c6_surgical_gi', 'C6 — Surgical + GI History (Q5, Q16, Q17)', 5, [
-                { label: 'No surgical history, no GI disorder',                        value: 'none',               points: 5 },
-                { label: 'GI managed medically, resolved',                             value: 'gi_resolved',        points: 4 },
-                { label: 'Surgery >5yr ago, records available',                        value: 'gt5yr_records',      points: 4 },
-                { label: 'Surgery >5yr ago, records unavailable',                      value: 'gt5yr_no_records',   points: 3 },
-                { label: 'Surgery 1–5yr ago, records available',                       value: 'lt5yr_records',      points: 3 },
-                { label: 'Surgery 1–5yr ago, records unavailable',                     value: 'lt5yr_no_records',   points: 2 },
-                { label: 'Surgery <1yr ago, resolved',                                 value: 'lt1yr',              points: 1 },
-                { label: 'Surgery <90 days — AUTO-DEFER fires, score 0',              value: 'lt90days',           points: 0 }
+              mkFactor('examiner_reports', 'Examiner Detail & Reports', 3, [
+                { label: 'Name + Reg No + Reports available', value: 'full',    points: 3 },
+                { label: 'Partial (name OR reg OR reports)',  value: 'partial', points: 1.5 },
+                { label: 'No examiner details',               value: 'none',    points: 0 }
               ]),
-              mkFactor('c7_family_history', 'C7 — Family History (Q9)', 5, [
-                { label: 'No family history of any hereditary condition',              value: 'none',               points: 5 },
-                { label: 'DM or HTN in first-degree relative',                        value: 'dm_or_htn',          points: 4 },
-                { label: 'Heart disease in first-degree relative',                     value: 'cardiac',            points: 3 },
-                { label: 'DM + HTN both in first-degree relative',                    value: 'dm_and_htn',         points: 3 },
-                { label: 'Stroke in first-degree — senior review flag',               value: 'stroke',             points: 2 },
-                { label: 'Any cancer in first-degree — senior review flag',            value: 'cancer',             points: 2 },
-                { label: 'Blood cancer / leukaemia in first-degree — senior review',  value: 'blood_cancer',       points: 1 }
+              mkFactor('form_consistency', 'Form Consistency (contradictions)', 3, [
+                { label: 'No contradictions',   value: '0',    points: 3 },
+                { label: '1 contradiction',     value: '1',    points: 2 },
+                { label: '2 contradictions',    value: '2',    points: 1 },
+                { label: '3+ contradictions',   value: '3plus',points: 0 }
               ])
             ]
           }

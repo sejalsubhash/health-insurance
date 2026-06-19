@@ -122,6 +122,7 @@ async function extractTeleMERData(documentText) {
   "proposer_info": {
     "name": "",
     "age": 0,
+    "date_of_birth": "",
     "gender": "male|female|other",
     "occupation": "",
     "annual_income": 0,

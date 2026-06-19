@@ -1602,9 +1602,10 @@ function showWfTab(tab, wfId) {
         </div>
         <div class="card-body" style="padding:0">
           ${wf.cat_level === 'tele_mer' ? `<div style="padding:8px 16px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--border-light)"><i data-lucide="info"></i> TeleMER — values derived from examiner remarks, not lab reports.</div>` : ''}
-          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
           ${Object.entries(compA.medical_parameters?.breakdown||{}).map(([pk,pv])=>`<tr>
               <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-primary)">${pv.value||'—'}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
               <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
               <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
@@ -1686,27 +1687,15 @@ function showWfTab(tab, wfId) {
           <h3><i data-lucide="dna"></i> Clinical Correlation <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.clinical_correlation?.percentage>=80?'var(--success)':compA.clinical_correlation?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.clinical_correlation?.score||0}/${compA.clinical_correlation?.max||15} (${compA.clinical_correlation?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.clinical_correlation?.percentage||0}%;background:${compA.clinical_correlation?.percentage>=80?'var(--success)':compA.clinical_correlation?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
-        <div class="card-body">
-          ${Object.entries(compA.clinical_correlation?.breakdown||{}).map(([pk,pv])=>{
-            const icon = pk === 'drug_condition' ? '<i data-lucide="pill"></i>' : pk === 'multi_system' ? '<i data-lucide="external-link"></i>' : '<i data-lucide="heart"></i>';
-            const title = pk === 'drug_condition' ? 'Drug-Condition Matching' : pk === 'multi_system' ? 'Multi-System Correlation' : 'Cardiovascular Risk';
-            const scoreColor = pv.score >= pv.max * 0.8 ? 'var(--success)' : pv.score >= pv.max * 0.5 ? 'var(--warning)' : 'var(--danger)';
-            return `<div style="padding:10px 14px;background:var(--surface-alt);border-radius:8px;margin-bottom:8px;border-left:3px solid ${scoreColor}">
-              <div style="display:flex;justify-content:space-between;align-items:center">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:16px">${icon}</span>
-                  <div>
-                    <div style="font-size:13px;font-weight:700">${title}</div>
-                    <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${pv.logic||''}</div>
-                  </div>
-                </div>
-                <div style="text-align:right">
-                  <div style="font-size:16px;font-weight:800;font-family:'JetBrains Mono',monospace;color:${scoreColor}">${pv.score}/${pv.max}</div>
-                  <span class="badge ${pv.status==='consistent'||pv.status==='clean'||pv.status==='low'?'badge-success':pv.status==='no data'||pv.status==='not assessed'?'badge-neutral':pv.status==='moderate'||pv.status==='low_moderate'?'badge-warning':'badge-danger'}" style="font-size:10px">${pv.status||'—'}</span>
-                </div>
-              </div>
-            </div>`;
-          }).join('')}
+        <div class="card-body" style="padding:0">
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
+          ${Object.entries(compA.clinical_correlation?.breakdown||{}).map(([pk,pv])=>`<tr>
+              <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
+              <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
+              <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+            </tr>`).join('')}
+          </tbody></table>
         </div>
       </div>
 
@@ -1716,23 +1705,15 @@ function showWfTab(tab, wfId) {
           <h3><i data-lucide="file-text"></i> Documentation Quality <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.documentation_quality?.score||0}/${compA.documentation_quality?.max||10} (${compA.documentation_quality?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.documentation_quality?.percentage||0}%;background:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
-        <div class="card-body">
-          ${Object.entries(compA.documentation_quality?.breakdown||{}).map(([pk,pv])=>{
-            const icon = pk === 'completeness' ? '<i data-lucide="bar-chart-3"></i>' : pk === 'module_coverage' ? '<i data-lucide="package"></i>' : '<i data-lucide="refresh-cw"></i>';
-            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border-light)">
-              <div style="display:flex;align-items:center;gap:8px">
-                <span style="font-size:14px">${icon}</span>
-                <div>
-                  <div style="font-size:13px;font-weight:600">${pk.replace(/_/g,' ')}</div>
-                  <div style="font-size:11px;color:var(--text-muted)">${pv.logic||''}</div>
-                </div>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span class="badge ${pv.status==='consistent'||parseInt(pv.status)>=80?'badge-success':parseInt(pv.status)>=60||pv.status?.includes('5')||pv.status?.includes('6')?'badge-warning':'badge-danger'}">${pv.status||'—'}</span>
-                <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px">${pv.score}/${pv.max}</span>
-              </div>
-            </div>`;
-          }).join('')}
+        <div class="card-body" style="padding:0">
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
+          ${Object.entries(compA.documentation_quality?.breakdown||{}).map(([pk,pv])=>`<tr>
+              <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
+              <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
+              <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+            </tr>`).join('')}
+          </tbody></table>
         </div>
       </div>
 

@@ -1,221 +1,433 @@
 /**
- * telemer-score.js — Standalone rule-based TeleMER scoring model
- * ----------------------------------------------------------------
- * SBI HealthAssure TeleMER (48-question Yes/No + free-text remarks).
+ * telemer-score.js — Config-driven TeleMER scoring model (v2)
+ * ------------------------------------------------------------
+ * Reads ALL thresholds from catScoringConfig['tele_mer'] (Masters Config →
+ * Per-CAT Scoring → Tele MER tab).  Falls back to DEFAULTS only if the DB
+ * config hasn't been seeded yet (first boot).
  *
- * Design principles (per requirements):
- *   - Score out of 100. HIGH score = healthier / lower-risk (good applicant).
- *   - 5 parameters, each built from individual 3-5 point question-based checks
- *     that sum up and are capped at the parameter max.
- *   - The free-text REMARKS are the source of truth for the clinical picture.
- *     Where the Yes/No boxes contradict the remarks, the remarks win for
- *     medical scoring; the contradiction only dents Documentation Quality.
- *   - Always produces a 0-100 score (no hard stop).
+ * HIGH score = healthier / lower-risk.
  *
- * Point distribution (sums to 100):
- *   1) Medical Parameters    40   (objective vitals/labs from remarks + form)
- *   2) Medical History       20   (disclosed conditions, chronicity, family hx)
- *   3) Lifestyle Risk        15   (tobacco/alcohol, weight change, BMI, COVID)
- *   4) Clinical Correlation  15   (drug<->condition match, multi-system load, CV proxy)
- *   5) Documentation Quality 10   (completeness, examiner detail, form consistency)
- *
- * No external dependencies. No reuse of any existing engine.
+ * Parameters (sums to 100):
+ *   1) Medical Parameters    40  (BMI, BP, FBS, HbA1c, Age — from remarks)
+ *   2) Medical History       20  (PEC burden, control, family history)
+ *   3) Lifestyle Risk        15  (tobacco, alcohol, weight change, BMI proxy)
+ *   4) Clinical Correlation  15  (drug-match, multi-system, CV proxy)
+ *   5) Documentation Quality 10  (completeness, examiner, form consistency)
  */
 
 'use strict';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// INPUT SHAPE (caller builds this from the parsed PDF):
-//
-// {
-//   age: Number, gender: 'male'|'female',
-//   bmi: Number, height_cm: Number, weight_kg: Number,
-//   answers: { q4:Bool, q6:Bool, q7:Bool, q12:Bool, q13:Bool, q26:Bool, ... },
-//   remarks: String,                 // combined Q2/Q3/Q48 doctor narrative
-//   conditions: [                    // parsed FROM the remarks (source of truth)
-//     { name, duration_years, medication, status:'controlled'|'uncontrolled'|'untreated',
-//       systolic, diastolic, fbs, hba1c }
-//   ],
-//   family_history: [String],        // first-degree conditions, [] if none
-//   reports_available: Bool,
-//   examiner: { name, reg_no }
-// }
-// ─────────────────────────────────────────────────────────────────────────────
+const clamp  = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const round2 = v  => Math.round(v  * 100) / 100;
+const lc     = s  => (s  || '').toString().toLowerCase();
+const num    = v  => { const n = parseFloat(v); return isNaN(n) ? null : n; };
 
-const PARAM_MAX = {
-  medical_parameters:    40,
-  medical_history:       20,
-  lifestyle_risk:        15,
-  clinical_correlation:  15,
-  documentation_quality: 10
+// ─── HARDCODED DEFAULTS (used only when DB config is absent) ─────────────────
+// These mirror the bands in buildDefaultCatScoring() → tele_mer section.
+// Any edit in Masters Config overwrites these at runtime.
+const DEFAULTS = {
+  param_max: {
+    medical_parameters:    40,
+    medical_history:       20,
+    lifestyle_risk:        15,
+    clinical_correlation:  15,
+    documentation_quality: 10
+  },
+  medical_parameters: {
+    bmi: {
+      max: 8,
+      bands: [
+        { max_val: 0,    pts: 4,  label: 'BMI unknown'         },
+        { max_val: 18.4, pts: 5,  label: 'Underweight'         },
+        { max_val: 24.9, pts: 8,  label: 'Normal'              },
+        { max_val: 29.9, pts: 5,  label: 'Overweight'          },
+        { max_val: 34.9, pts: 3,  label: 'Obese I'             },
+        { max_val: 999,  pts: 1,  label: 'Obese II+'           }
+      ]
+    },
+    blood_pressure: {
+      max: 10,
+      bands: [
+        { max_val: 0,   pts: 5,  label: 'No reading'                    },
+        { max_val: 119, pts: 10, label: 'Optimal (<120)'                },
+        { max_val: 129, pts: 9,  label: 'Normal (120-129)'              },
+        { max_val: 139, pts: 7,  label: 'High-normal / controlled'      },
+        { max_val: 159, pts: 4,  label: 'Stage 1 (140-159)'             },
+        { max_val: 999, pts: 1,  label: 'Stage 2 (≥160)'                }
+      ]
+    },
+    fasting_glucose: {
+      max: 10,
+      bands: [
+        { max_val: 0,   pts: 5,  label: 'No reading'                    },
+        { max_val: 99,  pts: 10, label: 'Normal (<100)'                 },
+        { max_val: 110, pts: 8,  label: 'Well-controlled (100-110)'     },
+        { max_val: 125, pts: 6,  label: 'Impaired / controlled (111-125)'},
+        { max_val: 180, pts: 3,  label: 'Elevated (126-180)'            },
+        { max_val: 999, pts: 1,  label: 'Poor (>180)'                   }
+      ]
+    },
+    hba1c: {
+      max: 6,
+      bands: [
+        { max_val: 0,   pts: 4,  label: 'Not available (neutral)'       },
+        { max_val: 5.6, pts: 6,  label: 'Normal (<5.7%)'                },
+        { max_val: 6.4, pts: 4,  label: 'Pre-diabetic (5.7-6.4%)'       },
+        { max_val: 7.4, pts: 3,  label: 'Controlled DM (6.5-7.4%)'      },
+        { max_val: 999, pts: 1,  label: 'Uncontrolled (≥7.5%)'          }
+      ]
+    },
+    age_band: {
+      max: 6,
+      bands: [
+        { max_val: 0,  pts: 3,  label: 'Age unknown'                    },
+        { max_val: 34, pts: 6,  label: 'Under 35'                       },
+        { max_val: 44, pts: 5,  label: '35-44'                          },
+        { max_val: 54, pts: 4,  label: '45-54'                          },
+        { max_val: 64, pts: 3,  label: '55-64'                          },
+        { max_val: 999,pts: 2,  label: '65+'                            }
+      ]
+    }
+  },
+  medical_history: {
+    deductions: { controlled: 2, uncontrolled: 5, untreated: 1, active: 2 },
+    pec_max: 12,
+    control_max: 4,
+    control_deduction_per_uncontrolled: 2,
+    family_history: {
+      none: 4, minor: 2, serious: 1,
+      serious_conditions: ['cancer','stroke','cardiac','heart']
+    }
+  },
+  lifestyle_risk: {
+    tobacco_alcohol_max: 7,
+    tobacco_deduction: 4,
+    alcohol_deduction: 3,
+    weight_stable_pts: 4, weight_change_pts: 1, weight_max: 4,
+    bmi_proxy: {
+      max: 4,
+      bands: [
+        { max_val: 0,   pts: 2 },
+        { max_val: 24.9,pts: 4 },
+        { max_val: 29.9,pts: 3 },
+        { max_val: 34.9,pts: 2 },
+        { max_val: 999, pts: 1 }
+      ]
+    }
+  },
+  clinical_correlation: {
+    drug_match: { all_match: 5, partial: 3, none: 1, no_conditions: 5, max: 5 },
+    multi_system: {
+      max: 5,
+      bands: [
+        { systems: 0, pts: 5 }, { systems: 1, pts: 4 },
+        { systems: 2, pts: 3 }, { systems: 3, pts: 2 }, { systems: 999, pts: 1 }
+      ]
+    },
+    cv_proxy: { max: 5, min: 1 }
+  },
+  documentation_quality: {
+    completeness_max: 4,
+    examiner_max: 3,
+    examiner_name_pts: 1.5, examiner_reg_pts: 0.5, reports_pts: 1,
+    consistency_max: 3,
+    consistency_bands: [
+      { contradictions: 0, pts: 3 },
+      { contradictions: 1, pts: 2 },
+      { contradictions: 2, pts: 1 },
+      { contradictions: 999, pts: 0 }
+    ]
+  },
+  decision_bands: [
+    { min_score: 80, label: 'Standard Accept',  loading: '0%'     },
+    { min_score: 65, label: 'Mild Load',        loading: '5-15%'  },
+    { min_score: 50, label: 'Moderate Load',    loading: '15-30%' },
+    { min_score: 35, label: 'Heavy Load',       loading: '30-50%' },
+    { min_score: 0,  label: 'Refer / Decline',  loading: 'N/A'    }
+  ]
 };
 
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const round2 = v => Math.round(v * 100) / 100;
-const lc = s => (s || '').toString().toLowerCase();
+// ─── CONFIG RESOLVER ─────────────────────────────────────────────────────────
+// The live catScoringConfig is passed in at call time from server.js.
+// cfg(key) returns the live config sub-object, or the matching DEFAULTS entry.
+function makeResolver(catCfg) {
+  // catCfg = catScoringConfig['tele_mer'] (may be undefined on first boot)
+  const comp = catCfg?.components || {};
+  const th   = catCfg?.thresholds || {};
 
-// ── 1) MEDICAL PARAMETERS (max 40) ───────────────────────────────────────────
-// Objective measurables. Each check awards points for the healthy value.
-function scoreMedicalParameters(d) {
-  const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic });
+  function getBands(paramKey, factorId) {
+    // Walk components → find component with matching key or _key → find factor by id
+    for (const [ck, cv] of Object.entries(comp)) {
+      if (!cv?.factors) continue;
+      // match component by key or label prefix
+      const compMatch = ck === paramKey || ck.startsWith(paramKey.split('_')[0]);
+      if (!compMatch) continue;
+      const factor = cv.factors.find(f => f.id === factorId);
+      if (factor?.bands?.length) return { bands: factor.bands, max: factor.max };
+    }
+    return null; // fall to defaults
+  }
 
-  // BMI — 8 pts
-  const bmi = d.bmi || 0;
-  let bmiPts;
-  if (bmi === 0)               bmiPts = 4;            // unknown → neutral-ish
-  else if (bmi < 18.5)         bmiPts = 5;            // underweight
-  else if (bmi <= 24.9)        bmiPts = 8;            // normal
-  else if (bmi <= 29.9)        bmiPts = 5;            // overweight
-  else if (bmi <= 34.9)        bmiPts = 3;            // obese I
-  else                         bmiPts = 1;            // obese II+
-  add('BMI', bmiPts, 8, `BMI ${bmi || 'unknown'} → ${bmiPts}/8`);
-
-  // Blood pressure — 10 pts (from remarks; healthy = lower)
-  const sys = maxReading(d.conditions, 'systolic');
-  let bpPts, bpLogic;
-  if (!sys)                    { bpPts = 5; bpLogic = 'no BP reading → 5/10'; }
-  else if (sys < 120)          { bpPts = 10; bpLogic = `${sys} systolic (optimal) → 10/10`; }
-  else if (sys < 130)          { bpPts = 9;  bpLogic = `${sys} systolic (normal) → 9/10`; }
-  else if (sys < 140)          { bpPts = 7;  bpLogic = `${sys} systolic (high-normal/controlled) → 7/10`; }
-  else if (sys < 160)          { bpPts = 4;  bpLogic = `${sys} systolic (stage 1) → 4/10`; }
-  else                         { bpPts = 1;  bpLogic = `${sys} systolic (stage 2) → 1/10`; }
-  add('Blood Pressure', bpPts, 10, bpLogic);
-
-  // Fasting glucose — 10 pts
-  const fbs = maxReading(d.conditions, 'fbs');
-  let fbsPts, fbsLogic;
-  if (!fbs)                    { fbsPts = 5; fbsLogic = 'no fasting glucose → 5/10'; }
-  else if (fbs < 100)          { fbsPts = 10; fbsLogic = `${fbs} mg/dl (normal) → 10/10`; }
-  else if (fbs <= 110)         { fbsPts = 8;  fbsLogic = `${fbs} mg/dl (well-controlled) → 8/10`; }
-  else if (fbs <= 125)         { fbsPts = 6;  fbsLogic = `${fbs} mg/dl (impaired/controlled) → 6/10`; }
-  else if (fbs <= 180)         { fbsPts = 3;  fbsLogic = `${fbs} mg/dl (elevated) → 3/10`; }
-  else                         { fbsPts = 1;  fbsLogic = `${fbs} mg/dl (poor) → 1/10`; }
-  add('Fasting Glucose', fbsPts, 10, fbsLogic);
-
-  // HbA1c — 6 pts (if available)
-  const hba1c = maxReading(d.conditions, 'hba1c');
-  let a1cPts, a1cLogic;
-  if (!hba1c)                  { a1cPts = 4; a1cLogic = 'no HbA1c → 4/6 (neutral)'; }
-  else if (hba1c < 5.7)        { a1cPts = 6; a1cLogic = `${hba1c}% (normal) → 6/6`; }
-  else if (hba1c < 6.5)        { a1cPts = 4; a1cLogic = `${hba1c}% (pre-diabetic) → 4/6`; }
-  else if (hba1c < 7.5)        { a1cPts = 3; a1cLogic = `${hba1c}% (controlled DM) → 3/6`; }
-  else                         { a1cPts = 1; a1cLogic = `${hba1c}% (uncontrolled) → 1/6`; }
-  add('HbA1c', a1cPts, 6, a1cLogic);
-
-  // Age band — 6 pts (older = lower)
-  const age = d.age || 0;
-  let agePts;
-  if (age === 0)               agePts = 3;
-  else if (age < 35)           agePts = 6;
-  else if (age < 45)           agePts = 5;
-  else if (age < 55)           agePts = 4;
-  else if (age < 65)           agePts = 3;
-  else                         agePts = 2;
-  add('Age Band', agePts, 6, `Age ${age || 'unknown'} → ${agePts}/6`);
-
-  const total = clamp(checks.reduce((s, c) => s + c.points, 0), 0, PARAM_MAX.medical_parameters);
-  return { score: round2(total), max: PARAM_MAX.medical_parameters, checks };
+  return { comp, th, getBands };
 }
 
-// ── 2) MEDICAL HISTORY (max 20) ──────────────────────────────────────────────
-function scoreMedicalHistory(d) {
+// ─── REMARKS PARSER ──────────────────────────────────────────────────────────
+// Extracts numeric readings directly from the combined remarks string.
+// Used as fallback when the extractor's structured readings fields are zero/null.
+function parseReadingsFromRemarks(remarks) {
+  const r = remarks || '';
+  const out = { systolic: null, diastolic: null, fbs: null, hba1c: null };
+
+  // BP: "130/86" or "130 / 86"
+  const bpMatch = r.match(/(\d{2,3})\s*\/\s*(\d{2,3})/);
+  if (bpMatch) {
+    const s = parseInt(bpMatch[1]), d = parseInt(bpMatch[2]);
+    if (s > 70 && s < 250 && d > 40 && d < 150) {
+      out.systolic = s; out.diastolic = d;
+    }
+  }
+
+  // Fasting glucose: "fasting 101" or "fasting-101" or "fbs 101"
+  const fbsMatch = r.match(/fasting[\s\-]*(?:glucose|sugar|blood sugar)?[\s\-:]*(\d{2,3})\s*(?:mg|mgdl|mg\/dl)?/i)
+                || r.match(/fbs[\s\-:]*(\d{2,3})\s*(?:mg|mgdl)?/i);
+  if (fbsMatch) { const v = parseInt(fbsMatch[1]); if (v > 50 && v < 600) out.fbs = v; }
+
+  // HbA1c: "hba1c 7.2" or "a1c 6.5%"
+  const a1cMatch = r.match(/hba1c[\s\-:]*(\d+\.?\d*)\s*%?/i) || r.match(/a1c[\s\-:]*(\d+\.?\d*)\s*%?/i);
+  if (a1cMatch) { const v = parseFloat(a1cMatch[1]); if (v > 3 && v < 20) out.hba1c = v; }
+
+  return out;
+}
+
+// ─── DOB → AGE ───────────────────────────────────────────────────────────────
+function ageFromDOB(dob) {
+  if (!dob) return null;
+  try {
+    // Handle DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD
+    let d;
+    const dmyMatch = dob.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/);
+    if (dmyMatch) d = new Date(`${dmyMatch[3]}-${dmyMatch[2].padStart(2,'0')}-${dmyMatch[1].padStart(2,'0')}`);
+    else d = new Date(dob);
+    if (isNaN(d.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - d.getFullYear();
+    const m = today.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
+    return age > 0 && age < 120 ? age : null;
+  } catch { return null; }
+}
+
+// ─── BAND LOOKUP ─────────────────────────────────────────────────────────────
+// Given a numeric value and a bands array [{max_val, pts, label}], returns
+// the matching band (first where value <= max_val, or last).
+function lookupBand(value, bands) {
+  if (!value || value === 0) return bands[0]; // zero/null → first band (typically "unknown/no reading")
+  for (const b of bands) { if (value <= b.max_val) return b; }
+  return bands[bands.length - 1];
+}
+
+// ─── 1) MEDICAL PARAMETERS ───────────────────────────────────────────────────
+function scoreMedicalParameters(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic });
+  const add = (label, pts, max, logic, value) =>
+    checks.push({ label, points: round2(pts), max, logic, value: value ?? null });
+
+  const D  = DEFAULTS.medical_parameters;
+  const gb = (id) => resolver.getBands('medical', id);
+
+  // BMI
+  const bmi = num(d.bmi) || 0;
+  const bmiCfg = gb('bmi');
+  let bmiPts, bmiLabel;
+  if (bmiCfg) {
+    const b = lookupBand(bmi, bmiCfg.bands);
+    bmiPts = b.points; bmiLabel = b.label;
+  } else {
+    const b = lookupBand(bmi, D.bmi.bands);
+    bmiPts = b.pts; bmiLabel = b.label;
+  }
+  add('BMI', bmiPts, bmiCfg?.max || D.bmi.max,
+    `BMI ${bmi || 'unknown'} — ${bmiLabel} → ${bmiPts}`, bmi || null);
+
+  // Blood Pressure (systolic from conditions, fallback to remarks parse)
+  const remarkReadings = parseReadingsFromRemarks(d.remarks);
+  const sys = maxReading(d.conditions, 'systolic') || remarkReadings.systolic || 0;
+  const bpCfg = gb('blood_pressure');
+  let bpPts, bpLabel;
+  if (bpCfg) {
+    const b = lookupBand(sys, bpCfg.bands);
+    bpPts = b.points; bpLabel = b.label;
+  } else {
+    const b = lookupBand(sys, D.blood_pressure.bands);
+    bpPts = b.pts; bpLabel = b.label;
+  }
+  add('Blood Pressure', bpPts, bpCfg?.max || D.blood_pressure.max,
+    `${sys ? sys + ' mmHg systolic' : 'No BP reading'} — ${bpLabel} → ${bpPts}`,
+    sys ? `${sys}/${maxReading(d.conditions,'diastolic')||remarkReadings.diastolic||'?'} mmHg` : null);
+
+  // Fasting Glucose
+  const fbs = maxReading(d.conditions, 'fbs') || remarkReadings.fbs || 0;
+  const fbsCfg = gb('fasting_glucose');
+  let fbsPts, fbsLabel;
+  if (fbsCfg) {
+    const b = lookupBand(fbs, fbsCfg.bands);
+    fbsPts = b.points; fbsLabel = b.label;
+  } else {
+    const b = lookupBand(fbs, D.fasting_glucose.bands);
+    fbsPts = b.pts; fbsLabel = b.label;
+  }
+  add('Fasting Glucose', fbsPts, fbsCfg?.max || D.fasting_glucose.max,
+    `${fbs ? fbs + ' mg/dl' : 'No reading'} — ${fbsLabel} → ${fbsPts}`,
+    fbs ? `${fbs} mg/dl` : null);
+
+  // HbA1c
+  const hba1c = maxReading(d.conditions, 'hba1c') || remarkReadings.hba1c || 0;
+  const a1cCfg = gb('hba1c');
+  let a1cPts, a1cLabel;
+  if (a1cCfg) {
+    const b = lookupBand(hba1c, a1cCfg.bands);
+    a1cPts = b.points; a1cLabel = b.label;
+  } else {
+    const b = lookupBand(hba1c, D.hba1c.bands);
+    a1cPts = b.pts; a1cLabel = b.label;
+  }
+  add('HbA1c', a1cPts, a1cCfg?.max || D.hba1c.max,
+    `${hba1c ? hba1c + '%' : 'Not available'} — ${a1cLabel} → ${a1cPts}`,
+    hba1c ? `${hba1c}%` : null);
+
+  // Age Band (prefer DOB-derived age)
+  const age = d.age || 0;
+  const ageCfg = gb('age_band');
+  let agePts, ageLabel;
+  if (ageCfg) {
+    const b = lookupBand(age, ageCfg.bands);
+    agePts = b.points; ageLabel = b.label;
+  } else {
+    const b = lookupBand(age, D.age_band.bands);
+    agePts = b.pts; ageLabel = b.label;
+  }
+  add('Age Band', agePts, ageCfg?.max || D.age_band.max,
+    `Age ${age || 'unknown'} — ${ageLabel} → ${agePts}`,
+    age ? `${age} yrs` : null);
+
+  const maxPts = (ageCfg?.max||D.age_band.max) + (bmiCfg?.max||D.bmi.max) +
+                 (bpCfg?.max||D.blood_pressure.max) + (fbsCfg?.max||D.fasting_glucose.max) +
+                 (a1cCfg?.max||D.hba1c.max);
+  const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxPts);
+  return { score: round2(total), max: maxPts, checks };
+}
+
+// ─── 2) MEDICAL HISTORY ──────────────────────────────────────────────────────
+function scoreMedicalHistory(d, resolver) {
+  const checks = [];
+  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const D = DEFAULTS.medical_history;
+  const th = resolver.th;
   const conds = d.conditions || [];
 
-  // Pre-existing condition burden — start at 12, deduct per condition by severity
-  let pecScore = 12;
-  const notes = [];
+  // PEC burden
+  const pecMax = th.pec_max ?? D.pec_max;
+  const deds   = th.deductions || D.deductions;
+  let pecScore = pecMax;
+  const notes  = [];
   for (const c of conds) {
     const status = lc(c.status);
-    let ded;
-    if (status === 'untreated')        ded = 1;  // disclosed, no treatment, minor
-    else if (status === 'controlled')  ded = 2;  // active but controlled
-    else if (status === 'uncontrolled')ded = 5;  // active, poorly controlled
-    else                               ded = 2;  // default: active
+    const ded = deds[status] ?? deds.active ?? 2;
     pecScore -= ded;
-    notes.push(`${c.name}(${status||'active'}) -${ded}`);
+    notes.push(`${c.name}(${status}) -${ded}`);
   }
-  pecScore = clamp(pecScore, 0, 12);
-  add('Pre-existing Conditions', pecScore, 12,
-      conds.length ? `${conds.length} cond: ${notes.join(', ')} → ${pecScore}/12` : 'none → 12/12');
+  pecScore = clamp(pecScore, 0, pecMax);
+  add('Pre-existing Conditions', pecScore, pecMax,
+    conds.length ? `${conds.length} condition(s): ${notes.join(', ')} → ${pecScore}/${pecMax}` : `none → ${pecMax}/${pecMax}`);
 
-  // Chronicity bonus/penalty — 4 pts (long well-controlled is better than new uncontrolled)
-  let chronPts = 4;
-  for (const c of conds) {
-    if (lc(c.status) === 'uncontrolled') chronPts -= 2;
-  }
-  chronPts = clamp(chronPts, 0, 4);
-  add('Condition Control', chronPts, 4, `control adjustment → ${chronPts}/4`);
+  // Condition control
+  const ctrlMax = th.control_max ?? D.control_max;
+  const ctrlDed = th.control_deduction_per_uncontrolled ?? D.control_deduction_per_uncontrolled;
+  let chronPts  = ctrlMax;
+  for (const c of conds) { if (lc(c.status) === 'uncontrolled') chronPts -= ctrlDed; }
+  chronPts = clamp(chronPts, 0, ctrlMax);
+  add('Condition Control', chronPts, ctrlMax, `control adjustment → ${chronPts}/${ctrlMax}`);
 
-  // Family history — 4 pts
-  const fam = d.family_history || [];
-  const serious = fam.some(f => /cancer|stroke|cardiac|heart/i.test(f));
-  let famPts = fam.length === 0 ? 4 : (serious ? 1 : 2);
-  add('Family History', famPts, 4,
-      fam.length === 0 ? 'no family history → 4/4' : `${fam.join(', ')} → ${famPts}/4`);
+  // Family history
+  const fhCfg  = th.family_history || D.family_history;
+  const fam    = d.family_history || [];
+  const serious = fam.some(f => (fhCfg.serious_conditions || D.family_history.serious_conditions)
+    .some(s => lc(f).includes(s)));
+  const famPts = fam.length === 0 ? (fhCfg.none ?? 4) : (serious ? (fhCfg.serious ?? 1) : (fhCfg.minor ?? 2));
+  add('Family History', famPts, fhCfg.none ?? 4,
+    fam.length === 0 ? `no family history → ${famPts}` : `${fam.join(', ')} → ${famPts}`);
 
-  const total = clamp(checks.reduce((s, c) => s + c.points, 0), 0, PARAM_MAX.medical_history);
-  return { score: round2(total), max: PARAM_MAX.medical_history, checks };
+  const maxTotal = pecMax + ctrlMax + (fhCfg.none ?? 4);
+  const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
+  return { score: round2(total), max: maxTotal, checks };
 }
 
-// ── 3) LIFESTYLE RISK (max 15) ───────────────────────────────────────────────
-function scoreLifestyle(d) {
+// ─── 3) LIFESTYLE RISK ───────────────────────────────────────────────────────
+function scoreLifestyle(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic });
-  const r = lc(d.remarks);
+  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const D  = DEFAULTS.lifestyle_risk;
+  const th = resolver.th;
+  const r  = lc(d.remarks);
 
-  // Tobacco / alcohol — 7 pts (Q7). Remarks win; default to clean if Q7=No and no mention.
-  const usesTobacco = /smok|cigarette|beedi|gutkha|pan|tobacco|khaini/.test(r);
-  const usesAlcohol = /alcohol|drink|whisky|beer|wine/.test(r) && !/no alcohol|nil alcohol/.test(r);
-  let subPts = 7;
-  if (usesTobacco) subPts -= 4;
-  if (usesAlcohol) subPts -= 3;
-  subPts = clamp(subPts, 0, 7);
-  add('Tobacco/Alcohol', subPts, 7,
-      `tobacco:${usesTobacco} alcohol:${usesAlcohol} → ${subPts}/7`);
+  // Tobacco / Alcohol
+  const taMax  = th.tobacco_alcohol_max ?? D.tobacco_alcohol_max;
+  const taDed  = th.tobacco_deduction   ?? D.tobacco_deduction;
+  const alDed  = th.alcohol_deduction   ?? D.alcohol_deduction;
+  const hasTob = /smok|cigarette|beedi|gutkha|pan\b|tobacco|khaini/.test(r);
+  const hasAlc = /alcohol|drink|whisky|beer|wine/.test(r) && !/no alcohol|nil alcohol/.test(r);
+  let taPts = taMax;
+  if (hasTob) taPts -= taDed;
+  if (hasAlc) taPts -= alDed;
+  taPts = clamp(taPts, 0, taMax);
+  add('Tobacco / Alcohol', taPts, taMax,
+    `tobacco:${hasTob} alcohol:${hasAlc} → ${taPts}/${taMax}`);
 
-  // Weight stability — 4 pts (Q6)
-  const weightChange = d.answers && d.answers.q6 === true;
-  const wPts = weightChange ? 1 : 4;
-  add('Weight Stability', wPts, 4, weightChange ? 'recent weight change → 1/4' : 'stable weight → 4/4');
+  // Weight stability
+  const wStable = th.weight_stable_pts ?? D.weight_stable_pts;
+  const wChange = th.weight_change_pts ?? D.weight_change_pts;
+  const wMax    = th.weight_max        ?? D.weight_max;
+  const changed = d.answers?.q6 === true;
+  add('Weight Stability', changed ? wChange : wStable, wMax,
+    changed ? `recent weight change → ${wChange}/${wMax}` : `stable weight → ${wStable}/${wMax}`);
 
-  // BMI as lifestyle proxy — 4 pts
-  const bmi = d.bmi || 0;
-  let bmiPts;
-  if (bmi === 0)        bmiPts = 2;
-  else if (bmi <= 24.9) bmiPts = 4;
-  else if (bmi <= 29.9) bmiPts = 3;
-  else if (bmi <= 34.9) bmiPts = 2;
-  else                  bmiPts = 1;
-  add('BMI (lifestyle proxy)', bmiPts, 4, `BMI ${bmi || 'unknown'} → ${bmiPts}/4`);
+  // BMI proxy
+  const bmiD = th.bmi_proxy || D.bmi_proxy;
+  const bmi  = num(d.bmi) || 0;
+  const bmiB = lookupBand(bmi, bmiD.bands);
+  add('BMI (lifestyle proxy)', bmiB.pts ?? bmiB.points, bmiD.max,
+    `BMI ${bmi || 'unknown'} → ${bmiB.pts ?? bmiB.points}/${bmiD.max}`);
 
-  const total = clamp(checks.reduce((s, c) => s + c.points, 0), 0, PARAM_MAX.lifestyle_risk);
-  return { score: round2(total), max: PARAM_MAX.lifestyle_risk, checks };
+  const maxTotal = taMax + wMax + bmiD.max;
+  const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
+  return { score: round2(total), max: maxTotal, checks };
 }
 
-// ── 4) CLINICAL CORRELATION (max 15) ─────────────────────────────────────────
-function scoreClinicalCorrelation(d) {
+// ─── 4) CLINICAL CORRELATION ─────────────────────────────────────────────────
+function scoreClinicalCorrelation(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic });
+  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const D    = DEFAULTS.clinical_correlation;
+  const th   = resolver.th;
   const conds = d.conditions || [];
 
-  // Drug<->condition match — 5 pts (does each disclosed condition have a matching med?)
-  let matched = 0;
+  // Drug-condition match
+  const dmCfg  = th.drug_match || D.drug_match;
+  let matched  = 0;
   for (const c of conds) {
     const med = Array.isArray(c.medication) ? c.medication.join(', ') : String(c.medication || '');
     if (med.trim() && med.trim().toLowerCase() !== 'unknown') matched++;
   }
   let drugPts;
-  if (conds.length === 0)        drugPts = 5;                       // nothing to mismatch
-  else if (matched === conds.length) drugPts = 5;                  // all conditions medicated coherently
-  else if (matched > 0)          drugPts = 3;
-  else                           drugPts = 1;
-  add('Drug-Condition Match', drugPts, 5,
-      conds.length === 0 ? 'no conditions → 5/5' : `${matched}/${conds.length} conditions medicated → ${drugPts}/5`);
+  if (conds.length === 0)              drugPts = dmCfg.no_conditions ?? 5;
+  else if (matched === conds.length)   drugPts = dmCfg.all_match     ?? 5;
+  else if (matched > 0)               drugPts = dmCfg.partial        ?? 3;
+  else                                 drugPts = dmCfg.none           ?? 1;
+  add('Drug-Condition Match', drugPts, dmCfg.max ?? 5,
+    conds.length === 0 ? `no conditions → ${drugPts}` : `${matched}/${conds.length} medicated → ${drugPts}`);
 
-  // Multi-system load — 5 pts (more distinct active systems = lower)
+  // Multi-system load
+  const msCfg  = th.multi_system || D.multi_system;
   const systems = new Set();
   for (const c of conds) {
     const n = lc(c.name);
@@ -225,146 +437,119 @@ function scoreClinicalCorrelation(d) {
     else if (/kidney|renal|liver|gi|gall/.test(n)) systems.add('gi_renal');
     else systems.add('other');
   }
-  const sysCount = systems.size;
-  let sysPts;
-  if (sysCount === 0)      sysPts = 5;
-  else if (sysCount === 1) sysPts = 4;
-  else if (sysCount === 2) sysPts = 3;
-  else if (sysCount === 3) sysPts = 2;
-  else                     sysPts = 1;
-  add('Multi-System Load', sysPts, 5,
-      `${sysCount} system(s): ${[...systems].join(', ') || 'none'} → ${sysPts}/5`);
+  const sc = systems.size;
+  let sysPts = msCfg.max ?? 5;
+  for (const b of (msCfg.bands || [])) { if (sc <= b.systems) { sysPts = b.pts; break; } }
+  if (!(msCfg.bands?.length)) {
+    // defaults
+    sysPts = sc === 0 ? 5 : sc === 1 ? 4 : sc === 2 ? 3 : sc === 3 ? 2 : 1;
+  }
+  add('Multi-System Load', sysPts, msCfg.max ?? 5,
+    `${sc} system(s): ${[...systems].join(', ') || 'none'} → ${sysPts}`);
 
-  // Cardiovascular proxy — 5 pts (age + BMI + BP + DM comorbidity factors)
-  const age = d.age || 0;
-  const bmi = d.bmi || 0;
-  const sys = maxReading(conds, 'systolic');
+  // CV proxy
+  const cvCfg = th.cv_proxy || D.cv_proxy;
+  const age   = d.age || 0;
+  const bmi   = num(d.bmi) || 0;
+  const sys   = maxReading(conds, 'systolic') || parseReadingsFromRemarks(d.remarks).systolic || 0;
   const hasDM = conds.some(c => /diabet|dm|sugar/.test(lc(c.name)));
-  let protective = 0;
-  if (age && age < 55) protective++;
-  if (bmi && bmi < 30) protective++;
-  if (!sys || sys < 140) protective++;
-  if (!hasDM) protective++;
-  if (conds.length < 3) protective++;
-  const cvPts = clamp(protective, 1, 5);
-  add('Cardiovascular Proxy', cvPts, 5,
-      `${protective}/5 protective factors → ${cvPts}/5`);
+  let prot = 0;
+  if (age && age < 55) prot++;
+  if (bmi && bmi < 30) prot++;
+  if (!sys || sys < 140) prot++;
+  if (!hasDM) prot++;
+  if (conds.length < 3) prot++;
+  const cvPts = clamp(prot, cvCfg.min ?? 1, cvCfg.max ?? 5);
+  add('Cardiovascular Proxy', cvPts, cvCfg.max ?? 5,
+    `${prot}/5 protective factors → ${cvPts}`);
 
-  const total = clamp(checks.reduce((s, c) => s + c.points, 0), 0, PARAM_MAX.clinical_correlation);
-  return { score: round2(total), max: PARAM_MAX.clinical_correlation, checks };
+  const maxTotal = (dmCfg.max??5) + (msCfg.max??5) + (cvCfg.max??5);
+  const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
+  return { score: round2(total), max: maxTotal, checks };
 }
 
-// ── 5) DOCUMENTATION QUALITY (max 10) ────────────────────────────────────────
-// This is where Yes/No-vs-remarks contradictions land.
-function scoreDocumentationQuality(d) {
+// ─── 5) DOCUMENTATION QUALITY ────────────────────────────────────────────────
+function scoreDocumentationQuality(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic });
+  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const D  = DEFAULTS.documentation_quality;
+  const th = resolver.th;
 
-  // Completeness — 4 pts (do conditions have duration + medication + reading?)
-  const conds = d.conditions || [];
-  let comp = 4;
+  // Completeness
+  const compMax = th.completeness_max ?? D.completeness_max;
+  const conds   = d.conditions || [];
+  let comp = compMax;
   if (conds.length > 0) {
     let full = 0;
     for (const c of conds) {
-      const hasDur = c.duration_years != null;
-      const hasMed = !!(c.medication && String(c.medication).trim());
+      const hasDur  = c.duration_years != null;
+      const hasMed  = !!(c.medication && String(c.medication).trim());
       const hasRead = !!(c.systolic || c.fbs || c.hba1c);
       if (hasDur && hasMed && hasRead) full++;
     }
-    comp = round2(4 * (full / conds.length));
+    comp = round2(compMax * (full / conds.length));
   }
-  add('Completeness', comp, 4, `${conds.length} condition(s) fully described → ${comp}/4`);
+  add('Completeness', comp, compMax,
+    `${conds.length} condition(s) fully described → ${comp}/${compMax}`);
 
-  // Examiner detail + reports — 3 pts
+  // Examiner & reports
+  const exMax   = th.examiner_max      ?? D.examiner_max;
+  const exName  = th.examiner_name_pts ?? D.examiner_name_pts;
+  const exReg   = th.examiner_reg_pts  ?? D.examiner_reg_pts;
+  const repPts  = th.reports_pts       ?? D.reports_pts;
   let det = 0;
-  if (d.examiner && d.examiner.name) det += 1.5;
-  if (d.examiner && d.examiner.reg_no) det += 0.5;
-  if (d.reports_available) det += 1;
-  det = clamp(det, 0, 3);
-  add('Examiner & Reports', det, 3, `examiner+reports → ${det}/3`);
+  if (d.examiner?.name)   det += exName;
+  if (d.examiner?.reg_no) det += exReg;
+  if (d.reports_available) det += repPts;
+  det = clamp(det, 0, exMax);
+  add('Examiner & Reports', det, exMax, `examiner+reports → ${det}/${exMax}`);
 
-  // Form consistency — 3 pts (contradiction count between remarks and Yes/No boxes)
-  const contradictions = detectContradictions(d);
-  let cons;
-  if (contradictions.length === 0)      cons = 3;
-  else if (contradictions.length === 1) cons = 2;
-  else if (contradictions.length === 2) cons = 1;
-  else                                  cons = 0;
-  add('Form Consistency', cons, 3,
-      `${contradictions.length} contradiction(s) → ${cons}/3`);
+  // Form consistency
+  const conBands = th.consistency_bands || D.consistency_bands;
+  const conMax   = conBands[0]?.pts ?? D.consistency_max;
+  const contras  = detectContradictions(d);
+  let cons = 0;
+  for (const b of conBands) { if (contras.length <= b.contradictions) { cons = b.pts; break; } }
+  add('Form Consistency', cons, conMax,
+    `${contras.length} contradiction(s) → ${cons}/${conMax}`);
 
-  const total = clamp(checks.reduce((s, c) => s + c.points, 0), 0, PARAM_MAX.documentation_quality);
-  return { score: round2(total), max: PARAM_MAX.documentation_quality, checks, contradictions };
+  const maxTotal = compMax + exMax + conMax;
+  const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
+  return { score: round2(total), max: maxTotal, checks, contradictions: contras };
 }
 
-// ── Contradiction detector (remarks say condition, but box says No) ──────────
+// ─── CONTRADICTION DETECTOR ──────────────────────────────────────────────────
 function detectContradictions(d) {
   const r = lc(d.remarks);
   const a = d.answers || {};
   const found = [];
   const has = (...kw) => kw.some(k => r.includes(k));
 
-  if (has('htn', 'hypertension', 'coversyl', 'blood pressure') && a.q12 === false)
+  if (has('htn','hypertension','coversyl','blood pressure') && a.q12 === false)
     found.push('HTN in remarks but Q12 (HTN) = No');
-  if (has('dm', 'diabet', 'janumet', 'sugar') && a.q13 === false)
+  if (has('dm','diabet','janumet','sugar') && a.q13 === false)
     found.push('DM in remarks but Q13 (Diabetes) = No');
-  if (has('dm', 'diabet', 'thyroid', 'janumet') && a.q26 === false)
+  if (has('dm','diabet','thyroid','janumet') && a.q26 === false)
     found.push('DM/endocrine in remarks but Q26 (Endocrine) = No');
-  if ((d.conditions || []).some(c => c.medication) && a.q4 === false)
+  if ((d.conditions||[]).some(c => c.medication) && a.q4 === false)
     found.push('On active medication but Q4 (treated in 5 yrs) = No');
   return found;
 }
 
 const maxReading = (conds, field) => {
   let m = 0;
-  for (const c of (conds || [])) {
-    const v = parseFloat(c[field]);
-    if (!isNaN(v) && v > m) m = v;
-  }
+  for (const c of (conds||[])) { const v = parseFloat(c[field]); if (!isNaN(v) && v > m) m = v; }
   return m;
 };
 
-// ── Decision band ────────────────────────────────────────────────────────────
-function resolveBand(score) {
-  if (score >= 80) return { label: 'Standard Accept', loading: '0%' };
-  if (score >= 65) return { label: 'Mild Load', loading: '5-15%' };
-  if (score >= 50) return { label: 'Moderate Load', loading: '15-30%' };
-  if (score >= 35) return { label: 'Heavy Load', loading: '30-50%' };
-  return { label: 'Refer / Decline', loading: 'N/A' };
+// ─── DECISION BAND ───────────────────────────────────────────────────────────
+function resolveBand(score, resolver) {
+  const bands = resolver.th?.decision_bands || DEFAULTS.decision_bands;
+  for (const b of bands) { if (score >= b.min_score) return b; }
+  return bands[bands.length - 1];
 }
 
-// ── MAIN ENTRY POINT ─────────────────────────────────────────────────────────
-function scoreTeleMER(d) {
-  const p1 = scoreMedicalParameters(d);
-  const p2 = scoreMedicalHistory(d);
-  const p3 = scoreLifestyle(d);
-  const p4 = scoreClinicalCorrelation(d);
-  const p5 = scoreDocumentationQuality(d);
-
-  const total = round2(p1.score + p2.score + p3.score + p4.score + p5.score);
-  const band = resolveBand(total);
-
-  return {
-    applicant: d.name || d.applicant_name || 'Applicant',
-    total_score: total,
-    max_score: 100,
-    interpretation: 'Higher score = healthier / lower-risk',
-    decision_band: band.label,
-    indicative_loading: band.loading,
-    parameters: {
-      medical_parameters:    p1,
-      medical_history:       p2,
-      lifestyle_risk:        p3,
-      clinical_correlation:  p4,
-      documentation_quality: p5
-    },
-    review_notes: p5.contradictions,   // remark-vs-box mismatches surfaced for UW
-    decision_basis: 'Clinical scoring driven by free-text remarks; Yes/No contradictions affect Documentation Quality only.',
-    scored_at: new Date().toISOString()
-  };
-}
-
-// ── Grade from a 0-100 score ─────────────────────────────────────────────────
+// ─── GRADE ───────────────────────────────────────────────────────────────────
 function gradeFor(score) {
   if (score >= 90) return 'A+';
   if (score >= 80) return 'A';
@@ -374,31 +559,57 @@ function gradeFor(score) {
   return 'D';
 }
 
-// ── Frontend adapter ─────────────────────────────────────────────────────────
-// Converts the model output into the exact shape index.html's "calculations"
-// view expects: analysis.component_analysis.<param>.{score,max,percentage,breakdown}
-// where each breakdown entry = { score, max, status, logic }, plus
-// analysis.risk_score.{normalized,grade}.
+// ─── MAIN ENTRY POINT ────────────────────────────────────────────────────────
+// catCfg = catScoringConfig['tele_mer'] passed in from server.js
+function scoreTeleMER(d, catCfg) {
+  const resolver = makeResolver(catCfg);
+
+  const p1 = scoreMedicalParameters(d,    resolver);
+  const p2 = scoreMedicalHistory(d,       resolver);
+  const p3 = scoreLifestyle(d,            resolver);
+  const p4 = scoreClinicalCorrelation(d,  resolver);
+  const p5 = scoreDocumentationQuality(d, resolver);
+
+  const total = round2(p1.score + p2.score + p3.score + p4.score + p5.score);
+  const band  = resolveBand(total, resolver);
+
+  return {
+    applicant:          d.name || d.applicant_name || 'Applicant',
+    total_score:        total,
+    max_score:          100,
+    interpretation:     'Higher score = healthier / lower-risk',
+    decision_band:      band.label,
+    indicative_loading: band.loading,
+    parameters: {
+      medical_parameters:    p1,
+      medical_history:       p2,
+      lifestyle_risk:        p3,
+      clinical_correlation:  p4,
+      documentation_quality: p5
+    },
+    review_notes:   p5.contradictions,
+    decision_basis: 'Remarks-driven scoring. Contradictions affect Documentation Quality only.',
+    scored_at:      new Date().toISOString()
+  };
+}
+
+// ─── FRONTEND ADAPTER ────────────────────────────────────────────────────────
 function toFrontendShape(result) {
   const pct = (s, m) => m ? Math.round((s / m) * 100) : 0;
-
-  // Derive a compact status label from a check's points ratio
   const statusFor = (pts, max) => {
     const r = max ? pts / max : 0;
-    if (r >= 0.8) return 'good';
-    if (r >= 0.5) return 'moderate';
-    return 'adverse';
+    return r >= 0.8 ? 'good' : r >= 0.5 ? 'moderate' : 'adverse';
   };
-
   const buildBreakdown = (param) => {
     const out = {};
     for (const c of param.checks) {
-      const key = c.label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+      const key = c.label.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
       out[key] = {
-        score: c.points,
-        max: c.max,
+        score:  c.points,
+        max:    c.max,
         status: statusFor(c.points, c.max),
-        logic: c.logic
+        logic:  c.logic,
+        value:  c.value ?? null    // ← actual reading (e.g. "130/86 mmHg") for Value column
       };
     }
     return out;
@@ -407,10 +618,10 @@ function toFrontendShape(result) {
   const component_analysis = {};
   for (const [name, param] of Object.entries(result.parameters)) {
     component_analysis[name] = {
-      score: param.score,
-      max: param.max,
+      score:      param.score,
+      max:        param.max,
       percentage: pct(param.score, param.max),
-      breakdown: buildBreakdown(param)
+      breakdown:  buildBreakdown(param)
     };
   }
 
@@ -418,80 +629,83 @@ function toFrontendShape(result) {
     component_analysis,
     risk_score: {
       normalized: result.total_score,
-      grade: gradeFor(result.total_score),
-      total: result.total_score,
-      max: 100
+      grade:      gradeFor(result.total_score),
+      total:      result.total_score,
+      max:        100
     },
-    decision_band: result.decision_band,
+    decision_band:      result.decision_band,
     indicative_loading: result.indicative_loading,
-    review_notes: result.review_notes,
-    decision_basis: result.decision_basis
+    review_notes:       result.review_notes,
+    decision_basis:     result.decision_basis
   };
 }
 
-// ── Extractor → model input mapper ───────────────────────────────────────────
-// Converts the claude-extractor `telemer_data` shape into scoreTeleMER() input.
-// The extractor gives structured fields (no flat remarks string, no Q-answers map,
-// no numeric BP/glucose), so we reconstruct what we can and degrade gracefully.
+// ─── EXTRACTOR → MODEL MAPPER ────────────────────────────────────────────────
 function fromExtractorData(telemer_data, opts = {}) {
-  const td = telemer_data || {};
+  const td      = telemer_data || {};
   const proposer = td.proposer_info || {};
-  const mh = td.medical_history || {};
-  const ls = td.lifestyle || {};
-  const fam = mh.family_history || {};
+  const mh      = td.medical_history || {};
+  const ls      = td.lifestyle || {};
+  const fam     = mh.family_history || {};
 
-  // Conditions: map extractor's pre_existing_conditions → model conditions
+  // Age: DOB first, then proposer.age, then wf.age from opts
+  const dobAge  = ageFromDOB(proposer.date_of_birth || proposer.dob || opts.dob);
+  const age     = dobAge || num(proposer.age) || num(opts.age) || 0;
+
+  // Conditions
   const conditions = (mh.pre_existing_conditions || []).map(c => {
     const status = String(c.current_status || 'active').toLowerCase();
-    const rd = c.readings || {};
+    const rd     = c.readings || {};
     return {
-      name: c.condition || '',
-      duration_years: c.since_year ? Math.max(0, (new Date().getFullYear() - c.since_year)) : null,
-      medication: Array.isArray(c.medication) ? c.medication.join(', ') : String(c.medication || ''),
-      status: status === 'resolved' ? 'controlled' : status,  // model knows controlled/uncontrolled/untreated
-      // numeric readings now come from the extractor (opts.readings still wins if supplied)
-      systolic: (opts.readings && opts.readings.systolic) || rd.systolic || null,
-      diastolic: (opts.readings && opts.readings.diastolic) || rd.diastolic || null,
-      fbs: (opts.readings && opts.readings.fbs) || rd.fbs || null,
-      hba1c: (opts.readings && opts.readings.hba1c) || rd.hba1c || null
+      name:          c.condition || '',
+      duration_years:c.since_year ? Math.max(0, new Date().getFullYear() - c.since_year) : null,
+      medication:    Array.isArray(c.medication) ? c.medication.join(', ') : String(c.medication || ''),
+      status:        status === 'resolved' ? 'controlled' : status,
+      systolic:      (opts.readings?.systolic)  || num(rd.systolic)  || null,
+      diastolic:     (opts.readings?.diastolic) || num(rd.diastolic) || null,
+      fbs:           (opts.readings?.fbs)       || num(rd.fbs)       || null,
+      hba1c:         (opts.readings?.hba1c)     || num(rd.hba1c)     || null
     };
   });
 
-  // Family history: booleans → array of condition names
+  // Family history booleans → array
   const family_history = [];
-  if (fam.cancer) family_history.push('cancer');
-  if (fam.stroke) family_history.push('stroke');
-  if (fam.cardiac) family_history.push('cardiac');
-  if (fam.diabetes) family_history.push('diabetes');
+  if (fam.cancer)       family_history.push('cancer');
+  if (fam.stroke)       family_history.push('stroke');
+  if (fam.cardiac)      family_history.push('cardiac');
+  if (fam.diabetes)     family_history.push('diabetes');
   if (fam.hypertension) family_history.push('hypertension');
 
-  // Reconstruct a remarks string from structured fields + any raw remark passed in opts
-  const remarkParts = [];
-  for (const c of (mh.pre_existing_conditions || [])) {
-    remarkParts.push(`${c.condition || ''}${c.since_year ? ' since ' + c.since_year : ''}${c.medication ? ' on ' + c.medication : ''} (${c.current_status || 'active'})`);
-  }
-  const remarks = opts.raw_remarks || td.examiner_remarks_verbatim || td.remarks || remarkParts.join('. ');
+  // Remarks
+  const detail = td.detail_text || {};
+  const remarkParts = (mh.pre_existing_conditions || []).map(c =>
+    `${c.condition||''}${c.since_year?' since '+c.since_year:''}${c.medication?' on '+c.medication:''} (${c.current_status||'active'})`
+  );
+  const remarks = opts.raw_remarks
+    || td.examiner_remarks_verbatim
+    || td.remarks
+    || remarkParts.join('. ');
 
-  // Lifestyle: encode into remarks keywords the model scans for
+  // Lifestyle keywords
   let lifestyleRemark = '';
-  if (ls.smoking && ls.smoking.status === 'current') lifestyleRemark += ' smoker';
-  if (ls.tobacco_chewing && ls.tobacco_chewing.status === 'current') lifestyleRemark += ' tobacco';
-  if (ls.alcohol && (ls.alcohol.status === 'regular' || ls.alcohol.status === 'heavy')) lifestyleRemark += ' alcohol';
+  if (ls.smoking?.status === 'current')  lifestyleRemark += ' smoker';
+  if (ls.tobacco_chewing?.status === 'current') lifestyleRemark += ' tobacco';
+  if (ls.alcohol?.status === 'regular' || ls.alcohol?.status === 'heavy') lifestyleRemark += ' alcohol';
 
-  // BMI: from opts (the engine elsewhere derives it from height/weight) or proposer
-  const bmi = opts.bmi || proposer.bmi || 0;
+  const bmi = num(opts.bmi) || num(proposer.bmi) || num(opts.declared_bmi) || 0;
 
   return {
-    name: proposer.name || 'Applicant',
-    age: proposer.age || 0,
-    gender: proposer.gender || '',
+    name:              proposer.name || 'Applicant',
+    age,
+    dob:               proposer.date_of_birth || proposer.dob || null,
+    gender:            proposer.gender || '',
     bmi,
-    answers: opts.answers || td.question_answers || {},   // Q-answers map from extractor or caller
-    remarks: (remarks + lifestyleRemark).trim(),
+    answers:           opts.answers || td.question_answers || {},
+    remarks:           (remarks + lifestyleRemark).trim(),
     conditions,
     family_history,
-    reports_available: opts.reports_available != null ? opts.reports_available : true,
-    examiner: opts.examiner || {}
+    reports_available: opts.reports_available ?? true,
+    examiner:          opts.examiner || td.examiner || {}
   };
 }
 
@@ -500,11 +714,8 @@ module.exports = {
   toFrontendShape,
   fromExtractorData,
   gradeFor,
-  scoreMedicalParameters,
-  scoreMedicalHistory,
-  scoreLifestyle,
-  scoreClinicalCorrelation,
-  scoreDocumentationQuality,
+  parseReadingsFromRemarks,
+  ageFromDOB,
   detectContradictions,
-  PARAM_MAX
+  DEFAULTS
 };
