@@ -218,20 +218,30 @@ function ageFromDOB(dob) {
 }
 
 // ─── BAND LOOKUP ─────────────────────────────────────────────────────────────
-// Bands are sorted ascending by max_val.
-// Bands with max_val === 0 are "unknown/no reading" sentinels — only match when value is 0/null.
-// For real values (>0), skip the sentinel and find the first band where value <= max_val.
+// Handles TWO band shapes:
+//   DEFAULTS shape: { max_val: Number, pts: Number, label: String }  — numeric range lookup
+//   DB/mkFactor shape: { value: String, points: Number, label: String } — categorical, no numeric range
+// When DB bands are detected, scoring falls back to DEFAULTS for numeric lookup.
+// sentinel: max_val===0 → "unknown/no reading", only matched when value is 0/null.
 function lookupBand(value, bands) {
+  if (!bands || bands.length === 0) return { pts: 0, points: 0, label: 'no bands' };
+
+  // DB/mkFactor bands have string `value` field and no `max_val`
+  const isDbShape = bands[0].max_val === undefined && bands[0].value !== undefined;
+  if (isDbShape) {
+    // Cannot do numeric range lookup on categorical DB bands.
+    // Return first band as safe default — caller should use DEFAULTS for scoring.
+    return { points: bands[0].points ?? 0, pts: bands[0].points ?? 0, label: bands[0].label ?? '' };
+  }
+
+  // DEFAULTS shape: numeric range lookup
   if (!value || value === 0) {
-    // Return sentinel band (max_val=0) if it exists, else first band
     return bands.find(b => b.max_val === 0) || bands[0];
   }
-  // Skip sentinel bands (max_val=0) for real values
   const realBands = bands.filter(b => b.max_val > 0);
-  for (const b of realBands) {
-    if (value <= b.max_val) return b;
-  }
-  return realBands[realBands.length - 1]; // fallback to last real band
+  if (realBands.length === 0) return bands[bands.length - 1] || { pts: 0, points: 0 };
+  for (const b of realBands) { if (value <= b.max_val) return b; }
+  return realBands[realBands.length - 1];
 }
 
 // ─── 1) MEDICAL PARAMETERS ───────────────────────────────────────────────────
@@ -246,14 +256,9 @@ function scoreMedicalParameters(d, resolver) {
   // BMI
   const bmi = num(d.bmi) || 0;
   const bmiCfg = gb('bmi');
-  let bmiPts, bmiLabel;
-  if (bmiCfg) {
-    const b = lookupBand(bmi, bmiCfg.bands);
-    bmiPts = b.points; bmiLabel = b.label;
-  } else {
-    const b = lookupBand(bmi, D.bmi.bands);
-    bmiPts = b.pts; bmiLabel = b.label;
-  }
+  // Always use DEFAULTS for numeric band lookup (DB bands are categorical labels, not numeric ranges)
+  const bmiB = lookupBand(bmi, D.bmi.bands);
+  const bmiPts = bmiB.pts; const bmiLabel = bmiB.label;
   add('BMI', bmiPts, bmiCfg?.max || D.bmi.max,
     `BMI ${bmi || 'unknown'} — ${bmiLabel} → ${bmiPts}`, bmi || null);
 
@@ -261,14 +266,8 @@ function scoreMedicalParameters(d, resolver) {
   const remarkReadings = parseReadingsFromRemarks(d.remarks);
   const sys = maxReading(d.conditions, 'systolic') || remarkReadings.systolic || 0;
   const bpCfg = gb('blood_pressure');
-  let bpPts, bpLabel;
-  if (bpCfg) {
-    const b = lookupBand(sys, bpCfg.bands);
-    bpPts = b.points; bpLabel = b.label;
-  } else {
-    const b = lookupBand(sys, D.blood_pressure.bands);
-    bpPts = b.pts; bpLabel = b.label;
-  }
+  const bpBand = lookupBand(sys, D.blood_pressure.bands);
+  const bpPts = bpBand.pts; const bpLabel = bpBand.label;
   add('Blood Pressure', bpPts, bpCfg?.max || D.blood_pressure.max,
     `${sys ? sys + ' mmHg systolic' : 'No BP reading'} — ${bpLabel} → ${bpPts}`,
     sys ? `${sys}/${maxReading(d.conditions,'diastolic')||remarkReadings.diastolic||'?'} mmHg` : null);
@@ -276,14 +275,8 @@ function scoreMedicalParameters(d, resolver) {
   // Fasting Glucose
   const fbs = maxReading(d.conditions, 'fbs') || remarkReadings.fbs || 0;
   const fbsCfg = gb('fasting_glucose');
-  let fbsPts, fbsLabel;
-  if (fbsCfg) {
-    const b = lookupBand(fbs, fbsCfg.bands);
-    fbsPts = b.points; fbsLabel = b.label;
-  } else {
-    const b = lookupBand(fbs, D.fasting_glucose.bands);
-    fbsPts = b.pts; fbsLabel = b.label;
-  }
+  const fbsB = lookupBand(fbs, D.fasting_glucose.bands);
+  const fbsPts = fbsB.pts; const fbsLabel = fbsB.label;
   add('Fasting Glucose', fbsPts, fbsCfg?.max || D.fasting_glucose.max,
     `${fbs ? fbs + ' mg/dl' : 'No reading'} — ${fbsLabel} → ${fbsPts}`,
     fbs ? `${fbs} mg/dl` : null);
@@ -291,14 +284,8 @@ function scoreMedicalParameters(d, resolver) {
   // HbA1c
   const hba1c = maxReading(d.conditions, 'hba1c') || remarkReadings.hba1c || 0;
   const a1cCfg = gb('hba1c');
-  let a1cPts, a1cLabel;
-  if (a1cCfg) {
-    const b = lookupBand(hba1c, a1cCfg.bands);
-    a1cPts = b.points; a1cLabel = b.label;
-  } else {
-    const b = lookupBand(hba1c, D.hba1c.bands);
-    a1cPts = b.pts; a1cLabel = b.label;
-  }
+  const a1cB = lookupBand(hba1c, D.hba1c.bands);
+  const a1cPts = a1cB.pts; const a1cLabel = a1cB.label;
   add('HbA1c', a1cPts, a1cCfg?.max || D.hba1c.max,
     `${hba1c ? hba1c + '%' : 'Not available'} — ${a1cLabel} → ${a1cPts}`,
     hba1c ? `${hba1c}%` : null);
@@ -306,14 +293,8 @@ function scoreMedicalParameters(d, resolver) {
   // Age Band (prefer DOB-derived age)
   const age = d.age || 0;
   const ageCfg = gb('age_band');
-  let agePts, ageLabel;
-  if (ageCfg) {
-    const b = lookupBand(age, ageCfg.bands);
-    agePts = b.points; ageLabel = b.label;
-  } else {
-    const b = lookupBand(age, D.age_band.bands);
-    agePts = b.pts; ageLabel = b.label;
-  }
+  const ageB = lookupBand(age, D.age_band.bands);
+  const agePts = ageB.pts; const ageLabel = ageB.label;
   add('Age Band', agePts, ageCfg?.max || D.age_band.max,
     `Age ${age || 'unknown'} — ${ageLabel} → ${agePts}`,
     age ? `${age} yrs` : null);
@@ -399,14 +380,14 @@ function scoreLifestyle(d, resolver) {
   add('Weight Stability', changed ? wChange : wStable, wMax,
     changed ? `recent weight change → ${wChange}/${wMax}` : `stable weight → ${wStable}/${wMax}`);
 
-  // BMI proxy
-  const bmiD = th.bmi_proxy || D.bmi_proxy;
-  const bmi  = num(d.bmi) || 0;
-  const bmiB = lookupBand(bmi, bmiD.bands);
-  add('BMI (lifestyle proxy)', bmiB.pts ?? bmiB.points, bmiD.max,
-    `BMI ${bmi || 'unknown'} → ${bmiB.pts ?? bmiB.points}/${bmiD.max}`);
+  // BMI proxy — always use DEFAULTS.lifestyle_risk.bmi_proxy.bands for numeric lookup
+  const bmiDProxy = D.bmi_proxy;
+  const bmiProxy  = num(d.bmi) || 0;
+  const bmiBProxy = lookupBand(bmiProxy, bmiDProxy.bands);
+  add('BMI (lifestyle proxy)', bmiBProxy.pts, bmiDProxy.max,
+    `BMI ${bmiProxy || 'unknown'} → ${bmiBProxy.pts}/${bmiDProxy.max}`);
 
-  const maxTotal = taMax + wMax + bmiD.max;
+  const maxTotal = taMax + wMax + bmiDProxy.max;
   const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
   return { score: round2(total), max: maxTotal, checks };
 }
