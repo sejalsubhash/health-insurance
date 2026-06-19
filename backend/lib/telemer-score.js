@@ -204,7 +204,8 @@ function scoreClinicalCorrelation(d) {
   // Drug<->condition match — 5 pts (does each disclosed condition have a matching med?)
   let matched = 0;
   for (const c of conds) {
-    if (c.medication && c.medication.trim() && c.medication.trim().toLowerCase() !== 'unknown') matched++;
+    const med = Array.isArray(c.medication) ? c.medication.join(', ') : String(c.medication || '');
+    if (med.trim() && med.trim().toLowerCase() !== 'unknown') matched++;
   }
   let drugPts;
   if (conds.length === 0)        drugPts = 5;                       // nothing to mismatch
@@ -266,7 +267,7 @@ function scoreDocumentationQuality(d) {
     let full = 0;
     for (const c of conds) {
       const hasDur = c.duration_years != null;
-      const hasMed = !!(c.medication && c.medication.trim());
+      const hasMed = !!(c.medication && String(c.medication).trim());
       const hasRead = !!(c.systolic || c.fbs || c.hba1c);
       if (hasDur && hasMed && hasRead) full++;
     }
@@ -441,12 +442,12 @@ function fromExtractorData(telemer_data, opts = {}) {
 
   // Conditions: map extractor's pre_existing_conditions → model conditions
   const conditions = (mh.pre_existing_conditions || []).map(c => {
-    const status = (c.current_status || 'active').toLowerCase();
+    const status = String(c.current_status || 'active').toLowerCase();
     const rd = c.readings || {};
     return {
       name: c.condition || '',
       duration_years: c.since_year ? Math.max(0, (new Date().getFullYear() - c.since_year)) : null,
-      medication: c.medication || '',
+      medication: Array.isArray(c.medication) ? c.medication.join(', ') : String(c.medication || ''),
       status: status === 'resolved' ? 'controlled' : status,  // model knows controlled/uncontrolled/untreated
       // numeric readings now come from the extractor (opts.readings still wins if supplied)
       systolic: (opts.readings && opts.readings.systolic) || rd.systolic || null,
