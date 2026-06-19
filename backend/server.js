@@ -348,7 +348,20 @@ const DEMO_USERS = {
   'senioruw@sbigic.com':  { password: 'SeniorUW@123',  name: 'Amit Patel',     role: 'Senior UW',      authority_tier: 'senior',          authority_limit_sa: 25000000,  authority_limit_loading_pct: 100,  specialties: ['general','cardiac','metabolic','renal','hepatic'], max_concurrent_cases: 15 },
   'junioruw@sbigic.com':  { password: 'JuniorUW@123',  name: 'Neha Gupta',     role: 'Junior UW',      authority_tier: 'junior',          authority_limit_sa: 5000000,   authority_limit_loading_pct: 50,   specialties: ['general','metabolic'], max_concurrent_cases: 10 },
   'cmo@sbigic.com':       { password: 'CMO@123',       name: 'Dr. Suresh Iyer',role: 'Medical Officer', authority_tier: 'medical_officer', authority_limit_sa: null,      authority_limit_loading_pct: null,  specialties: ['general','cardiac','metabolic','renal','hepatic','oncology','neurological'], max_concurrent_cases: 20 },
-  'vendor@medcheck.com':  { password: 'Vendor@123',    name: 'MedCheck Ops',   role: 'Vendor User',    authority_tier: null,              vendor_id: 'VEND-001' }
+  'vendor@medcheck.com':  { password: 'Vendor@123',    name: 'MedCheck Ops',   role: 'Vendor User',    authority_tier: null,              vendor_id: 'VEND-001' },
+
+  // Testing access — SBI General team (added for UAT)
+  'vishal.patil2@sbigeneral.in':      { password: 'Admin@123', name: 'Vishal Patil',          role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'abhijit.mithare@sbigeneral.in':    { password: 'Admin@123', name: 'Abhijit Mithare',       role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'sunayana.sali@sbigeneral.in':      { password: 'Admin@123', name: 'Sunayana Sali',         role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'aabha.bangde@sbigeneral.in':       { password: 'Admin@123', name: 'Aabha Bangde',          role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'aditi.khade@sbigeneral.in':        { password: 'Admin@123', name: 'Aditi Khade',           role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'kushali.savla@sbigeneral.in':      { password: 'Admin@123', name: 'Kushali Savla',         role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'monica.vhatkar@sbigeneral.in':     { password: 'Admin@123', name: 'Monica Vhatkar',        role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'pratiksha.darade@sbigeneral.in':   { password: 'Admin@123', name: 'Pratiksha Darade',      role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'sandhyarani.khopade@sbigeneral.in':{ password: 'Admin@123', name: 'Sandhyarani Khopade',   role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'harshad.kandalkar@sbigeneral.in':  { password: 'Admin@123', name: 'Harshad Kandalkar',     role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
+  'nilaya.kadu@sbigeneral.in':        { password: 'Admin@123', name: 'Nilaya Kadu',           role: 'Viewer', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null }
 };
 
 // Helper: get users from S3 with fallback to DEMO_USERS
