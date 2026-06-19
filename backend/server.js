@@ -2631,7 +2631,7 @@ ${conditionSources.substring(0, 8000)}`;
               condition:              c.condition_name,
               icd10_code:             null,
               current_status:         'active',
-              medication:             c.medication || 'unknown',
+              medication:             (typeof c.medication === 'string' && c.medication.trim()) ? c.medication.trim() : 'unknown',
               since_year:             sinceYear,
               last_reading_systolic:  c.bp_systolic  != null ? Number(c.bp_systolic)  : null,
               last_reading_diastolic: c.bp_diastolic != null ? Number(c.bp_diastolic) : null,
