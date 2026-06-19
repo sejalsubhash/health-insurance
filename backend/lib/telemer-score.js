@@ -222,28 +222,16 @@ function ageFromDOB(dob) {
 // Bands with max_val === 0 are "unknown/no reading" sentinels — only match when value is 0/null.
 // For real values (>0), skip the sentinel and find the first band where value <= max_val.
 function lookupBand(value, bands) {
-  // Defensive: never return undefined, even when bands is empty/misconfigured.
-  // Several factors under tele_mer's "medical" component carry weight=0 and have
-  // historically had no bands configured in Masters Config at all (nobody needed
-  // them since they don't contribute to the score) — but telemer-score.js still
-  // calls lookupBand() for bmi/blood_pressure/fasting_glucose/hba1c/age_band
-  // regardless, and an empty bands array previously caused bands[0] / realBands[-1]
-  // to evaluate to undefined, crashing every caller that reads .points/.label off
-  // the result. Confirmed live: TypeError: Cannot read properties of undefined
-  // (reading 'points') when bmiCfg.bands was empty.
-  const SAFE_FALLBACK = { points: 0, pts: 0, label: 'Not configured', max_val: 0 };
-  if (!Array.isArray(bands) || bands.length === 0) return SAFE_FALLBACK;
-
   if (!value || value === 0) {
     // Return sentinel band (max_val=0) if it exists, else first band
-    return bands.find(b => b.max_val === 0) || bands[0] || SAFE_FALLBACK;
+    return bands.find(b => b.max_val === 0) || bands[0];
   }
   // Skip sentinel bands (max_val=0) for real values
   const realBands = bands.filter(b => b.max_val > 0);
   for (const b of realBands) {
     if (value <= b.max_val) return b;
   }
-  return realBands[realBands.length - 1] || SAFE_FALLBACK; // fallback to last real band, or safe default
+  return realBands[realBands.length - 1]; // fallback to last real band
 }
 
 // ─── 1) MEDICAL PARAMETERS ───────────────────────────────────────────────────
