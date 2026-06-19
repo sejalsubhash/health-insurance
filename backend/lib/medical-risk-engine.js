@@ -149,7 +149,7 @@ function scoreLifestyleRisk(extractedData) {
   else if (smoking === 'former_gt5' || (smoking === 'former' && (lifestyle?.smoking?.years || 0) > 5)) smokingScore = 6;
   else if (smoking === 'former') smokingScore = 3;
   else if (smoking === 'current') smokingScore = 0;
-  else smokingScore = 5; // unknown — conservative partial
+  else smokingScore = 0; // unknown — no data = no credit
   results.smoking = { score: smokingScore, max: 8, logic: `Smoking: ${smoking} → ${smokingScore}/8`, status: smoking };
 
   // Alcohol (6 pts)
@@ -159,7 +159,7 @@ function scoreLifestyleRisk(extractedData) {
   else if (alcohol === 'occasional') alcoholScore = 5;
   else if (alcohol === 'regular')    alcoholScore = 2;
   else if (alcohol === 'heavy')      alcoholScore = 0;
-  else alcoholScore = 4; // unknown — conservative partial
+  else alcoholScore = 0; // unknown — no data = no credit
   results.alcohol = { score: alcoholScore, max: 6, logic: `Alcohol: ${alcohol} → ${alcoholScore}/6`, status: alcohol };
 
   // Tobacco / Gutkha / Pan (4 pts)
@@ -168,7 +168,7 @@ function scoreLifestyleRisk(extractedData) {
   if (tobacco === 'never')   tobaccoScore = 4;
   else if (tobacco === 'former') tobaccoScore = 2;
   else if (tobacco === 'current') tobaccoScore = 0;
-  else tobaccoScore = 3; // unknown — conservative partial
+  else tobaccoScore = 0; // unknown — no data = no credit
   results.tobacco_chewing = { score: tobaccoScore, max: 4, logic: `Tobacco: ${tobacco} → ${tobaccoScore}/4`, status: tobacco };
 
   const rawTotal = results.smoking.score + results.alcohol.score + results.tobacco_chewing.score;
@@ -462,9 +462,9 @@ function scoreClinicalCorrelation(correlationData, extractedData) {
   const undisclosed = mismatches.filter(m => !m.disclosed);
   let mismatchScore;
   if (undisclosed.length > 0) mismatchScore = undisclosed.length <= 1 ? 3 : 1;
-  else if (correlation.medications_found?.length > 0) mismatchScore = 5; // Meds found, all disclosed = genuinely clean
-  else mismatchScore = 3; // No medications data available — partial score, not full
-  results.drug_condition = { score: mismatchScore, max: 5, logic: `${undisclosed.length} undisclosed${correlation.medications_found?.length ? ', '+correlation.medications_found.length+' meds checked' : ', no medication data available'} → ${mismatchScore}/5`, status: undisclosed.length === 0 ? (correlation.medications_found?.length ? 'consistent' : 'no data') : `${undisclosed.length} mismatches` };
+  else if (correlation.medications_found?.length > 0) mismatchScore = 5;
+  else mismatchScore = 0; // No medication data — no credit
+  results.drug_condition = { score: mismatchScore, max: 5, logic: `${undisclosed.length} undisclosed${correlation.medications_found?.length ? ', '+correlation.medications_found.length+' meds checked' : ', no medication data'} → ${mismatchScore}/5`, status: undisclosed.length === 0 ? (correlation.medications_found?.length ? 'consistent' : 'no data') : `${undisclosed.length} mismatches` };
 
   // Multi-System Findings (5 pts) — also check EM interactions as backup
   const multiSystem = correlation?.multi_system_correlations || [];
@@ -486,7 +486,7 @@ function scoreClinicalCorrelation(correlationData, extractedData) {
   if (significantFindings.length > 0) multiScore = significantFindings.length <= 1 ? 3 : 1;
   else if (missedPatterns > 0) multiScore = 3; // AI missed patterns but EM scoring caught them
   else if (hasCorrelationData) multiScore = 5; // Genuinely assessed and clean
-  else multiScore = 3; // No correlation data — partial score
+  else multiScore = 0; // No correlation data — no credit
   results.multi_system = { score: multiScore, max: 5, logic: `${significantFindings.length} significant correlations${missedPatterns > 0 ? ', '+missedPatterns+' patterns detected by EM' : ''} → ${multiScore}/5`, status: significantFindings.length === 0 ? (missedPatterns > 0 ? `${missedPatterns} EM patterns` : hasCorrelationData ? 'clean' : 'not assessed') : `${significantFindings.length} findings` };
 
   // CV Risk (5 pts) — calculate from raw data if AI didn't provide it
@@ -498,7 +498,6 @@ function scoreClinicalCorrelation(correlationData, extractedData) {
     if (extractedData) {
       const bc = extractedData.blood_chemistry || {};
       const pe = extractedData.physical_exam || {};
-      // Count risk factors
       const age = parseFloat(extractedData._proposer_age) || 0;
       const isMale = (extractedData._proposer_gender || '').toLowerCase() !== 'female';
       const isSmoker = (extractedData.lifestyle?.smoking?.status || '').includes('current');
@@ -510,16 +509,18 @@ function scoreClinicalCorrelation(correlationData, extractedData) {
       if (parseFloat(bc.total_cholesterol?.value) > 240) cvRiskFactors++;
       if (parseFloat(bc.hdl?.value) < 40) cvRiskFactors++;
       if (parseFloat(bc.tc_hdl_ratio?.value) > 5.5) cvRiskFactors++;
-
-      if (cvRiskFactors >= 4) cvRisk = 'very_high';
+      // No meaningful lab/exam data present → score = 0 (no data = no credit)
+      const hasLabData = bc.fasting_glucose?.value != null || bc.total_cholesterol?.value != null ||
+                         bc.hdl?.value != null || (sys != null && !isNaN(sys)) || age > 0;
+      if (!hasLabData) cvRisk = 'unknown';
+      else if (cvRiskFactors >= 4) cvRisk = 'very_high';
       else if (cvRiskFactors >= 3) cvRisk = 'high';
       else if (cvRiskFactors >= 2) cvRisk = 'moderate';
       else if (cvRiskFactors >= 1) cvRisk = 'low_moderate';
       else cvRisk = 'low';
     }
   }
-
-  const cvScore = cvRisk === 'low' ? 5 : cvRisk === 'low_moderate' ? 4 : cvRisk === 'moderate' ? 3 : cvRisk === 'high' ? 1 : cvRisk === 'very_high' ? 0 : 3;
+  const cvScore = cvRisk === 'unknown' ? 0 : cvRisk === 'low' ? 5 : cvRisk === 'low_moderate' ? 4 : cvRisk === 'moderate' ? 3 : cvRisk === 'high' ? 1 : cvRisk === 'very_high' ? 0 : 0;
   results.cv_risk = { score: cvScore, max: 5, logic: `CV Risk: ${cvRisk} (${cvRiskFactors} risk factors) → ${cvScore}/5`, status: cvRisk };
 
   for (const key in results) {
@@ -1019,7 +1020,7 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
           }
         }
       }
-      if (total === 0) return '50%';
+      if (total === 0) return '0%';
       const pct = filled / total;
       if (pct >= 0.9)  return '90%+';
       if (pct >= 0.75) return '75%';
@@ -1052,18 +1053,17 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
     const rawValue  = extractor ? extractor(extractedData, correlationData) : null;
 
     if (!rawValue || !Array.isArray(factor.bands) || factor.bands.length === 0) {
-      // No data extracted — award 40% of max (partial, not zero)
-      const partial = Math.round(factor.max * 0.4 * 100) / 100;
+      // No data extracted — score = 0 (unknown/missing data gets no credit)
       factorResults[factor.id] = {
-        score: partial,
+        score: 0,
         max:   factor.max,
         label: factor.label,
         value: rawValue,
         matched_band: 'no data',
-        logic: `${factor.label}: no data → ${partial}/${factor.max} (40% partial)`,
+        logic: `${factor.label}: no data → 0/${factor.max}`,
         status: 'missing'
       };
-      totalScore += partial;
+      totalScore += 0;
       continue;
     }
 
@@ -1090,10 +1090,9 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
         if (words.some(w => bl.includes(w))) { matched = band; break; }
       }
     }
-    // Fallback: middle band (not worst, not best) — conservative
+    // Fallback: no band matched — score 0 (unknown value gets no credit)
     if (!matched && factor.bands.length > 0) {
-      const midIdx = Math.floor(factor.bands.length / 2);
-      matched = factor.bands[midIdx];
+      matched = null;
     }
 
     const pts = matched ? Number(matched.points) : 0;
