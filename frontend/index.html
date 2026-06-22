@@ -3257,9 +3257,20 @@ async function viewVendorCase(wfId, vendorId) {
             : `<div style="display:flex;align-items:center;gap:10px"><div style="font-size:12px;color:var(--text-muted)">Capture proposer face before conducting medical tests</div><button class="btn btn-sm btn-accent" onclick="openLiveCaptureModal('vendor','${wfId}','${vendorId}')"><i data-lucide="camera"></i> Live Capture</button></div>`}
         </div>
       </div></div>
-      <div class="card"><div class="card-header"><h3>Workflow Timeline</h3></div><div class="card-body" style="max-height:250px;overflow-y:auto">
-        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
-      </div></div>
+      <div class="card"><div class="card-header"><h3>Workflow Timeline</h3></div>
+        <div class="card-body" id="wfTimeline_${wfId}" style="max-height:250px;overflow-y:auto">
+          ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
+        </div>
+        <div id="wfProgressBar_${wfId}" style="display:none;padding:10px 14px;border-top:1px solid var(--border-light)">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span id="wfProgressMsg_${wfId}" style="font-size:11px;color:var(--text-muted)">Processing...</span>
+            <span id="wfProgressPct_${wfId}" style="font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">0%</span>
+          </div>
+          <div style="height:6px;background:var(--border);border-radius:6px;overflow:hidden">
+            <div id="wfProgressFill_${wfId}" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#34d399);border-radius:6px;transition:width 0.5s ease"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     ${wf.pphc_recommendation === 'telemer' || vendorId === 'VEND-003' ? `
@@ -3394,76 +3405,62 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
     if (res.success) {
       showToast('Documents' + (feedbackText ? ' and feedback' : '') + ' submitted — AI extraction starting...', 'success');
 
-      // ── Stay on this page and show extraction progress panel ──────────────
-      const el = document.getElementById('mainContent');
+      // ── Stay on this page — only update the Workflow Timeline card live ──────
+      const timelineEl  = document.getElementById(`wfTimeline_${wfId}`);
+      const progressBar = document.getElementById(`wfProgressBar_${wfId}`);
+      const progressMsg = document.getElementById(`wfProgressMsg_${wfId}`);
+      const progressPct = document.getElementById(`wfProgressPct_${wfId}`);
+      const progressFill= document.getElementById(`wfProgressFill_${wfId}`);
 
-      const _renderProgress = (data) => {
-        const pct  = data.percent || 0;
-        const done = data.stage === 'complete';
-        const stages = [
-          { key: 'starting',      label: 'Preparing documents',       icon: 'upload',      threshold: 5   },
-          { key: 'reading_pages', label: 'Reading pages (AI vision)',  icon: 'eye',         threshold: 20  },
-          { key: 'extracted',     label: 'Parameters extracted',       icon: 'database',    threshold: 65  },
-          { key: 'icmr_analysis', label: 'Clinical correlation',       icon: 'activity',    threshold: 75  },
-          { key: 'scoring',       label: 'Underwriting rules scored',  icon: 'bar-chart-2', threshold: 90  },
-          { key: 'complete',      label: 'Decision ready',             icon: 'check-circle',threshold: 100 }
-        ];
+      // Show the progress bar strip
+      if (progressBar) progressBar.style.display = 'block';
 
-        el.innerHTML = `
-          <div style="max-width:620px;margin:48px auto;padding:0 16px">
-            <div style="text-align:center;margin-bottom:32px">
-              <div style="font-size:28px;font-weight:700;color:var(--text)">${done ? '✅ Analysis Complete' : '🔍 AI Extraction Running'}</div>
-              <div style="font-size:14px;color:var(--text-muted);margin-top:6px">${esc(data.message || 'Processing...')}</div>
-            </div>
-
-            <div style="margin-bottom:28px">
-              <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-                <span style="font-size:12px;font-weight:600;color:var(--text-muted)">Overall Progress</span>
-                <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">${pct}%</span>
-              </div>
-              <div style="height:10px;background:var(--border);border-radius:10px;overflow:hidden">
-                <div style="height:100%;width:${pct}%;background:${done?'var(--success)':'linear-gradient(90deg,var(--accent),#34d399)'};border-radius:10px;transition:width 0.6s ease"></div>
-              </div>
-              ${data.pages_total ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;text-align:right">Page ${data.pages_done||0} / ${data.pages_total}</div>` : ''}
-            </div>
-
-            <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:32px">
-              ${stages.map(s => {
-                const isDone   = pct >= s.threshold;
-                const isActive = data.stage === s.key;
-                const color    = isDone ? 'var(--success)' : isActive ? 'var(--accent)' : 'var(--border)';
-                const textCol  = isDone || isActive ? 'var(--text)' : 'var(--text-muted)';
-                return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface-alt);border-radius:8px;border-left:3px solid ${color}">
-                  <i data-lucide="${s.icon}" style="color:${color};flex-shrink:0"></i>
-                  <span style="font-size:13px;font-weight:${isDone||isActive?'600':'400'};color:${textCol}">${s.label}</span>
-                  ${isDone ? '<span style="margin-left:auto;font-size:11px;color:var(--success);font-weight:700">Done</span>'
-                           : isActive ? '<span style="margin-left:auto;font-size:11px;color:var(--accent)">Running...</span>' : ''}
-                </div>`;
-              }).join('')}
-            </div>
-
-            ${done
-              ? `<div style="text-align:center"><button class="btn btn-accent btn-lg" onclick="viewWorkflow('${wfId}')"><i data-lucide="bar-chart-2"></i> View Decision & Score</button></div>`
-              : `<div style="text-align:center;color:var(--text-muted);font-size:13px"><i data-lucide="clock"></i> This usually takes 60–120 seconds. Please wait...</div>`
-            }
-          </div>`;
-        if (window.lucide) lucide.createIcons();
+      const _addTimelineStep = (label, note) => {
+        if (!timelineEl) return;
+        // Remove 'active' from previous last step
+        const prev = timelineEl.querySelector('.step-dot.active');
+        if (prev) { prev.classList.remove('active'); prev.classList.add('done'); }
+        const step = document.createElement('div');
+        step.className = 'workflow-step';
+        step.innerHTML = `<div class="step-dot active"></div>
+          <div class="step-label" style="font-weight:600;color:var(--accent)">${label}</div>
+          <div class="step-time">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>`;
+        timelineEl.appendChild(step);
+        timelineEl.scrollTop = timelineEl.scrollHeight; // auto-scroll to bottom
       };
 
-      // Show initial state immediately
-      _renderProgress({ stage: 'starting', percent: 0, message: 'Preparing extraction...', docs_total: docCount, docs_done: 0 });
+      const _updateProgress = (pct, msg) => {
+        if (progressFill) progressFill.style.width = pct + '%';
+        if (progressFill) progressFill.style.background = pct >= 100 ? 'var(--success)' : 'linear-gradient(90deg,var(--accent),#34d399)';
+        if (progressMsg)  progressMsg.textContent = msg || 'Processing...';
+        if (progressPct)  progressPct.textContent = pct + '%';
+        if (progressPct)  progressPct.style.color = pct >= 100 ? 'var(--success)' : 'var(--accent)';
+      };
 
-      // Clean up any previous listeners
+      // Initial state
+      _addTimelineStep('extraction started', '');
+      _updateProgress(5, 'Starting AI extraction...');
+
+      // Clean up previous listeners
       if (window._extractionProgressHandler) socket.off('extraction_progress', window._extractionProgressHandler);
-      if (window._extractionWfUpdateHandler) socket.off('workflow_update', window._extractionWfUpdateHandler);
+      if (window._extractionWfUpdateHandler)  socket.off('workflow_update',     window._extractionWfUpdateHandler);
 
-      // Primary: extraction_progress events (per-page detail)
+      // Primary: per-page extraction_progress events
       window._extractionProgressHandler = (data) => {
         if (data.workflow_id !== wfId) return;
-        _renderProgress(data);
+        _updateProgress(data.percent || 0, data.message || '');
+        // Add a timeline step for key stage transitions
+        const stageLabels = {
+          reading_pages:  `reading page ${data.pages_done||''}/${data.pages_total||''} — AI vision`,
+          extracted:      `parameters extracted (${data.percent||0}%)`,
+          icmr_analysis:  'clinical correlation running',
+          scoring:        'underwriting rules scoring',
+          complete:       'analysis complete ✓'
+        };
+        if (stageLabels[data.stage]) _addTimelineStep(stageLabels[data.stage]);
         if (data.stage === 'complete') {
           socket.off('extraction_progress', window._extractionProgressHandler);
-          socket.off('workflow_update', window._extractionWfUpdateHandler);
+          socket.off('workflow_update',     window._extractionWfUpdateHandler);
           window._extractionProgressHandler = null;
           window._extractionWfUpdateHandler = null;
           setTimeout(() => viewWorkflow(wfId), 1500);
@@ -3471,26 +3468,27 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
       };
       socket.on('extraction_progress', window._extractionProgressHandler);
 
-      // Fallback: workflow_update (coarser but always fires)
+      // Fallback: coarser workflow_update events (always fired for every case type)
       window._extractionWfUpdateHandler = (data) => {
         if (data.workflow_id !== wfId) return;
         const map = {
-          extracting:           { percent: 15, message: 'AI reading documents...',         stage: 'reading_pages' },
-          icmr_analysis:        { percent: 75, message: 'Running clinical analysis...',     stage: 'icmr_analysis' },
-          analyzing:            { percent: 90, message: 'Scoring against UW rules...',      stage: 'scoring'       },
-          ai_analysis_complete: { percent: 100, message: 'Analysis complete!',             stage: 'complete'      },
-          extraction_failed:    { percent: 0,  message: 'Extraction failed — check Human in Loop.', stage: 'error' }
+          extracting:            { pct: 15, msg: 'AI reading documents...',          label: 'AI extraction running'         },
+          extraction_complete:   { pct: 65, msg: 'Parameters extracted',             label: 'extraction complete'           },
+          icmr_analysis:         { pct: 75, msg: 'Running clinical analysis...',     label: 'clinical correlation running'  },
+          analyzing:             { pct: 90, msg: 'Scoring against UW rules...',      label: 'underwriting scoring'          },
+          ai_analysis_complete:  { pct:100, msg: 'Analysis complete — loading...',   label: 'analysis complete ✓'          },
+          extraction_failed:     { pct: 0,  msg: 'Extraction failed',                label: 'extraction failed ✗'          }
         };
-        const mapped = map[data.state];
-        if (mapped) {
-          _renderProgress({ ...mapped, workflow_id: wfId, docs_total: docCount, docs_done: 0 });
-          if (data.state === 'ai_analysis_complete') {
-            socket.off('extraction_progress', window._extractionProgressHandler);
-            socket.off('workflow_update', window._extractionWfUpdateHandler);
-            window._extractionProgressHandler = null;
-            window._extractionWfUpdateHandler = null;
-            setTimeout(() => viewWorkflow(wfId), 1500);
-          }
+        const m = map[data.state];
+        if (!m) return;
+        _updateProgress(m.pct, m.msg);
+        _addTimelineStep(m.label);
+        if (data.state === 'ai_analysis_complete') {
+          socket.off('extraction_progress', window._extractionProgressHandler);
+          socket.off('workflow_update',     window._extractionWfUpdateHandler);
+          window._extractionProgressHandler = null;
+          window._extractionWfUpdateHandler = null;
+          setTimeout(() => viewWorkflow(wfId), 1500);
         }
       };
       socket.on('workflow_update', window._extractionWfUpdateHandler);
