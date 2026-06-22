@@ -1382,6 +1382,8 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
     let extractedData = {};
     let extractionMethod = 'none';
     const apiLog = [];
+    let _docsDone = 0;
+    const _docsTotal = wf.documents.length;
 
     // Try AI extraction from actual document content
     if (true) { // Bedrock — no API key needed, uses IAM role
@@ -1400,8 +1402,6 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         const textBasedPages = [];
         const __textParseClient = await getBedrockClient();
 
-        let _docsDone = 0;
-        const _docsTotal = wf.documents.length;
         // Emit initial progress
         socketManager.emitGlobal('extraction_progress', {
           workflow_id: wf.id, stage: 'starting',
