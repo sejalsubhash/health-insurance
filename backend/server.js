@@ -2538,7 +2538,23 @@ async function assembleTeleMERDataFromPDF(wf, extractedData) {
   for (const row of allYesNo) {
     const qKey = 'q' + String(row.q_number).replace(/\D/g, '');
     if (!qKey || qKey === 'q') continue;
-    answers[qKey] = row.answer === 'yes';
+
+    // Normalise answer across all three extraction formats:
+    //   text-based PDF:   row.answer = "yes"|"no"
+    //   image-based PDF:  row.tick_column = "yes_col"|"no_col"
+    //   older image pass: row.middle_box_marked = true|false
+    let isYes = false, isNo = false;
+    if (row.answer !== undefined && row.answer !== null) {
+      const a = String(row.answer).toLowerCase().trim();
+      isYes = a === 'yes'; isNo = a === 'no';
+    } else if (row.tick_column !== undefined) {
+      isYes = row.tick_column === 'yes_col'; isNo = row.tick_column === 'no_col';
+    } else if (row.middle_box_marked !== undefined) {
+      isYes = row.middle_box_marked === true; isNo = row.middle_box_marked === false;
+    }
+    // Only record if we got a definitive answer
+    if (isYes || isNo) answers[qKey] = isYes;
+
     // Accumulate all handwritten notes for this question
     const note = (row.handwritten_note || '').trim();
     if (note) {
@@ -2573,11 +2589,11 @@ async function assembleTeleMERDataFromPDF(wf, extractedData) {
   // Q7 asks: "Cigarette / Beedi / Pan / Gutkha / Alcohol"
   // answer=false (No) → never for all three substances
   // answer=true (Yes) → parse handwritten_note for detail
-  const q7Answer  = answers['q7'];
+  const q7Answer  = answers['q7'];   // true=Yes, false=No, undefined=not found
   const q7Detail  = (detail_text['q7'] || '').toLowerCase();
-  let smoking = { status: 'never' };
-  let alcohol  = { status: 'never' };
-  let tobacco  = { status: 'never' };
+  let smoking = { status: q7Answer === undefined ? 'unknown' : 'never' };
+  let alcohol  = { status: q7Answer === undefined ? 'unknown' : 'never' };
+  let tobacco  = { status: q7Answer === undefined ? 'unknown' : 'never' };
 
   if (q7Answer === true) {
     // Has habits — parse detail text
@@ -3485,7 +3501,9 @@ async function runAIAnalysis(wf) {
         answers: td.answers || td.question_answers || {},
         raw_remarks: combinedRemarks,
         examiner: td.examiner || {},
-        reports_available: true
+        reports_available: true,
+        // Pass assembled lifestyle (Q7-driven) so scoreLifestyle reads it directly
+        lifestyle: td.lifestyle || extractedData.lifestyle || {}
       });
       const catCfg = catScoringConfig?.['tele_mer'] || null;
       const modelOut = telemerModel.scoreTeleMER(modelInput, catCfg);

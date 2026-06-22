@@ -377,20 +377,50 @@ function scoreLifestyle(d, resolver) {
   const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
   const D  = DEFAULTS.lifestyle_risk;
   const th = resolver.th;
-  const r  = lc(d.remarks);
 
-  // Tobacco / Alcohol
+  // ── Tobacco / Alcohol ─────────────────────────────────────────────────────
+  // Priority 1: structured lifestyle object (from Q7 answer in MER/TeleMER form)
+  // Priority 2: remarks keyword scan (fallback for TeleMER remarks-driven scoring)
   const taMax  = th.tobacco_alcohol_max ?? D.tobacco_alcohol_max;
   const taDed  = th.tobacco_deduction   ?? D.tobacco_deduction;
   const alDed  = th.alcohol_deduction   ?? D.alcohol_deduction;
-  const hasTob = /smok|cigarette|beedi|gutkha|pan\b|tobacco|khaini/.test(r);
-  const hasAlc = /alcohol|drink|whisky|beer|wine/.test(r) && !/no alcohol|nil alcohol/.test(r);
+
+  const ls = d.lifestyle || {};
+  const smokingStatus  = ls.smoking?.status;
+  const alcoholStatus  = ls.alcohol?.status;
+  const tobaccoStatus  = ls.tobacco_chewing?.status;
+
+  let hasTob, hasAlc, source;
+
+  if (smokingStatus && smokingStatus !== 'unknown') {
+    // Structured lifestyle object available — use it directly
+    hasTob = smokingStatus === 'current' || smokingStatus === 'former' ||
+             tobaccoStatus === 'current' || tobaccoStatus === 'former';
+    hasAlc = alcoholStatus === 'regular' || alcoholStatus === 'heavy' ||
+             alcoholStatus === 'current' || alcoholStatus === 'occasional';
+    source = `lifestyle.smoking=${smokingStatus} alcohol=${alcoholStatus||'?'} tobacco=${tobaccoStatus||'?'}`;
+  } else if (smokingStatus === 'unknown' || alcoholStatus === 'unknown') {
+    // Explicitly unknown (Q7 not found in document) — no data = no credit
+    add('Tobacco / Alcohol', 0, taMax, 'Q7 not found in document — unknown → 0');
+    hasTob = false; hasAlc = false; // skip the normal add() below
+  } else {
+    // No structured data — fall back to remarks keyword scan
+    const r = lc(d.remarks);
+    hasTob = /smok|cigarette|beedi|gutkha|pan\b|tobacco|khaini/.test(r);
+    hasAlc = /alcohol|drink|whisky|beer|wine/.test(r) && !/no alcohol|nil alcohol/.test(r);
+    source = `remarks scan: tobacco:${hasTob} alcohol:${hasAlc}`;
+  }
+
   let taPts = taMax;
-  if (hasTob) taPts -= taDed;
-  if (hasAlc) taPts -= alDed;
-  taPts = clamp(taPts, 0, taMax);
-  add('Tobacco / Alcohol', taPts, taMax,
-    `tobacco:${hasTob} alcohol:${hasAlc} → ${taPts}/${taMax}`);
+  if (smokingStatus === 'unknown' || alcoholStatus === 'unknown') {
+    // Q7 not found in document — no data = 0 points
+    add('Tobacco / Alcohol', 0, taMax, 'Q7 not found in document — unknown → 0');
+  } else {
+    if (hasTob) taPts -= taDed;
+    if (hasAlc) taPts -= alDed;
+    taPts = clamp(taPts, 0, taMax);
+    add('Tobacco / Alcohol', taPts, taMax, `${source} → ${taPts}/${taMax}`);
+  }
 
   // Weight stability
   const wStable = th.weight_stable_pts ?? D.weight_stable_pts;
@@ -714,7 +744,14 @@ function fromExtractorData(telemer_data, opts = {}) {
     conditions,
     family_history,
     reports_available: opts.reports_available ?? true,
-    examiner:          opts.examiner || td.examiner || {}
+    examiner:          opts.examiner || td.examiner || {},
+    // Pass structured lifestyle (from Q7 answer in MER/TeleMER form) so
+    // scoreLifestyle can read it directly instead of scanning remarks
+    lifestyle: td.lifestyle || opts.lifestyle || {
+      smoking:         ls.smoking         || { status: 'unknown' },
+      alcohol:         ls.alcohol         || { status: 'unknown' },
+      tobacco_chewing: ls.tobacco_chewing || { status: 'unknown' }
+    }
   };
 }
 
