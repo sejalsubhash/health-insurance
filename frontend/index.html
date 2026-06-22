@@ -473,11 +473,11 @@ loadUserSession();
 renderIcons();
 
 let socket; try { socket = io({ transports: ['websocket','polling'] }); socket.on('connect', () => { document.getElementById('connStatus').innerHTML = '<span class="dot"></span>Connected'; }); socket.on('workflow_update', d => {
-  // Don't interrupt the extraction progress panel if it's showing for this workflow
-  if (window._extractionProgressHandler && d.workflow_id) return;
+  // Don't navigate away while watching extraction progress for a specific workflow
+  if (window._watchingExtractionFor) return;
   showToast(`Workflow updated: ${d.state}`, 'info');
   if (currentPage === 'dashboard' || currentPage === 'vendors') showPage(currentPage);
-}); socket.on('vendor_case_assigned', d => { showToast(`New case assigned to ${d.vendor_name}: ${d.proposer_name} (${d.proposal_id})`, 'info'); if (currentPage === 'vendors') showPage('vendors'); }); socket.on('stp_auto_issued', d => { showToast(`STP Auto-Issued: ${d.proposer_name} — Policy ${d.policy_number} (${d.evaluation_ms}ms)`, 'success'); if (currentPage === 'stp' || currentPage === 'dashboard') showPage(currentPage); }); socket.on('uw_assigned', d => { showToast(`Case assigned to ${d.assigned_uw_email} (${d.tier}, ${d.specialty})`, 'info'); if (currentPage === 'myqueue') showPage('myqueue'); }); socket.on('uw_escalated', d => { showToast(`Case escalated from ${d.from_tier} to ${d.to_tier}`, 'info'); }); socket.on('info_request_created', d => { showToast(`Info request created: ${d.item_count} item(s)`, 'info'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('info_item_received', d => { showToast(`Info item received: ${d.item_name} (${d.request_status})`, 'success'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('routing_failed', d => { showToast(`Routing failed: ${d.reason}`, 'error'); }); } catch(e) {}
+}); socket.on('vendor_case_assigned', d => { showToast(`New case assigned to ${d.vendor_name}: ${d.proposer_name} (${d.proposal_id})`, 'info'); if (!window._watchingExtractionFor && currentPage === 'vendors') showPage('vendors'); }); socket.on('stp_auto_issued', d => { showToast(`STP Auto-Issued: ${d.proposer_name} — Policy ${d.policy_number} (${d.evaluation_ms}ms)`, 'success'); if (currentPage === 'stp' || currentPage === 'dashboard') showPage(currentPage); }); socket.on('uw_assigned', d => { showToast(`Case assigned to ${d.assigned_uw_email} (${d.tier}, ${d.specialty})`, 'info'); if (currentPage === 'myqueue') showPage('myqueue'); }); socket.on('uw_escalated', d => { showToast(`Case escalated from ${d.from_tier} to ${d.to_tier}`, 'info'); }); socket.on('info_request_created', d => { showToast(`Info request created: ${d.item_count} item(s)`, 'info'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('info_item_received', d => { showToast(`Info item received: ${d.item_name} (${d.request_status})`, 'success'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('routing_failed', d => { showToast(`Routing failed: ${d.reason}`, 'error'); }); } catch(e) {}
 let currentPage = 'dashboard';
 
 async function api(url, opts = {}) { const headers = { 'Content-Type': 'application/json', ...opts.headers }; const res = await fetch(`${API}${url}`, { ...opts, credentials: 'include', headers }); return res.json(); }
@@ -3412,6 +3412,9 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
       const progressPct = document.getElementById(`wfProgressPct_${wfId}`);
       const progressFill= document.getElementById(`wfProgressFill_${wfId}`);
 
+      // Block all socket-driven page navigations while watching extraction
+      window._watchingExtractionFor = wfId;
+
       // Show the progress bar strip
       if (progressBar) progressBar.style.display = 'block';
 
@@ -3463,6 +3466,7 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
           socket.off('workflow_update',     window._extractionWfUpdateHandler);
           window._extractionProgressHandler = null;
           window._extractionWfUpdateHandler = null;
+          window._watchingExtractionFor = null;
           setTimeout(() => viewWorkflow(wfId), 1500);
         }
       };
@@ -3488,6 +3492,7 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
           socket.off('workflow_update',     window._extractionWfUpdateHandler);
           window._extractionProgressHandler = null;
           window._extractionWfUpdateHandler = null;
+          window._watchingExtractionFor = null;
           setTimeout(() => viewWorkflow(wfId), 1500);
         }
       };
