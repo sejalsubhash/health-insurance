@@ -4410,6 +4410,51 @@ async function renderComms() { const el=document.getElementById('mainContent'); 
 // ─── Rules ───
 // ─── Masters Configuration ───
 let _mastersView = 'home';
+async function saveLoadingTable() {
+  const orig = window._loadingTableData;
+  if (!orig) { showToast('No loaded data to save from — reopen this page and try again', 'error'); return; }
+
+  // Reconstruct loading_table: decline-action entries pass through unchanged
+  // (no input was rendered for them), everything else reads its input field
+  // and keeps every other original property (min_bmi/max_bmi etc.) as-is.
+  const loading_table = {};
+  for (const [k, v] of Object.entries(orig.loading_table)) {
+    if (v.action === 'decline') { loading_table[k] = v; continue; }
+    const input = document.getElementById(`lt_${k}`);
+    const pct = input ? parseFloat(input.value) : v.loading_pct;
+    loading_table[k] = { ...v, loading_pct: isNaN(pct) ? v.loading_pct : pct };
+  }
+
+  const age_loading = {};
+  for (const [k, v] of Object.entries(orig.age_loading)) {
+    if (v.action === 'decline') { age_loading[k] = v; continue; }
+    const input = document.getElementById(`al_${k}`);
+    const pct = input ? parseFloat(input.value) : v.loading_pct;
+    age_loading[k] = { ...v, loading_pct: isNaN(pct) ? v.loading_pct : pct };
+  }
+
+  const capInput = document.getElementById('lc_max_loading_pct');
+  const capVal = capInput ? parseFloat(capInput.value) : orig.loading_cap.max_loading_pct;
+  const loading_cap = { ...orig.loading_cap, max_loading_pct: isNaN(capVal) ? orig.loading_cap.max_loading_pct : capVal };
+
+  const waiting_periods = {};
+  for (const [k, v] of Object.entries(orig.waiting_periods)) {
+    const input = document.getElementById(`wp_${k}`);
+    const years = input ? parseFloat(input.value) : v.years;
+    waiting_periods[k] = { ...v, years: isNaN(years) ? v.years : years };
+  }
+
+  try {
+    const res = await api('/api/masters/loading-table', { method: 'PUT', body: JSON.stringify({ loading_table, age_loading, loading_cap, waiting_periods }) });
+    if (res.success) {
+      showToast('Loading table saved — takes effect on the next case scored', 'success');
+      renderMasters();
+    } else {
+      showToast(res.error || 'Save failed', 'error');
+    }
+  } catch(e) { showToast('Save error: ' + e.message, 'error'); }
+}
+
 async function renderMasters() {
   const el = document.getElementById('mainContent');
   if (_mastersView === 'home') {
@@ -4421,7 +4466,6 @@ async function renderMasters() {
         {icon:'<i data-lucide="external-link"></i>',title:'Product-Policy Mapping',desc:'Assign policies to products for auto-application',onclick:"_mastersView='mapping';renderMasters()"},
         {icon:'<i data-lucide="scale"></i>',title:'UW Guidelines',desc:'50+ compliance rules and thresholds',onclick:"_mastersView='uwrules';renderMasters()"},
         {icon:'<i data-lucide="bar-chart-3"></i>',title:'Loading Table',desc:'Loading percentages, age bands, loading cap, waiting periods',onclick:"_mastersView='loading';renderMasters()"},
-        {icon:'<i data-lucide="hospital"></i>',title:'Medical Scoring',desc:'Component weights and metric thresholds (100-point engine)',onclick:"_mastersView='scoring';renderMasters()"},
         {icon:'<i data-lucide="sliders-horizontal"></i>',title:'Per-CAT Scoring',desc:'Editable approve / refer / decline thresholds for CAT 1-4 and TeleMER',onclick:"_mastersView='catscoring';renderMasters()"},
         {icon:'<i data-lucide="library"></i>',title:'Historical UW Data',desc:'Upload past UW decisions to train the system for PPHC-skip intelligence',onclick:"_mastersView='historical';renderMasters()"},
         {icon:'<i data-lucide="book-open"></i>',title:'ICMR Guidelines',desc:'Clinical text interpretation guidelines for ICMR-based analysis of non-numeric findings',onclick:"_mastersView='icmrguidelines';renderMasters()"}
@@ -4557,30 +4601,35 @@ async function renderMasters() {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
       const data = await api('/api/masters/loading-table');
+      window._loadingTableData = data; // kept for saveLoadingTable() to read non-editable fields back unchanged
       el.innerHTML = backBtn + `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+        <button class="btn btn-accent" onclick="saveLoadingTable()"><i data-lucide="save"></i> Save Changes</button>
+      </div>
       <div class="grid-2" style="gap:16px">
         <div class="card"><div class="card-header"><h3>Loading Table</h3></div><div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Condition</th><th>Loading %</th><th>Action</th></tr></thead><tbody>
-          ${Object.entries(data.loading_table).map(([k,v]) => `<tr><td style="font-weight:500">${k.replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${v.loading_pct===-1?'var(--danger)':'var(--warning)'}">${v.loading_pct===-1?'N/A':'+'+v.loading_pct+'%'}</td><td><span class="badge ${v.action==='decline'?'badge-danger':'badge-warning'}">${v.action||'loading'}</span></td></tr>`).join('')}
+          ${Object.entries(data.loading_table).map(([k,v]) => v.action === 'decline' ? `<tr><td style="font-weight:500">${k.replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--danger)">N/A</td><td><span class="badge badge-danger" title="Decline triggers are not editable here — they're a hard business rule, not a loading percentage">decline</span></td></tr>` : `<tr><td style="font-weight:500">${k.replace(/_/g,' ')}</td><td><input type="number" class="form-control" id="lt_${k}" value="${v.loading_pct}" style="width:90px;font-family:'JetBrains Mono',monospace;font-weight:700"></td><td><span class="badge badge-warning">loading</span></td></tr>`).join('')}
           </tbody></table>
         </div></div>
         <div class="card"><div class="card-header"><h3>Age Loading Bands</h3></div><div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Age Band</th><th>Loading %</th><th>Label</th></tr></thead><tbody>
-          ${Object.entries(data.age_loading).map(([k,v]) => `<tr><td style="font-weight:500">${k}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${v.loading_pct===-1?'var(--danger)':v.loading_pct>0?'var(--warning)':'var(--success)'}">${v.loading_pct===-1?'DECLINE':v.loading_pct===0?'Standard':'+'+v.loading_pct+'%'}</td><td style="font-size:12px;color:var(--text-muted)">${v.label}</td></tr>`).join('')}
+          ${Object.entries(data.age_loading).map(([k,v]) => v.action === 'decline' ? `<tr><td style="font-weight:500">${k}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--danger)">DECLINE</td><td style="font-size:12px;color:var(--text-muted)">${v.label}</td></tr>` : `<tr><td style="font-weight:500">${k}</td><td><input type="number" class="form-control" id="al_${k}" value="${v.loading_pct}" style="width:90px;font-family:'JetBrains Mono',monospace;font-weight:700"></td><td style="font-size:12px;color:var(--text-muted)">${v.label}</td></tr>`).join('')}
           </tbody></table>
         </div></div>
       </div>
       <div class="grid-2" style="gap:16px;margin-top:16px">
         <div class="card"><div class="card-header"><h3>Loading Cap</h3></div><div class="card-body">
-          <div style="font-size:28px;font-weight:700;color:var(--danger);font-family:'JetBrains Mono',monospace">${data.loading_cap.max_loading_pct}%</div>
-          <div style="font-size:12px;color:var(--text-muted)">Maximum permissible total loading. Above this → auto-decline</div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Maximum permissible total loading (%). Above this → auto-decline</label>
+          <input type="number" class="form-control" id="lc_max_loading_pct" value="${data.loading_cap.max_loading_pct}" style="width:140px;font-size:22px;font-weight:700;color:var(--danger);font-family:'JetBrains Mono',monospace">
         </div></div>
         <div class="card"><div class="card-header"><h3>Waiting Periods</h3></div><div class="card-body" style="padding:0">
           <table class="data-table"><thead><tr><th>Condition</th><th>Years</th><th>Description</th></tr></thead><tbody>
-          ${Object.entries(data.waiting_periods).map(([k,v]) => `<tr><td style="font-weight:500;text-transform:capitalize">${k.replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700">${v.years} yr</td><td style="font-size:12px;color:var(--text-muted)">${v.description}</td></tr>`).join('')}
+          ${Object.entries(data.waiting_periods).map(([k,v]) => `<tr><td style="font-weight:500;text-transform:capitalize">${k.replace(/_/g,' ')}</td><td><input type="number" class="form-control" id="wp_${k}" value="${v.years}" style="width:70px;font-family:'JetBrains Mono',monospace;font-weight:700"></td><td style="font-size:12px;color:var(--text-muted)">${v.description}</td></tr>`).join('')}
           </tbody></table>
         </div></div>
       </div>`;
+      renderIcons();
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
   } else if (_mastersView === 'scoring') {

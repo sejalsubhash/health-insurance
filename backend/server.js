@@ -78,6 +78,32 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
 const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for binary files
+
+// ─── Dynamic Loading Config override ─────────────────────────────────────────
+// risk-params.json on disk gets baked into the Docker image on every build
+// (it's git-tracked, and the Dockerfile does COPY . .), so any edit made via
+// the Loading Table PUT endpoint previously got silently wiped on the next
+// rebuild. This helper checks Postgres (masters table, type='loading-config')
+// for an override and merges ONLY the four loading-related fields onto
+// whatever was loaded from the file -- every other field in risk-params.json
+// (stp_eligibility_rules, sum_assured_tiers, gender_thresholds, etc.) is left
+// completely untouched, so this only affects loading-table behavior and
+// nothing else in the application.
+async function applyDynamicLoadingOverride(riskParams) {
+  try {
+    const dyn = await s3Client.getMasters('loading-config');
+    if (dyn) {
+      if (dyn.loading_table)    riskParams.loading_table    = dyn.loading_table;
+      if (dyn.age_loading)      riskParams.age_loading      = dyn.age_loading;
+      if (dyn.loading_cap)      riskParams.loading_cap      = dyn.loading_cap;
+      if (dyn.waiting_periods) riskParams.waiting_periods = dyn.waiting_periods;
+    }
+  } catch (e) {
+    console.warn('[LoadingConfig] Postgres override check failed, using file defaults:', e.message);
+  }
+  return riskParams;
+}
+
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
@@ -2950,6 +2976,7 @@ async function runAIAnalysis(wf) {
   const medicalScoring = JSON.parse(fs.readFileSync(`${configPath}/medical-scoring.json`, 'utf8'));
   const uwGuidelines = JSON.parse(fs.readFileSync(`${configPath}/uw-guidelines.json`, 'utf8'));
   const riskParams = JSON.parse(fs.readFileSync(`${configPath}/risk-params.json`, 'utf8'));
+  await applyDynamicLoadingOverride(riskParams);
 
   // Product-specific policy lookup and merge
   // catForAI declared here so it's accessible everywhere in runAIAnalysis
@@ -4219,10 +4246,13 @@ app.delete('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, 
 });
 
 // Loading Table — read & update
-app.get('/api/masters/loading-table', requireAuth, (req, res) => {
-  const fs = require('fs');
-  const riskParams = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/risk-params.json'), 'utf8'));
-  res.json({ loading_table: riskParams.loading_table, age_loading: riskParams.age_loading, loading_cap: riskParams.loading_cap, waiting_periods: riskParams.waiting_periods, gender_thresholds: riskParams.gender_thresholds });
+app.get('/api/masters/loading-table', requireAuth, async (req, res) => {
+  try {
+    const fs = require('fs');
+    const riskParams = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/risk-params.json'), 'utf8'));
+    await applyDynamicLoadingOverride(riskParams);
+    res.json({ loading_table: riskParams.loading_table, age_loading: riskParams.age_loading, loading_cap: riskParams.loading_cap, waiting_periods: riskParams.waiting_periods, gender_thresholds: riskParams.gender_thresholds });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.put('/api/masters/loading-table', requireRole('Super Admin'), async (req, res) => {
   try {
@@ -4235,6 +4265,16 @@ app.put('/api/masters/loading-table', requireRole('Super Admin'), async (req, re
     if (loading_cap) riskParams.loading_cap = loading_cap;
     if (waiting_periods) riskParams.waiting_periods = waiting_periods;
     fs.writeFileSync(configPath, JSON.stringify(riskParams, null, 2));
+    // Primary persistence — Postgres survives container rebuilds, unlike the
+    // file above, which gets reset to whatever's in Git on every docker build.
+    // Scope is identical to the file write (same 4 fields), so this cannot
+    // affect any other risk-params.json field or any other feature.
+    await s3Client.saveMasters('loading-config', {
+      loading_table: riskParams.loading_table,
+      age_loading: riskParams.age_loading,
+      loading_cap: riskParams.loading_cap,
+      waiting_periods: riskParams.waiting_periods
+    });
     res.json({ success: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
