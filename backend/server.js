@@ -91,7 +91,13 @@ const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for bi
 // nothing else in the application.
 async function applyDynamicLoadingOverride(riskParams) {
   try {
-    const dyn = await s3Client.getMasters('loading-config');
+    // NOTE: uses getConfig/the 'config' table, NOT getMasters/'masters' --
+    // confirmed live that 'masters' does not exist in this deployment's
+    // database (missing from schema.sql, and initSchema() is never called
+    // anywhere in server.js). 'config' is the table Per-CAT Scoring already
+    // uses successfully (getConfig('cat-scoring')), so this is the proven,
+    // working table rather than an untested one.
+    const dyn = await s3Client.getConfig('loading-config');
     if (dyn) {
       if (dyn.loading_table)    riskParams.loading_table    = dyn.loading_table;
       if (dyn.age_loading)      riskParams.age_loading      = dyn.age_loading;
@@ -4269,7 +4275,7 @@ app.put('/api/masters/loading-table', requireRole('Super Admin'), async (req, re
     // file above, which gets reset to whatever's in Git on every docker build.
     // Scope is identical to the file write (same 4 fields), so this cannot
     // affect any other risk-params.json field or any other feature.
-    await s3Client.saveMasters('loading-config', {
+    await s3Client.saveConfig('loading-config', {
       loading_table: riskParams.loading_table,
       age_loading: riskParams.age_loading,
       loading_cap: riskParams.loading_cap,
