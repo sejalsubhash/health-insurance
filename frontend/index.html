@@ -3392,8 +3392,109 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
     // Step 2 — Final submit documents (triggers AI extraction + ICMR analysis)
     const res = await api(`/api/workflow/${wfId}/submit-documents`, { method: 'POST', body: '{}' });
     if (res.success) {
-      showToast('Documents' + (feedbackText ? ' and feedback' : '') + ' submitted successfully!', 'success');
-      viewVendorCase(wfId, vendorId);
+      showToast('Documents' + (feedbackText ? ' and feedback' : '') + ' submitted — AI extraction starting...', 'success');
+
+      // ── Stay on this page and show extraction progress panel ──────────────
+      const el = document.getElementById('mainContent');
+
+      const _renderProgress = (data) => {
+        const pct  = data.percent || 0;
+        const done = data.stage === 'complete';
+        const stages = [
+          { key: 'starting',      label: 'Preparing documents',       icon: 'upload',      threshold: 5   },
+          { key: 'reading_pages', label: 'Reading pages (AI vision)',  icon: 'eye',         threshold: 20  },
+          { key: 'extracted',     label: 'Parameters extracted',       icon: 'database',    threshold: 65  },
+          { key: 'icmr_analysis', label: 'Clinical correlation',       icon: 'activity',    threshold: 75  },
+          { key: 'scoring',       label: 'Underwriting rules scored',  icon: 'bar-chart-2', threshold: 90  },
+          { key: 'complete',      label: 'Decision ready',             icon: 'check-circle',threshold: 100 }
+        ];
+
+        el.innerHTML = `
+          <div style="max-width:620px;margin:48px auto;padding:0 16px">
+            <div style="text-align:center;margin-bottom:32px">
+              <div style="font-size:28px;font-weight:700;color:var(--text)">${done ? '✅ Analysis Complete' : '🔍 AI Extraction Running'}</div>
+              <div style="font-size:14px;color:var(--text-muted);margin-top:6px">${esc(data.message || 'Processing...')}</div>
+            </div>
+
+            <div style="margin-bottom:28px">
+              <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+                <span style="font-size:12px;font-weight:600;color:var(--text-muted)">Overall Progress</span>
+                <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">${pct}%</span>
+              </div>
+              <div style="height:10px;background:var(--border);border-radius:10px;overflow:hidden">
+                <div style="height:100%;width:${pct}%;background:${done?'var(--success)':'linear-gradient(90deg,var(--accent),#34d399)'};border-radius:10px;transition:width 0.6s ease"></div>
+              </div>
+              ${data.pages_total ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;text-align:right">Page ${data.pages_done||0} / ${data.pages_total}</div>` : ''}
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:32px">
+              ${stages.map(s => {
+                const isDone   = pct >= s.threshold;
+                const isActive = data.stage === s.key;
+                const color    = isDone ? 'var(--success)' : isActive ? 'var(--accent)' : 'var(--border)';
+                const textCol  = isDone || isActive ? 'var(--text)' : 'var(--text-muted)';
+                return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface-alt);border-radius:8px;border-left:3px solid ${color}">
+                  <i data-lucide="${s.icon}" style="color:${color};flex-shrink:0"></i>
+                  <span style="font-size:13px;font-weight:${isDone||isActive?'600':'400'};color:${textCol}">${s.label}</span>
+                  ${isDone ? '<span style="margin-left:auto;font-size:11px;color:var(--success);font-weight:700">Done</span>'
+                           : isActive ? '<span style="margin-left:auto;font-size:11px;color:var(--accent)">Running...</span>' : ''}
+                </div>`;
+              }).join('')}
+            </div>
+
+            ${done
+              ? `<div style="text-align:center"><button class="btn btn-accent btn-lg" onclick="viewWorkflow('${wfId}')"><i data-lucide="bar-chart-2"></i> View Decision & Score</button></div>`
+              : `<div style="text-align:center;color:var(--text-muted);font-size:13px"><i data-lucide="clock"></i> This usually takes 60–120 seconds. Please wait...</div>`
+            }
+          </div>`;
+        if (window.lucide) lucide.createIcons();
+      };
+
+      // Show initial state immediately
+      _renderProgress({ stage: 'starting', percent: 0, message: 'Preparing extraction...', docs_total: docCount, docs_done: 0 });
+
+      // Clean up any previous listeners
+      if (window._extractionProgressHandler) socket.off('extraction_progress', window._extractionProgressHandler);
+      if (window._extractionWfUpdateHandler) socket.off('workflow_update', window._extractionWfUpdateHandler);
+
+      // Primary: extraction_progress events (per-page detail)
+      window._extractionProgressHandler = (data) => {
+        if (data.workflow_id !== wfId) return;
+        _renderProgress(data);
+        if (data.stage === 'complete') {
+          socket.off('extraction_progress', window._extractionProgressHandler);
+          socket.off('workflow_update', window._extractionWfUpdateHandler);
+          window._extractionProgressHandler = null;
+          window._extractionWfUpdateHandler = null;
+          setTimeout(() => viewWorkflow(wfId), 1500);
+        }
+      };
+      socket.on('extraction_progress', window._extractionProgressHandler);
+
+      // Fallback: workflow_update (coarser but always fires)
+      window._extractionWfUpdateHandler = (data) => {
+        if (data.workflow_id !== wfId) return;
+        const map = {
+          extracting:           { percent: 15, message: 'AI reading documents...',         stage: 'reading_pages' },
+          icmr_analysis:        { percent: 75, message: 'Running clinical analysis...',     stage: 'icmr_analysis' },
+          analyzing:            { percent: 90, message: 'Scoring against UW rules...',      stage: 'scoring'       },
+          ai_analysis_complete: { percent: 100, message: 'Analysis complete!',             stage: 'complete'      },
+          extraction_failed:    { percent: 0,  message: 'Extraction failed — check Human in Loop.', stage: 'error' }
+        };
+        const mapped = map[data.state];
+        if (mapped) {
+          _renderProgress({ ...mapped, workflow_id: wfId, docs_total: docCount, docs_done: 0 });
+          if (data.state === 'ai_analysis_complete') {
+            socket.off('extraction_progress', window._extractionProgressHandler);
+            socket.off('workflow_update', window._extractionWfUpdateHandler);
+            window._extractionProgressHandler = null;
+            window._extractionWfUpdateHandler = null;
+            setTimeout(() => viewWorkflow(wfId), 1500);
+          }
+        }
+      };
+      socket.on('workflow_update', window._extractionWfUpdateHandler);
+
     } else {
       showToast(res.error || res.message || 'Submission failed', 'error');
       if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Final Submit (' + docCount + ' docs + feedback)'; setTimeout(renderIcons, 0); }
