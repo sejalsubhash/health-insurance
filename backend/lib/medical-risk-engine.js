@@ -189,7 +189,7 @@ function scoreLifestyleRisk(extractedData) {
 // Normalised to 20 pts using: (raw / 13) * 20
 function scoreMedicalHistory(extractedData) {
   const results = {};
-  const rawMax = 13;
+  const rawMax = 15;        // PEC(9) + hospitalizations(4) + systemic(2)
   const normalisedMax = 20;
 
   const history = extractedData?.telemer_data?.medical_history || extractedData?.medical_history || {};
@@ -263,13 +263,22 @@ function scoreMedicalHistory(extractedData) {
     status: conditions.length === 0 ? 'none' : conditions.map(c => `${c.condition || 'unknown'}(${c._scored_tier})`).join(', ')
   };
 
-  // ── Hospitalisation History (2 pts) ─────────────────────────────────────────
+  // ── Hospitalisation History (4 pts) ─────────────────────────────────────────
+  // Points read from DB config if available; defaults to 4pt scale.
+  // Q5=No → 4pts (full), Q5=Yes (any hospitalization) → deduct based on count.
   const hospitalizations = history?.hospitalizations || [];
+  const hospMax    = extractedData?._hosp_max || 4; // caller can inject DB max
   let hospScore;
-  if (hospitalizations.length === 0)                          hospScore = 2;
-  else if (hospitalizations.length <= 2)                      hospScore = 1;
-  else                                                         hospScore = 0;
-  results.hospitalizations = { score: hospScore, max: 2, logic: `${hospitalizations.length} hospitalisation(s) → ${hospScore}/2`, status: `${hospitalizations.length} events` };
+  if (hospitalizations.length === 0)        hospScore = hospMax;
+  else if (hospitalizations.length === 1)   hospScore = Math.round(hospMax * 0.5);
+  else if (hospitalizations.length <= 3)    hospScore = Math.round(hospMax * 0.25);
+  else                                       hospScore = 0;
+  results.hospitalizations = {
+    score:  hospScore,
+    max:    hospMax,
+    logic:  `${hospitalizations.length} hospitalisation(s) → ${hospScore}/${hospMax}`,
+    status: hospitalizations.length === 0 ? 'none' : `${hospitalizations.length} event(s)`
+  };
 
   // ── Other Systemic Conditions (2 pts) ────────────────────────────────────────
   // Count yes-answers in systemic question groups (respiratory, renal, neuro, haem, etc.)
@@ -825,7 +834,8 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
       const h = ed?.telemer_data?.medical_history || ed?.medical_history || {};
       const n = (h.hospitalizations || []).length;
       if (n === 0)    return 'none';
-      if (n <= 2)     return '1-2';
+      if (n === 1)    return '1-2';
+      if (n <= 3)     return '2-3';
       return '3+';
     },
     surgical_history: (ed) => {

@@ -348,21 +348,8 @@ const DEMO_USERS = {
   'senioruw@sbigic.com':  { password: 'SeniorUW@123',  name: 'Amit Patel',     role: 'Senior UW',      authority_tier: 'senior',          authority_limit_sa: 25000000,  authority_limit_loading_pct: 100,  specialties: ['general','cardiac','metabolic','renal','hepatic'], max_concurrent_cases: 15 },
   'junioruw@sbigic.com':  { password: 'JuniorUW@123',  name: 'Neha Gupta',     role: 'Junior UW',      authority_tier: 'junior',          authority_limit_sa: 5000000,   authority_limit_loading_pct: 50,   specialties: ['general','metabolic'], max_concurrent_cases: 10 },
   'cmo@sbigic.com':       { password: 'CMO@123',       name: 'Dr. Suresh Iyer',role: 'Medical Officer', authority_tier: 'medical_officer', authority_limit_sa: null,      authority_limit_loading_pct: null,  specialties: ['general','cardiac','metabolic','renal','hepatic','oncology','neurological'], max_concurrent_cases: 20 },
-  'vendor@medcheck.com':  { password: 'Vendor@123',    name: 'MedCheck Ops',   role: 'Vendor User',    authority_tier: null,              vendor_id: 'VEND-001' },
- // Testing access — SBI General team (added for UAT)
-  'vishal.patil2@sbigeneral.in':      { password: 'Admin@123', name: 'Vishal Patil',          role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'abhijit.mithare@sbigeneral.in':    { password: 'Admin@123', name: 'Abhijit Mithare',       role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'sunayana.sali@sbigeneral.in':      { password: 'Admin@123', name: 'Sunayana Sali',         role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'aabha.bangde@sbigeneral.in':       { password: 'Admin@123', name: 'Aabha Bangde',          role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'aditi.khade@sbigeneral.in':        { password: 'Admin@123', name: 'Aditi Khade',           role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'kushali.savla@sbigeneral.in':      { password: 'Admin@123', name: 'Kushali Savla',         role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'monica.vhatkar@sbigeneral.in':     { password: 'Admin@123', name: 'Monica Vhatkar',        role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'pratiksha.darade@sbigeneral.in':   { password: 'Admin@123', name: 'Pratiksha Darade',      role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'sandhyarani.khopade@sbigeneral.in':{ password: 'Admin@123', name: 'Sandhyarani Khopade',   role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'harshad.kandalkar@sbigeneral.in':  { password: 'Admin@123', name: 'Harshad Kandalkar',     role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null },
-  'nilaya.kadu@sbigeneral.in':        { password: 'Admin@123', name: 'Nilaya Kadu',           role: 'Super Admin', authority_tier: null, authority_limit_sa: null, authority_limit_loading_pct: null, specialties: null, max_concurrent_cases: null }
+  'vendor@medcheck.com':  { password: 'Vendor@123',    name: 'MedCheck Ops',   role: 'Vendor User',    authority_tier: null,              vendor_id: 'VEND-001' }
 };
- 
 
 // Helper: get users from S3 with fallback to DEMO_USERS
 async function getActiveUsers() {
@@ -3083,158 +3070,163 @@ async function runAIAnalysis(wf) {
     }
 
     // ── MER Form Parser — reads page_extractions for CAT 1-4 PPHC forms ────────
-    // The page extractor captures tick marks and handwritten notes from the MER
-    // questionnaire but doesn't translate them into lifestyle/surgical fields.
-    // This block does that translation before the lifestyle merge below.
+    // Handles BOTH extraction formats:
+    //   Text-based (PPHC MER): answer:"yes"|"no"
+    //   Image-based (TeleMER): tick_column:"yes_col"|"no_col"
     //
-    // MER Part 2 question mapping (SBI General Health MER form):
-    //   Q2 — Habits/Addictions: Cigarettes/Bidis/Paan/Gutkha
-    //         No tick = no_col → smoking.status='never' AND tobacco_chewing.status='never'
-    //         Yes tick with note → parse note for smoking vs tobacco keywords
-    //   Q3 — Alcohol consumption
-    //         No tick = no_col → alcohol.status='never'
-    //         Yes tick with note → parse quantity/duration for occasional/regular/heavy
-    //   Q5 — Hospitalisation (Accident / Medical Treatment / Surgery)
-    //         Yes tick with handwritten note → populate surgical_history / hospitalizations
-    //   Q12 — Hypertension treatment (Yes + note → PEC)
-    //   Q13 — Diabetes treatment (Yes + note → PEC)
-    //   Q27 — Currently on medication (Yes → flag)
+    // Question mapping (SBI General Health MER Part 2):
+    //   Q2  — Habits: Cigarettes/Bidis/Paan/Gutkha
+    //          No → smoking='never' + tobacco='never' (full pts)
+    //          Yes + note → parse cigarette/bidi→smoking, paan/gutkha→tobacco_chewing
+    //   Q3  — Alcohol: No→never, Yes+note→parse quantity/frequency
+    //   Q5  — Hospitalised (accident/treatment/surgery)
+    //          Yes → add to hospitalizations (Q5 answer drives hosp score)
+    //   Q12 — HTN treatment, Q13 — DM treatment, Q27 — On medication
 
     const _merFromPages = (() => {
       const result = {
-        smoking:           null,  // { status, note }
-        alcohol:           null,  // { status, note }
-        tobacco_chewing:   null,  // { status, note }
-        surgical_history:  [],
-        hospitalizations:  [],
-        on_medication:     false,
-        htn_declared:      false,
-        dm_declared:       false,
-        htn_note:          '',
-        dm_note:           '',
-        source:            'mer_page_extraction'
+        smoking: null, alcohol: null, tobacco_chewing: null,
+        surgical_history: [], hospitalizations: [],
+        on_medication: false, htn_declared: false, dm_declared: false,
+        htn_note: '', dm_note: '', source: 'mer_page_extraction'
       };
 
       const pages = wf.page_extractions || [];
       if (!pages.length) return result;
 
-      // Flatten all yes_no rows across all pages into one map: q_number → {tick, note}
+      // ── Normalise a row into { isYes, isNo, note } regardless of format ───────
+      const parseRow = (row) => {
+        if (!row) return { isYes: false, isNo: false, note: '' };
+        const note = (row.handwritten_note || row.note || '').trim();
+        // Text-based format: answer = "yes"|"no"|"Yes"|"No"
+        if (row.answer !== undefined && row.answer !== null) {
+          const a = String(row.answer).toLowerCase().trim();
+          return { isYes: a === 'yes', isNo: a === 'no', note };
+        }
+        // Image-based format: tick_column = "yes_col"|"no_col"|"none"|"unclear"
+        if (row.tick_column !== undefined) {
+          return { isYes: row.tick_column === 'yes_col', isNo: row.tick_column === 'no_col', note };
+        }
+        // Middle-box format (older TeleMER image extraction)
+        if (row.middle_box_marked !== undefined) {
+          return { isYes: row.middle_box_marked === true, isNo: row.middle_box_marked === false, note };
+        }
+        return { isYes: false, isNo: false, note };
+      };
+
+      // Flatten all yes_no rows across all pages into one map: normalised_q_number → parsed row
       const qMap = {};
       for (const pg of pages) {
         const rows = pg.yes_no || [];
         for (const row of rows) {
-          const qn = String(row.q_number || '').trim().toLowerCase();
+          const qn = String(row.q_number || '').trim().toLowerCase()
+            .replace(/^q\.?/, '').replace(/\.$/, '').trim();
           if (!qn) continue;
-          // Normalise q_number: "2", "2.", "q2", "q.2" → "2"
-          const norm = qn.replace(/^q\.?/, '').replace(/\.$/, '').trim();
-          if (!qMap[norm]) {
-            qMap[norm] = { tick: row.tick_column, note: (row.handwritten_note || '').trim() };
+          const parsed = parseRow(row);
+          // Keep the row with the longer handwritten note if duplicate
+          if (!qMap[qn] || parsed.note.length > (qMap[qn].note || '').length) {
+            qMap[qn] = parsed;
           }
         }
       }
 
       // ── Q2: Habits/Addictions (Cigarettes, Bidis, Paan, Gutkha) ─────────────
+      // Your clarification: cigarettes/bidis = smoking, paan/gutkha = tobacco_chewing
       const q2 = qMap['2'];
       if (q2) {
-        if (q2.tick === 'no_col') {
-          // No tick → clean for both smoking AND tobacco
+        if (q2.isNo) {
+          // No = person does not smoke or chew tobacco → full points for both
           result.smoking         = { status: 'never', note: '' };
           result.tobacco_chewing = { status: 'never', note: '' };
-        } else if (q2.tick === 'yes_col' || q2.tick === 'unclear') {
-          const note = q2.note.toLowerCase();
-          // Your clarification: cigarettes/bidis = smoking, paan/gutkha = tobacco_chewing
-          const hasSmoking  = /cigarette|bidi|beedi|smoke|smok/i.test(q2.note);
-          const hasTobacco  = /paan|pan\b|gutkha|khaini|tobacco|chew/i.test(q2.note);
-          // Duration/quantity hints for former vs current
-          const isStopped   = /stop|quit|cessation|ex.smok|former|gave up|years ago/i.test(q2.note);
-          const status      = isStopped ? 'former' : 'current';
-          if (hasSmoking)  result.smoking         = { status, note: q2.note };
-          else             result.smoking         = { status: 'never', note: '' };
-          if (hasTobacco)  result.tobacco_chewing = { status, note: q2.note };
-          else             result.tobacco_chewing = { status: 'never', note: '' };
-          // If Yes tick but empty note — mark current conservatively
-          if (!hasSmoking && !hasTobacco && q2.tick === 'yes_col') {
-            result.smoking         = { status: 'current', note: q2.note };
-            result.tobacco_chewing = { status: 'current', note: q2.note };
-          }
+          console.log('[MERForm] Q2=No → smoking=never, tobacco_chewing=never');
+        } else if (q2.isYes) {
+          const note = q2.note;
+          const hasSmoking = /cigarette|bidi|beedi|smoke/i.test(note);
+          const hasTobacco = /paan|pan|gutkha|khaini|chew|tobacco/i.test(note);
+          const isStopped  = /stop|quit|cessation|former|gave up|years? ago/i.test(note);
+          const status     = isStopped ? 'former' : 'current';
+          // If note is empty or doesn't specify, conservatively mark both current
+          result.smoking         = { status: (hasSmoking || (!hasSmoking && !hasTobacco)) ? status : 'never', note };
+          result.tobacco_chewing = { status: (hasTobacco || (!hasSmoking && !hasTobacco)) ? status : 'never', note };
+          console.log('[MERForm] Q2=Yes →', 'smoking:', result.smoking.status, 'tobacco:', result.tobacco_chewing.status, '| note:', note);
         }
       }
 
       // ── Q3: Alcohol consumption ───────────────────────────────────────────────
       const q3 = qMap['3'];
       if (q3) {
-        if (q3.tick === 'no_col') {
+        if (q3.isNo) {
           result.alcohol = { status: 'never', note: '' };
-        } else if (q3.tick === 'yes_col' || q3.tick === 'unclear') {
+          console.log('[MERForm] Q3=No → alcohol=never');
+        } else if (q3.isYes) {
           const note = q3.note.toLowerCase();
-          const isOcc   = /occasion|social|weekend|rare|seldom|1.2\s*per/i.test(note);
-          const isHeavy = /daily|every\s*day|>?\s*[7-9]\s*unit|binge/i.test(note);
+          const isHeavy = /daily|every\s*day|>?\s*[5-9]\s*unit|binge|heavy/i.test(note);
+          const isOcc   = /occasion|social|weekend|rare|1.?2\s*(?:time|per)/i.test(note);
           const status  = isHeavy ? 'heavy' : isOcc ? 'occasional' : 'regular';
           result.alcohol = { status, note: q3.note };
+          console.log('[MERForm] Q3=Yes → alcohol:', status, '| note:', q3.note);
         }
       }
 
-      // ── Q5: Hospitalisation / Surgery ────────────────────────────────────────
+      // ── Q5: Hospitalised for accident / medical treatment / surgery ───────────
+      // Q5=Yes → deduct from hospitalizations score regardless of reason
+      // The handwritten note tells us the type (surgery vs medical vs accident)
       const q5 = qMap['5'];
-      if (q5 && (q5.tick === 'yes_col' || q5.tick === 'unclear') && q5.note) {
-        const note    = q5.note;
-        const noteLc  = note.toLowerCase();
-        // Try to extract year — "15 yrs ago", "2010", "15 years ago"
-        const yrsAgo  = note.match(/(\d+)\s*(?:yr|year)s?\s*ago/i);
-        const absYear = note.match(/\b(19|20)\d{2}\b/);
-        let year = null;
-        if (yrsAgo)    year = new Date().getFullYear() - parseInt(yrsAgo[1]);
-        else if (absYear) year = parseInt(absYear[0]);
+      if (q5) {
+        if (q5.isYes) {
+          const note   = q5.note;
+          const noteLc = note.toLowerCase();
+          const yrsAgo = note.match(/(\d+)\s*(?:yr|year)s?\s*ago/i);
+          const absYr  = note.match(/(19|20)\d{2}/);
+          let year = null;
+          if (yrsAgo)       year = new Date().getFullYear() - parseInt(yrsAgo[1]);
+          else if (absYr)   year = parseInt(absYr[0]);
 
-        const isSurg  = /surg|operat|cholecyst|appendix|appendec|hernia|bypass|cabg|angioplasty|stent|gallbladder|gall bladder|hysterectomy|caesarean|c-section|laminectomy|nephrect|prostatectomy/i.test(note);
-        const isHosp  = /accident|fracture|injury|treatment|admitted|hospital|ward/i.test(note);
+          const isSurg = /surg|operat|cholecyst|gallbladder|gall\s*bladder|appendic|hernia|bypass|cabg|stent|hysterect|laminect|nephrect/i.test(note);
 
-        if (isSurg) {
-          result.surgical_history.push({
-            procedure:          note,
-            year,
-            outcome:            'successful',
-            records_available:  !/no\s*record|unavail/i.test(noteLc),
-            _source:            'mer_form_q5_handwritten'
-          });
-        }
-        if (isHosp || !isSurg) {
+          // All Q5=Yes events go into hospitalizations (drives the score)
           result.hospitalizations.push({
-            reason: note, year,
-            _source: 'mer_form_q5_handwritten'
+            reason: note || 'Hospitalisation declared (Q5)',
+            year,
+            is_surgery: isSurg,
+            _source: 'mer_form_q5'
           });
+          // If surgery, also populate surgical_history for the Surgical/GI component
+          if (isSurg) {
+            result.surgical_history.push({
+              procedure: note,
+              year,
+              outcome: 'successful',
+              records_available: !/no\s*record|unavail/i.test(noteLc),
+              _source: 'mer_form_q5_handwritten'
+            });
+          }
+          console.log('[MERForm] Q5=Yes → hospitalization added' + (isSurg ? ' (surgery)' : '') + ' | note:', note);
+        } else if (q5.isNo) {
+          // Explicit No on Q5 — ensure hospitalizations stays empty (no deduction)
+          console.log('[MERForm] Q5=No → no hospitalizations');
         }
       }
 
-      // ── Q12: Hypertension treatment ──────────────────────────────────────────
+      // ── Q12, Q13, Q27 ────────────────────────────────────────────────────────
       const q12 = qMap['12'];
-      if (q12 && q12.tick === 'yes_col') {
-        result.htn_declared = true;
-        result.htn_note     = q12.note;
-      }
-
-      // ── Q13: Diabetes treatment ───────────────────────────────────────────────
+      if (q12?.isYes) { result.htn_declared = true; result.htn_note = q12.note; }
       const q13 = qMap['13'];
-      if (q13 && q13.tick === 'yes_col') {
-        result.dm_declared = true;
-        result.dm_note     = q13.note;
-      }
-
-      // ── Q27: Currently on medication ─────────────────────────────────────────
+      if (q13?.isYes) { result.dm_declared = true; result.dm_note = q13.note; }
       const q27 = qMap['27'];
-      if (q27 && q27.tick === 'yes_col') result.on_medication = true;
+      if (q27?.isYes) result.on_medication = true;
 
       return result;
     })();
 
-    // Log what we found from the MER form
+    // Log summary
     if (wf.page_extractions?.length) {
-      console.log(`[MERForm] Smoking: ${_merFromPages.smoking?.status||'not found'}, Alcohol: ${_merFromPages.alcohol?.status||'not found'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'not found'}`);
-      if (_merFromPages.surgical_history.length) console.log(`[MERForm] Surgical history from Q5:`, _merFromPages.surgical_history.map(s=>s.procedure).join('; '));
-      if (_merFromPages.hospitalizations.length)  console.log(`[MERForm] Hospitalizations from Q5:`, _merFromPages.hospitalizations.map(h=>h.reason).join('; '));
+      console.log(`[MERForm] Summary — Smoking: ${_merFromPages.smoking?.status||'not found'}, Alcohol: ${_merFromPages.alcohol?.status||'not found'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'not found'}`);
+      if (_merFromPages.surgical_history.length)  console.log('[MERForm] Surgical from Q5:', _merFromPages.surgical_history.map(s=>s.procedure).join('; '));
+      if (_merFromPages.hospitalizations.length)   console.log('[MERForm] Hospitalizations from Q5:', _merFromPages.hospitalizations.map(h=>h.reason).join('; '));
     }
 
-    // Merge lifestyle data — priority: MER form page_extractions > Claude document extraction > fallback
+    // ── Lifestyle merge — priority: MER form page ticks > Claude extraction > unknown ──
     if (!extractedData.telemer_data) extractedData.telemer_data = {};
     const _claudeLifestyle = extractedData.lifestyle;
     const _hasClaudeLifestyle = _claudeLifestyle?.smoking?.status &&
@@ -3243,63 +3235,57 @@ async function runAIAnalysis(wf) {
     const _hasMERLifestyle = _merFromPages.smoking !== null;
 
     if (_hasMERLifestyle) {
-      // MER form ticks are the authoritative source — use them
       extractedData.telemer_data.lifestyle = {
-        smoking:          { status: _merFromPages.smoking.status,         note: _merFromPages.smoking.note         },
-        alcohol:          _merFromPages.alcohol         ? { status: _merFromPages.alcohol.status,         note: _merFromPages.alcohol.note         } : (_claudeLifestyle?.alcohol || { status: 'unknown' }),
-        tobacco_chewing:  _merFromPages.tobacco_chewing ? { status: _merFromPages.tobacco_chewing.status, note: _merFromPages.tobacco_chewing.note } : (_claudeLifestyle?.tobacco_chewing || { status: 'unknown' }),
+        smoking:           { status: _merFromPages.smoking.status,         note: _merFromPages.smoking.note },
+        alcohol:           _merFromPages.alcohol
+                             ? { status: _merFromPages.alcohol.status,         note: _merFromPages.alcohol.note }
+                             : (_claudeLifestyle?.alcohol || { status: 'unknown' }),
+        tobacco_chewing:   _merFromPages.tobacco_chewing
+                             ? { status: _merFromPages.tobacco_chewing.status, note: _merFromPages.tobacco_chewing.note }
+                             : (_claudeLifestyle?.tobacco_chewing || { status: 'unknown' }),
         occupation_hazard: _claudeLifestyle?.occupation_hazard || wf.lifestyle?.occupation_hazard || 'unknown',
         exercise:          _claudeLifestyle?.exercise || { frequency: 'unknown' },
         _source:           'mer_form_page_extraction'
       };
-      console.log(`[Lifestyle] MER-form-extracted — Smoking: ${_merFromPages.smoking.status}, Alcohol: ${_merFromPages.alcohol?.status||'unknown'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'unknown'}`);
+      console.log(`[Lifestyle] MER-form — Smoking: ${_merFromPages.smoking.status}, Alcohol: ${_merFromPages.alcohol?.status||'unknown'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'unknown'}`);
     } else if (_hasClaudeLifestyle) {
-      // Claude found lifestyle data in the document — use it directly
       extractedData.telemer_data.lifestyle = {
         smoking:          _claudeLifestyle.smoking,
-        alcohol:          _claudeLifestyle.alcohol          || { status: 'unknown' },
-        tobacco_chewing:  _claudeLifestyle.tobacco_chewing  || { status: 'unknown' },
+        alcohol:          _claudeLifestyle.alcohol         || { status: 'unknown' },
+        tobacco_chewing:  _claudeLifestyle.tobacco_chewing || { status: 'unknown' },
         occupation_hazard: _claudeLifestyle.occupation_hazard || wf.lifestyle?.occupation_hazard || 'unknown',
-        exercise:         _claudeLifestyle.exercise          || { frequency: 'unknown' },
+        exercise:         _claudeLifestyle.exercise         || { frequency: 'unknown' },
         _source: 'document_extracted'
       };
-      console.log(`[Lifestyle] Document-extracted — Smoking: ${_claudeLifestyle.smoking?.status}, Alcohol: ${_claudeLifestyle.alcohol?.status}, Tobacco: ${_claudeLifestyle.tobacco_chewing?.status}`);
+      console.log(`[Lifestyle] Claude-extracted — Smoking: ${_claudeLifestyle.smoking?.status}, Alcohol: ${_claudeLifestyle.alcohol?.status}`);
     } else {
-      // Nothing found — unknown
       extractedData.telemer_data.lifestyle = {
-        smoking:          { status: 'unknown' },
-        alcohol:          { status: 'unknown' },
-        tobacco_chewing:  { status: 'unknown' },
+        smoking: { status: 'unknown' }, alcohol: { status: 'unknown' },
+        tobacco_chewing: { status: 'unknown' },
         occupation_hazard: wf.lifestyle?.occupation_hazard || 'unknown',
-        exercise:         { frequency: 'unknown' },
-        _source: 'declared_fallback'
+        exercise: { frequency: 'unknown' }, _source: 'no_data_found'
       };
-      console.log(`[Lifestyle] No lifestyle data found — using unknown fallback`);
+      console.log('[Lifestyle] No lifestyle data found — unknown fallback');
     }
-    // Always sync top-level for risk engine compatibility
     extractedData.lifestyle = extractedData.telemer_data.lifestyle;
 
-    // ── Merge MER form surgical/hospitalization data into medical_history ──────
-    // If the MER form Q5 detected surgery/hospitalization from handwritten notes,
-    // merge into medical_history so scoreMedicalHistory can deduct for them.
-    if (_merFromPages.surgical_history.length || _merFromPages.hospitalizations.length) {
-      if (!extractedData.telemer_data) extractedData.telemer_data = {};
+    // ── Merge Q5 hospitalizations + surgical_history into medical_history ───────
+    if (_merFromPages.hospitalizations.length || _merFromPages.surgical_history.length) {
       if (!extractedData.telemer_data.medical_history) extractedData.telemer_data.medical_history = {};
-      // Merge surgical_history — avoid duplicates
-      const _existingSurg = extractedData.telemer_data.medical_history.surgical_history || [];
-      const _newSurg = _merFromPages.surgical_history.filter(ns =>
-        !_existingSurg.some(es => (es.procedure||'').toLowerCase().includes((ns.procedure||'').toLowerCase().substring(0,15)))
+      // Hospitalizations
+      const _existH = extractedData.telemer_data.medical_history.hospitalizations || [];
+      const _newH   = _merFromPages.hospitalizations.filter(nh =>
+        !_existH.some(eh => (eh.reason||'').toLowerCase().substring(0,15) === (nh.reason||'').toLowerCase().substring(0,15))
       );
-      extractedData.telemer_data.medical_history.surgical_history = [..._existingSurg, ..._newSurg];
-      // Merge hospitalizations
-      const _existingHosp = extractedData.telemer_data.medical_history.hospitalizations || [];
-      const _newHosp = _merFromPages.hospitalizations.filter(nh =>
-        !_existingHosp.some(eh => (eh.reason||'').toLowerCase().includes((nh.reason||'').toLowerCase().substring(0,15)))
+      extractedData.telemer_data.medical_history.hospitalizations = [..._existH, ..._newH];
+      // Surgical history (for Surgical/GI component)
+      const _existS = extractedData.telemer_data.medical_history.surgical_history || [];
+      const _newS   = _merFromPages.surgical_history.filter(ns =>
+        !_existS.some(es => (es.procedure||'').toLowerCase().substring(0,15) === (ns.procedure||'').toLowerCase().substring(0,15))
       );
-      extractedData.telemer_data.medical_history.hospitalizations = [..._existingHosp, ..._newHosp];
-      // Sync top-level
+      extractedData.telemer_data.medical_history.surgical_history = [..._existS, ..._newS];
       extractedData.medical_history = extractedData.telemer_data.medical_history;
-      console.log(`[MERForm] Merged ${_newSurg.length} surgical + ${_newHosp.length} hospitalization record(s) into medical_history`);
+      console.log(`[MERForm] Merged ${_newH.length} hosp + ${_newS.length} surgical into medical_history`);
     }
 
     // ── Medical parameters normalisation — path aliases ───────────────────────
@@ -4416,7 +4402,7 @@ const CAT_VENDOR_MAP = {
 // Each CAT has: thresholds + 5 components. Each component has a weight + factors[].
 // Each factor: { id, label, max, bands:[{label,value,points}] }
 // The engine scores every factor, sums per component, scales to weight, sums to 100.
-const SCORING_VERSION = 'dynamic-v7-telemer5param';
+const SCORING_VERSION = 'dynamic-v8-hosp4pts';
 
 function mkFactor(id, label, max, bands) { return { id, label, max, bands }; }
 
@@ -4618,10 +4604,9 @@ function sharedComponents(catWeights) {
 
   // ── HISTORY — always 15 across all CATs (7+4+2+2=15) ────────────────────────
   const hw = catWeights.history;
-  const hi_ped  = Math.round(hw * 0.467); // ~7/15
-  const hi_fam  = Math.round(hw * 0.267); // ~4/15
-  const hi_hos  = Math.round(hw * 0.133); // ~2/15
-  const hi_sur  = hw - hi_ped - hi_fam - hi_hos; // remainder
+  const hi_ped  = Math.round(hw * 0.467); // ~7/15  PEC
+  const hi_fam  = Math.round(hw * 0.267); // ~4/15  family history
+  const hi_hos  = 4;                       // fixed 4 pts — hospitalizations (Q5 driven)
 
   // ── CLINICAL — scale to weight (15/15/16/16 across CAT1-4, 25 for TeleMER) ─
   const cw = catWeights.clinical;
@@ -4651,8 +4636,12 @@ function sharedComponents(catWeights) {
       factors: [
         mkFactor('pre_existing',    'Pre-Existing Conditions', hi_ped, [{label:'None declared',value:'none',points:hi_ped},{label:'Controlled (1 condition)',value:'controlled',points:Math.max(1,Math.round(hi_ped*0.71))},{label:'1-2 active conditions',value:'1-2 active',points:Math.max(1,Math.round(hi_ped*0.43))},{label:'3+ active conditions',value:'3+ active',points:Math.max(1,Math.round(hi_ped*0.14))}]),
         mkFactor('family_history',  'Family Medical History',  hi_fam, [{label:'None known',value:'none',points:hi_fam},{label:'1 risk (cardiac/DM/Ca)',value:'one_risk',points:Math.max(1,Math.round(hi_fam*0.75))},{label:'2 risk conditions',value:'two_risks',points:Math.max(1,Math.round(hi_fam*0.5))},{label:'3+ risk conditions',value:'three_plus',points:Math.max(1,Math.round(hi_fam*0.25))}]),
-        mkFactor('hospitalizations','Prior Hospitalizations',  hi_hos, [{label:'None',value:'none',points:hi_hos},{label:'1-2 events',value:'1-2',points:Math.max(1,Math.round(hi_hos*0.5))},{label:'3+ events',value:'3+',points:Math.max(1,Math.round(hi_hos*0.25))}]),
-        mkFactor('surgical_history','Surgical History',        hi_sur, [{label:'None',value:'none',points:hi_sur},{label:'1 surgery (minor)',value:'one_minor',points:Math.max(1,Math.round(hi_sur*0.75))},{label:'2+ or major surgery',value:'two_plus',points:Math.max(1,Math.round(hi_sur*0.5))}])
+        mkFactor('hospitalizations','Prior Hospitalizations (Q5)', hi_hos, [
+          {label:'None (Q5=No)',         value:'none',  points:4},
+          {label:'1 event (Q5=Yes)',     value:'1-2',   points:2},
+          {label:'2-3 events',           value:'2-3',   points:1},
+          {label:'4+ events',            value:'3+',    points:0}
+        ])
       ]
     },
     clinical: {
