@@ -4265,6 +4265,14 @@ app.put('/api/masters/loading-table', requireRole('Super Admin'), async (req, re
     const fs = require('fs');
     const configPath = require('path').join(__dirname, 'config/risk-params.json');
     const riskParams = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    // IMPORTANT: apply the current Postgres override BEFORE merging in the new
+    // partial update. Without this, riskParams starts from the stale file
+    // defaults -- so saving just one section (e.g. loading_table only, from
+    // the new per-card UI) would silently revert the other three sections
+    // back to their original file values, undoing any previous edits to
+    // age_loading/loading_cap/waiting_periods that were never touched in
+    // this particular save.
+    await applyDynamicLoadingOverride(riskParams);
     const { loading_table, age_loading, loading_cap, waiting_periods } = req.body;
     if (loading_table) riskParams.loading_table = loading_table;
     if (age_loading) riskParams.age_loading = age_loading;

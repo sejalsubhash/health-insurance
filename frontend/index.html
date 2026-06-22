@@ -1215,14 +1215,14 @@ async function renderDashboard() {
       </div>
     </div>
 
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
-      <input type="text" id="dashSearch" placeholder="Search Case ID or Proposer..." style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;width:220px" oninput="filterDashboard()">
-      <span style="color:var(--primary);font-size:12px;cursor:pointer;margin-left:4px" onclick="document.getElementById('dashSearch').value='';window._dashFilterState={status:'',product:'',vendor:''};filterDashboard()">Clear filters</span>
-      <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="renderDashboard()">↻ Refresh</button>
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;justify-content:flex-end">
+      <span style="color:var(--primary);font-size:12px;cursor:pointer" onclick="document.getElementById('dashSearch').value='';window._dashFilterState={status:'',product:'',vendor:''};document.getElementById('dashStatusSelect').value='';document.getElementById('dashProductSelect').value='';document.getElementById('dashVendorSelect').value='';filterDashboard()">Clear filters</span>
+      <button class="btn btn-outline btn-sm" onclick="renderDashboard()">↻ Refresh</button>
     </div>
 
     <div id="dashCaseTable"></div>`;
     renderIcons();
+    renderDashTableShell();
 
     filterDashboard('all');
   } catch(e) { el.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="alert-triangle"></i></div><p>Dashboard error: ${e.message||'Unknown error'}</p><button class="btn btn-primary" style="margin-top:12px" onclick="renderDashboard()">Retry</button></div>`; console.error('Dashboard error:', e); }
@@ -1234,6 +1234,44 @@ function updateDashFilter(key, value) {
   filterDashboard();
 }
 
+// Builds the table header ONCE — search input and Vendor/Product/Status
+// selects live here and are never destroyed/recreated afterward. Only
+// filterDashboard() runs on every keystroke/change, and it only touches
+// <tbody>. This matters specifically for the Case ID search box: rebuilding
+// the header on every keystroke (the old approach used for the dropdowns,
+// fine for selects since onchange only fires once per pick) would tear out
+// and recreate the input on every character typed, kicking focus out of it.
+function renderDashTableShell() {
+  const fStatus = window._dashFilterState?.status || '';
+  const fProduct = window._dashFilterState?.product || '';
+  const fVendor = window._dashFilterState?.vendor || '';
+  const sel = (val, opts) => opts.map(([v,label]) => `<option value="${v}" ${val===v?'selected':''}>${label}</option>`).join('');
+  const el = document.getElementById('dashCaseTable');
+  el.innerHTML = `<div id="caseCountLabel" style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:8px">Case Queue</div>
+  <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
+    <th>Case ID
+      <input type="text" id="dashSearch" placeholder="Search Case ID or Proposer..." oninput="filterDashboard()" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:3px 6px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface);box-sizing:border-box">
+    </th>
+    <th>Quotation No</th><th>Proposer</th><th>Sum Assured</th><th>Started</th>
+    <th>Vendor
+      <select id="dashVendorSelect" onchange="updateDashFilter('vendor', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fVendor, [['','All'],['VEND-001','MedCheck India'],['VEND-002','HealthAssure'],['VEND-003','DigiMedic']])}
+      </select>
+    </th>
+    <th>Product
+      <select id="dashProductSelect" onchange="updateDashFilter('product', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fProduct, [['','All'],['Prime','Prime'],['Elite','Elite'],['Platinum','Platinum'],['Premier','Premier'],['Platinum Infinite','Platinum Infinite'],['Group Health','Group Health']])}
+      </select>
+    </th>
+    <th>Status
+      <select id="dashStatusSelect" onchange="updateDashFilter('status', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fStatus, [['','All'],['vendor_assigned','Vendor Assigned'],['auto_approved','Approved'],['auto_rejected','Rejected'],['counter_offered','Counter Offer'],['referred','Referred']])}
+      </select>
+    </th>
+    <th>TAT</th>
+  </tr></thead><tbody id="dashTableBody"></tbody></table></div></div>`;
+}
+
 function filterDashboard(preset) {
   let workflows = window._dashboardWorkflows || [];
   window._dashFilterState = window._dashFilterState || { status: '', product: '', vendor: '' };
@@ -1243,6 +1281,19 @@ function filterDashboard(preset) {
   else if (preset === 'counter_offer') { window._dashFilterState.status = 'counter_offered'; }
   else if (preset === 'pending') { window._dashFilterState.status = ''; }
   else if (preset === 'all') { window._dashFilterState = { status: '', product: '', vendor: '' }; const s=document.getElementById('dashSearch'); if (s) s.value=''; }
+
+  // Presets change filter state programmatically (e.g. clicking the
+  // Approved KPI card) — keep the Status select visually in sync without
+  // rebuilding the header (which would kick focus out of the search box
+  // if the person happened to be mid-search when they clicked a KPI).
+  const statusSelect = document.getElementById('dashStatusSelect');
+  if (statusSelect) statusSelect.value = window._dashFilterState.status || '';
+  if (preset === 'all') {
+    const productSelect = document.getElementById('dashProductSelect');
+    const vendorSelect = document.getElementById('dashVendorSelect');
+    if (productSelect) productSelect.value = '';
+    if (vendorSelect) vendorSelect.value = '';
+  }
 
   const fStatus = window._dashFilterState.status || '';
   const fProduct = window._dashFilterState.product || '';
@@ -1257,32 +1308,22 @@ function filterDashboard(preset) {
   if (preset === 'pending') filtered = filtered.filter(w => !['auto_approved','uw_approved','auto_rejected','uw_rejected','counter_offered','policy_issued','customer_notified'].includes(w.state));
   if (preset === 'breach') filtered = filtered.filter(w => w.sla_deadline && !w.tat_completed_at && new Date(w.sla_deadline) < new Date());
 
-  const sel = (val, opts) => opts.map(([v,label]) => `<option value="${v}" ${val===v?'selected':''}>${label}</option>`).join('');
-
   const vendorNames = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic'};
-  const el = document.getElementById('dashCaseTable');
-  el.innerHTML = `<div style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:8px">Case Queue (${filtered.length} cases)</div>
-  ${filtered.length === 0 ? '<div class="empty-state" style="padding:30px"><p>No cases match the current filters.</p></div>' : `
-  <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
-    <th>Case ID</th><th>Quotation No</th><th>Proposer</th><th>Sum Assured</th><th>Started</th>
-    <th>Vendor
-      <select onchange="updateDashFilter('vendor', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
-        ${sel(fVendor, [['','All'],['VEND-001','MedCheck India'],['VEND-002','HealthAssure'],['VEND-003','DigiMedic']])}
-      </select>
-    </th>
-    <th>Product
-      <select onchange="updateDashFilter('product', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
-        ${sel(fProduct, [['','All'],['Prime','Prime'],['Elite','Elite'],['Platinum','Platinum'],['Premier','Premier'],['Platinum Infinite','Platinum Infinite'],['Group Health','Group Health']])}
-      </select>
-    </th>
-    <th>Status
-      <select onchange="updateDashFilter('status', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
-        ${sel(fStatus, [['','All'],['vendor_assigned','Vendor Assigned'],['auto_approved','Approved'],['auto_rejected','Rejected'],['counter_offered','Counter Offer'],['referred','Referred']])}
-      </select>
-    </th>
-    <th>TAT</th>
-  </tr></thead><tbody>
-  ${filtered.map(w => {
+
+  const countLabel = document.getElementById('caseCountLabel');
+  if (countLabel) countLabel.textContent = `Case Queue (${filtered.length} cases)`;
+
+  // If the shell hasn't been built yet for any reason, build it now and retry.
+  let tbody = document.getElementById('dashTableBody');
+  if (!tbody) { renderDashTableShell(); tbody = document.getElementById('dashTableBody'); }
+  if (!tbody) return;
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-muted)">No cases match the current filters.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(w => {
     const created = new Date(w.created_at);
     const tat = Math.ceil((Date.now() - created.getTime()) / 86400000);
     const tatColor = tat > 3 ? 'var(--danger)' : tat > 1 ? 'var(--warning)' : 'var(--text-muted)';
@@ -1297,8 +1338,7 @@ function filterDashboard(preset) {
       <td>${stateLabel(w.state)}</td>
       <td style="font-size:12px;font-weight:600;color:${tatColor}">${tat<1?'<1d':tat+'d'}</td>
     </tr>`;
-  }).join('')}
-  </tbody></table></div></div>`}`;
+  }).join('');
 }
 
 // ─── Workflows ───
@@ -4454,15 +4494,7 @@ function toggleDeclineRow(prefix, key) {
   input.style.opacity = checkbox.checked ? '0.4' : '1';
 }
 
-async function saveLoadingTable() {
-  const orig = window._loadingTableData;
-  if (!orig) { showToast('No loaded data to save from — reopen this page and try again', 'error'); return; }
-
-  // Reconstruct loading_table: each row now has a Decline checkbox + a
-  // loading % input. Checked → store as a decline trigger (loading_pct:-1,
-  // action:'decline'), remembering the last numeric value in _last_loading_pct
-  // so switching the checkbox back off later restores it instead of showing 0.
-  // Unchecked → store the numeric value, with no action field.
+function reconstructLoadingTable(orig) {
   const loading_table = {};
   for (const [k, v] of Object.entries(orig.loading_table)) {
     const declineChecked = document.getElementById(`lt_decline_${k}`)?.checked ?? (v.action === 'decline');
@@ -4476,7 +4508,10 @@ async function saveLoadingTable() {
       loading_table[k] = { ...rest, loading_pct: safePct };
     }
   }
+  return loading_table;
+}
 
+function reconstructAgeLoading(orig) {
   const age_loading = {};
   for (const [k, v] of Object.entries(orig.age_loading)) {
     const declineChecked = document.getElementById(`al_decline_${k}`)?.checked ?? (v.action === 'decline');
@@ -4490,22 +4525,44 @@ async function saveLoadingTable() {
       age_loading[k] = { ...rest, loading_pct: safePct };
     }
   }
+  return age_loading;
+}
 
+function reconstructLoadingCap(orig) {
   const capInput = document.getElementById('lc_max_loading_pct');
   const capVal = capInput ? parseFloat(capInput.value) : orig.loading_cap.max_loading_pct;
-  const loading_cap = { ...orig.loading_cap, max_loading_pct: isNaN(capVal) ? orig.loading_cap.max_loading_pct : capVal };
+  return { ...orig.loading_cap, max_loading_pct: isNaN(capVal) ? orig.loading_cap.max_loading_pct : capVal };
+}
 
+function reconstructWaitingPeriods(orig) {
   const waiting_periods = {};
   for (const [k, v] of Object.entries(orig.waiting_periods)) {
     const input = document.getElementById(`wp_${k}`);
     const years = input ? parseFloat(input.value) : v.years;
     waiting_periods[k] = { ...v, years: isNaN(years) ? v.years : years };
   }
+  return waiting_periods;
+}
+
+// section: 'loading_table' | 'age_loading' | 'loading_cap' | 'waiting_periods'
+// Each sub-view only renders DOM elements for its own section, so this only
+// reads and sends that one piece — the backend PUT already supports partial
+// updates (only overwrites whichever fields are present in the request body),
+// so sending just one section leaves the other three completely untouched.
+async function saveLoadingTable(section) {
+  const orig = window._loadingTableData;
+  if (!orig) { showToast('No loaded data to save from — reopen this page and try again', 'error'); return; }
+
+  const payload = {};
+  if (section === 'loading_table')   payload.loading_table = reconstructLoadingTable(orig);
+  if (section === 'age_loading')     payload.age_loading = reconstructAgeLoading(orig);
+  if (section === 'loading_cap')     payload.loading_cap = reconstructLoadingCap(orig);
+  if (section === 'waiting_periods') payload.waiting_periods = reconstructWaitingPeriods(orig);
 
   try {
-    const res = await api('/api/masters/loading-table', { method: 'PUT', body: JSON.stringify({ loading_table, age_loading, loading_cap, waiting_periods }) });
+    const res = await api('/api/masters/loading-table', { method: 'PUT', body: JSON.stringify(payload) });
     if (res.success) {
-      showToast('Loading table saved — takes effect on the next case scored', 'success');
+      showToast('Saved — takes effect on the next case scored', 'success');
       renderMasters();
     } else {
       showToast(res.error || 'Save failed', 'error');
@@ -4656,58 +4713,112 @@ async function renderMasters() {
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
   } else if (_mastersView === 'loading') {
-    el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
+    // ── Loading sub-menu: 4 cards, same pattern as the Masters Config home screen ──
+    el.innerHTML = backBtn + `
+    <div class="grid-2" style="gap:16px">
+      ${[
+        {icon:'<i data-lucide="bar-chart-3"></i>',title:'Loading Table',desc:'Condition-based loading percentages (BMI, smoking, HTN, diabetes, etc.)',onclick:"_mastersView='loading_table';renderMasters()"},
+        {icon:'<i data-lucide="users"></i>',title:'Age Loading Bands',desc:'Loading percentage by age band',onclick:"_mastersView='loading_age';renderMasters()"},
+        {icon:'<i data-lucide="shield-alert"></i>',title:'Loading Cap',desc:'Maximum permissible total loading before auto-decline',onclick:"_mastersView='loading_cap';renderMasters()"},
+        {icon:'<i data-lucide="calendar-clock"></i>',title:'Waiting Periods',desc:'PED waiting periods by condition',onclick:"_mastersView='loading_waiting';renderMasters()"}
+      ].map(c => `<div class="card" style="cursor:pointer;transition:all 0.15s;border:1.5px solid var(--border)" onclick="${c.onclick}" onmouseover="this.style.borderColor='var(--primary)'" onmouseout="this.style.borderColor='var(--border)'"><div class="card-body" style="text-align:center;padding:28px 16px"><div style="font-size:32px;margin-bottom:10px">${c.icon}</div><div style="font-size:15px;font-weight:700;color:var(--text)">${c.title}</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">${c.desc}</div></div></div>`).join('')}
+    </div>`;
+    renderIcons();
+
+  } else if (_mastersView === 'loading_table') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
       const data = await api('/api/masters/loading-table');
-      window._loadingTableData = data; // kept for saveLoadingTable() to read non-editable fields back unchanged
+      window._loadingTableData = data;
       const declineRow = (prefix, k, v, extraCol) => {
         const isDecline = v.action === 'decline';
         const pctValue = isDecline ? (v._last_loading_pct ?? 0) : v.loading_pct;
         return `<tr>
           <td style="font-weight:500">${k.replace(/_/g,' ')}</td>
-          <td>
-            <input type="number" class="form-control" id="${prefix}_${k}" value="${pctValue}" ${isDecline?'disabled':''}
-              style="width:90px;font-family:'JetBrains Mono',monospace;font-weight:700${isDecline?';opacity:0.4':''}">
-          </td>
-          <td>
-            <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer">
-              <input type="checkbox" id="${prefix}_decline_${k}" ${isDecline?'checked':''}
-                onchange="toggleDeclineRow('${prefix}','${k}')" style="cursor:pointer">
-              Decline
-            </label>
-          </td>
+          <td><input type="number" class="form-control" id="${prefix}_${k}" value="${pctValue}" ${isDecline?'disabled':''} style="width:90px;font-family:'JetBrains Mono',monospace;font-weight:700${isDecline?';opacity:0.4':''}"></td>
+          <td><label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="${prefix}_decline_${k}" ${isDecline?'checked':''} onchange="toggleDeclineRow('${prefix}','${k}')" style="cursor:pointer">Decline</label></td>
           ${extraCol||''}
         </tr>`;
       };
-      el.innerHTML = backBtn + `
-      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
-        <button class="btn btn-accent" onclick="saveLoadingTable()"><i data-lucide="save"></i> Save Changes</button>
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Loading Table</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('loading_table')"><i data-lucide="save"></i> Save Changes</button>
       </div>
-      <div class="grid-2" style="gap:16px">
-        <div class="card"><div class="card-header"><h3>Loading Table</h3></div><div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Condition</th><th>Loading %</th><th>Decline?</th></tr></thead><tbody>
-          ${Object.entries(data.loading_table).map(([k,v]) => declineRow('lt', k, v)).join('')}
-          </tbody></table>
-        </div></div>
-        <div class="card"><div class="card-header"><h3>Age Loading Bands</h3></div><div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Age Band</th><th>Loading %</th><th>Decline?</th><th>Label</th></tr></thead><tbody>
-          ${Object.entries(data.age_loading).map(([k,v]) => declineRow('al', k, v, `<td style="font-size:12px;color:var(--text-muted)">${v.label}</td>`)).join('')}
-          </tbody></table>
-        </div></div>
-      </div>
-      <div class="grid-2" style="gap:16px;margin-top:16px">
-        <div class="card"><div class="card-header"><h3>Loading Cap</h3></div><div class="card-body">
-          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Maximum permissible total loading (%). Above this → auto-decline</label>
-          <input type="number" class="form-control" id="lc_max_loading_pct" value="${data.loading_cap.max_loading_pct}" style="width:140px;font-size:22px;font-weight:700;color:var(--danger);font-family:'JetBrains Mono',monospace">
-        </div></div>
-        <div class="card"><div class="card-header"><h3>Waiting Periods</h3></div><div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Condition</th><th>Years</th><th>Description</th></tr></thead><tbody>
-          ${Object.entries(data.waiting_periods).map(([k,v]) => `<tr><td style="font-weight:500;text-transform:capitalize">${k.replace(/_/g,' ')}</td><td><input type="number" class="form-control" id="wp_${k}" value="${v.years}" style="width:70px;font-family:'JetBrains Mono',monospace;font-weight:700"></td><td style="font-size:12px;color:var(--text-muted)">${v.description}</td></tr>`).join('')}
-          </tbody></table>
-        </div></div>
-      </div>`;
+      <div class="card"><div class="card-body" style="padding:0">
+        <table class="data-table"><thead><tr><th>Condition</th><th>Loading %</th><th>Decline?</th></tr></thead><tbody>
+        ${Object.entries(data.loading_table).map(([k,v]) => declineRow('lt', k, v)).join('')}
+        </tbody></table>
+      </div></div>`;
       renderIcons();
-    } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
+  } else if (_mastersView === 'loading_age') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/masters/loading-table');
+      window._loadingTableData = data;
+      const declineRow = (prefix, k, v, extraCol) => {
+        const isDecline = v.action === 'decline';
+        const pctValue = isDecline ? (v._last_loading_pct ?? 0) : v.loading_pct;
+        return `<tr>
+          <td style="font-weight:500">${k.replace(/_/g,' ')}</td>
+          <td><input type="number" class="form-control" id="${prefix}_${k}" value="${pctValue}" ${isDecline?'disabled':''} style="width:90px;font-family:'JetBrains Mono',monospace;font-weight:700${isDecline?';opacity:0.4':''}"></td>
+          <td><label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="${prefix}_decline_${k}" ${isDecline?'checked':''} onchange="toggleDeclineRow('${prefix}','${k}')" style="cursor:pointer">Decline</label></td>
+          ${extraCol||''}
+        </tr>`;
+      };
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Age Loading Bands</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('age_loading')"><i data-lucide="save"></i> Save Changes</button>
+      </div>
+      <div class="card"><div class="card-body" style="padding:0">
+        <table class="data-table"><thead><tr><th>Age Band</th><th>Loading %</th><th>Decline?</th><th>Label</th></tr></thead><tbody>
+        ${Object.entries(data.age_loading).map(([k,v]) => declineRow('al', k, v, `<td style="font-size:12px;color:var(--text-muted)">${v.label}</td>`)).join('')}
+        </tbody></table>
+      </div></div>`;
+      renderIcons();
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
+  } else if (_mastersView === 'loading_cap') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/masters/loading-table');
+      window._loadingTableData = data;
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Loading Cap</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('loading_cap')"><i data-lucide="save"></i> Save Changes</button>
+      </div>
+      <div class="card"><div class="card-body">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Maximum permissible total loading (%). Above this → auto-decline</label>
+        <input type="number" class="form-control" id="lc_max_loading_pct" value="${data.loading_cap.max_loading_pct}" style="width:140px;font-size:22px;font-weight:700;color:var(--danger);font-family:'JetBrains Mono',monospace">
+      </div></div>`;
+      renderIcons();
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
+  } else if (_mastersView === 'loading_waiting') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/masters/loading-table');
+      window._loadingTableData = data;
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Waiting Periods</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('waiting_periods')"><i data-lucide="save"></i> Save Changes</button>
+      </div>
+      <div class="card"><div class="card-body" style="padding:0">
+        <table class="data-table"><thead><tr><th>Condition</th><th>Years</th><th>Description</th></tr></thead><tbody>
+        ${Object.entries(data.waiting_periods).map(([k,v]) => `<tr><td style="font-weight:500;text-transform:capitalize">${k.replace(/_/g,' ')}</td><td><input type="number" class="form-control" id="wp_${k}" value="${v.years}" style="width:70px;font-family:'JetBrains Mono',monospace;font-weight:700"></td><td style="font-size:12px;color:var(--text-muted)">${v.description}</td></tr>`).join('')}
+        </tbody></table>
+      </div></div>`;
+      renderIcons();
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
   } else if (_mastersView === 'scoring') {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
