@@ -1400,7 +1400,23 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         const textBasedPages = [];
         const __textParseClient = await getBedrockClient();
 
+        let _docsDone = 0;
+        const _docsTotal = wf.documents.length;
+        // Emit initial progress
+        socketManager.emitGlobal('extraction_progress', {
+          workflow_id: wf.id, stage: 'starting',
+          docs_done: 0, docs_total: _docsTotal, percent: 0,
+          message: `Starting extraction of ${_docsTotal} document(s)...`
+        });
+
         for (const doc of wf.documents) {
+          // Emit per-doc start
+          socketManager.emitGlobal('extraction_progress', {
+            workflow_id: wf.id, stage: 'extracting',
+            docs_done: _docsDone, docs_total: _docsTotal,
+            percent: Math.round((_docsDone / _docsTotal) * 70), // 0-70% for extraction phase
+            current_doc: doc.name, message: `Extracting: ${doc.name}`
+          });
           // Lazy-load from S3 if content not in memory (IAM instance role or static keys)
           if (!doc.base64_data && doc.has_content) {
             try {
@@ -1872,6 +1888,15 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
+          // Emit per-page progress (pages span 20%-65% of total progress)
+          const _pagePercent = 20 + Math.round((pi / Math.max(pageImages.length, 1)) * 45);
+          socketManager.emitGlobal('extraction_progress', {
+            workflow_id: wf.id, stage: 'reading_pages',
+            docs_done: _docsDone || 0, docs_total: _docsTotal,
+            pages_done: pi, pages_total: pageImages.length,
+            percent: _pagePercent,
+            message: `Reading page ${pageNum} of ${pageImages.length}...`
+          });
           try {
             // ── ONE-TIME DIAGNOSTIC: ask the model to describe the page in plain
             // English, completely bypassing the JSON extraction task. This tells us
@@ -2240,7 +2265,11 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
         }
         wf.state_history.push({ state: 'extraction_complete', timestamp: new Date().toISOString(), actor: 'AI Engine',
           note: `Extracted ${extractedData.parameters_found||0} parameters from ${wf.documents.length} document(s) via Converse API` });
-
+        socketManager.emitGlobal('extraction_progress', {
+          workflow_id: wf.id, stage: 'extracted',
+          docs_done: _docsTotal, docs_total: _docsTotal,
+          percent: 65, message: `Extracted ${extractedData.parameters_found||0} parameters — running clinical analysis...`
+        });
 
       } catch(claudeErr) {
         console.error('[Extraction] ❌ EXTRACTION FAILED — full error details:');
@@ -2285,6 +2314,11 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
     // ICMR Indian-population guidelines using Bedrock.
     // Does NOT re-score numeric values — Per-CAT Scoring Config handles those.
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'icmr_analysis', message: 'Running ICMR clinical text analysis...' });
+    socketManager.emitGlobal('extraction_progress', {
+      workflow_id: wf.id, stage: 'icmr_analysis',
+      docs_done: _docsTotal || wf.documents.length, docs_total: _docsTotal || wf.documents.length,
+      percent: 75, message: 'Running clinical correlation analysis...'
+    });
     try {
       const _icmrGuidelines = await s3Client.getConfig('icmr-guidelines').catch(() => null);
       const _icmrResult     = await icmrAnalyser.runICMRAnalysis(wf, _icmrGuidelines?.text || null);
@@ -2303,6 +2337,11 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 
     // Step 2: Run AI analysis against rules (numeric Per-CAT scoring)
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'analyzing', message: 'Scoring against UW rules...' });
+    socketManager.emitGlobal('extraction_progress', {
+      workflow_id: wf.id, stage: 'scoring',
+      docs_done: _docsTotal || wf.documents.length, docs_total: _docsTotal || wf.documents.length,
+      percent: 90, message: 'Scoring against underwriting rules...'
+    });
     wf.state_history.push({ state: 'rule_engine_started', timestamp: new Date().toISOString(), actor: 'Rule Engine', note: 'Evaluating against medical-scoring, uw-guidelines, risk-params' });
 
     const analysis = await runAIAnalysis(wf);
@@ -2377,6 +2416,12 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
     }, ['email','sms']);
 
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'ai_analysis_complete', decision: wf.decision });
+    socketManager.emitGlobal('extraction_progress', {
+      workflow_id: wf.id, stage: 'complete',
+      docs_done: _docsTotal || wf.documents.length, docs_total: _docsTotal || wf.documents.length,
+      percent: 100, message: 'Analysis complete — loading decision...',
+      decision: wf.decision?.recommendation || 'complete'
+    });
 
     // Step 4: Auto-generate AI summary (non-blocking — don't fail the request if summary fails)
     try {
