@@ -3400,105 +3400,128 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
       } catch(e) { console.warn('Feedback save failed:', e.message); }
     }
 
-    // Step 2 — Final submit documents (triggers AI extraction + ICMR analysis)
+    // ── Set up live progress tracking BEFORE calling submit-documents ─────────
+    // /submit-documents is a long-running synchronous request (extraction +
+    // ICMR + scoring all happen inside this one HTTP call, typically 60-120s)
+    // but it emits extraction_progress/workflow_update socket events THE WHOLE
+    // TIME it's running. The flag + listeners used to be set up AFTER awaiting
+    // this call -- meaning for the entire duration of the request, nothing was
+    // protecting this page from the global workflow_update handler, which
+    // navigates to showPage(currentPage) the moment any event arrives. Since
+    // currentPage is 'vendors' while viewing this screen, that handler was
+    // firing showPage('vendors') almost immediately, bouncing the user back to
+    // the vendor list long before the real listeners below ever got attached --
+    // confirmed live: code was deployed correctly, but listeners were simply
+    // wired up too late to matter. Moving this block before the await fixes it.
+    const timelineEl  = document.getElementById(`wfTimeline_${wfId}`);
+    const progressBar = document.getElementById(`wfProgressBar_${wfId}`);
+    const progressMsg = document.getElementById(`wfProgressMsg_${wfId}`);
+    const progressPct = document.getElementById(`wfProgressPct_${wfId}`);
+    const progressFill= document.getElementById(`wfProgressFill_${wfId}`);
+
+    // Block all socket-driven page navigations while watching extraction
+    window._watchingExtractionFor = wfId;
+
+    // Show the progress bar strip
+    if (progressBar) progressBar.style.display = 'block';
+
+    const _addTimelineStep = (label, note) => {
+      if (!timelineEl) return;
+      // Remove 'active' from previous last step
+      const prev = timelineEl.querySelector('.step-dot.active');
+      if (prev) { prev.classList.remove('active'); prev.classList.add('done'); }
+      const step = document.createElement('div');
+      step.className = 'workflow-step';
+      step.innerHTML = `<div class="step-dot active"></div>
+        <div class="step-label" style="font-weight:600;color:var(--accent)">${label}</div>
+        <div class="step-time">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>`;
+      timelineEl.appendChild(step);
+      timelineEl.scrollTop = timelineEl.scrollHeight; // auto-scroll to bottom
+    };
+
+    const _updateProgress = (pct, msg) => {
+      if (progressFill) progressFill.style.width = pct + '%';
+      if (progressFill) progressFill.style.background = pct >= 100 ? 'var(--success)' : 'linear-gradient(90deg,var(--accent),#34d399)';
+      if (progressMsg)  progressMsg.textContent = msg || 'Processing...';
+      if (progressPct)  progressPct.textContent = pct + '%';
+      if (progressPct)  progressPct.style.color = pct >= 100 ? 'var(--success)' : 'var(--accent)';
+    };
+
+    // Initial state
+    _addTimelineStep('extraction started', '');
+    _updateProgress(5, 'Starting AI extraction...');
+
+    // Clean up previous listeners
+    if (window._extractionProgressHandler) socket.off('extraction_progress', window._extractionProgressHandler);
+    if (window._extractionWfUpdateHandler)  socket.off('workflow_update',     window._extractionWfUpdateHandler);
+
+    // Primary: per-page extraction_progress events
+    window._extractionProgressHandler = (data) => {
+      if (data.workflow_id !== wfId) return;
+      _updateProgress(data.percent || 0, data.message || '');
+      // Add a timeline step for key stage transitions
+      const stageLabels = {
+        reading_pages:  `reading page ${data.pages_done||''}/${data.pages_total||''} — AI vision`,
+        extracted:      `parameters extracted (${data.percent||0}%)`,
+        icmr_analysis:  'clinical correlation running',
+        scoring:        'underwriting rules scoring',
+        complete:       'analysis complete ✓'
+      };
+      if (stageLabels[data.stage]) _addTimelineStep(stageLabels[data.stage]);
+      if (data.stage === 'complete') {
+        socket.off('extraction_progress', window._extractionProgressHandler);
+        socket.off('workflow_update',     window._extractionWfUpdateHandler);
+        window._extractionProgressHandler = null;
+        window._extractionWfUpdateHandler = null;
+        window._watchingExtractionFor = null;
+        setTimeout(() => viewWorkflow(wfId), 1500);
+      }
+    };
+    socket.on('extraction_progress', window._extractionProgressHandler);
+
+    // Fallback: coarser workflow_update events (always fired for every case type)
+    window._extractionWfUpdateHandler = (data) => {
+      if (data.workflow_id !== wfId) return;
+      const map = {
+        extracting:            { pct: 15, msg: 'AI reading documents...',          label: 'AI extraction running'         },
+        extraction_complete:   { pct: 65, msg: 'Parameters extracted',             label: 'extraction complete'           },
+        icmr_analysis:         { pct: 75, msg: 'Running clinical analysis...',     label: 'clinical correlation running'  },
+        analyzing:             { pct: 90, msg: 'Scoring against UW rules...',      label: 'underwriting scoring'          },
+        ai_analysis_complete:  { pct:100, msg: 'Analysis complete — loading...',   label: 'analysis complete ✓'          },
+        extraction_failed:     { pct: 0,  msg: 'Extraction failed',                label: 'extraction failed ✗'          }
+      };
+      const m = map[data.state];
+      if (!m) return;
+      _updateProgress(m.pct, m.msg);
+      _addTimelineStep(m.label);
+      if (data.state === 'ai_analysis_complete') {
+        socket.off('extraction_progress', window._extractionProgressHandler);
+        socket.off('workflow_update',     window._extractionWfUpdateHandler);
+        window._extractionProgressHandler = null;
+        window._extractionWfUpdateHandler = null;
+        window._watchingExtractionFor = null;
+        setTimeout(() => viewWorkflow(wfId), 1500);
+      }
+    };
+    socket.on('workflow_update', window._extractionWfUpdateHandler);
+
+    // ── NOW make the actual request — listeners above are already live and
+    // will catch every progress event for the entire duration of this call ──
     const res = await api(`/api/workflow/${wfId}/submit-documents`, { method: 'POST', body: '{}' });
     if (res.success) {
       showToast('Documents' + (feedbackText ? ' and feedback' : '') + ' submitted — AI extraction starting...', 'success');
-
-      // ── Stay on this page — only update the Workflow Timeline card live ──────
-      const timelineEl  = document.getElementById(`wfTimeline_${wfId}`);
-      const progressBar = document.getElementById(`wfProgressBar_${wfId}`);
-      const progressMsg = document.getElementById(`wfProgressMsg_${wfId}`);
-      const progressPct = document.getElementById(`wfProgressPct_${wfId}`);
-      const progressFill= document.getElementById(`wfProgressFill_${wfId}`);
-
-      // Block all socket-driven page navigations while watching extraction
-      window._watchingExtractionFor = wfId;
-
-      // Show the progress bar strip
-      if (progressBar) progressBar.style.display = 'block';
-
-      const _addTimelineStep = (label, note) => {
-        if (!timelineEl) return;
-        // Remove 'active' from previous last step
-        const prev = timelineEl.querySelector('.step-dot.active');
-        if (prev) { prev.classList.remove('active'); prev.classList.add('done'); }
-        const step = document.createElement('div');
-        step.className = 'workflow-step';
-        step.innerHTML = `<div class="step-dot active"></div>
-          <div class="step-label" style="font-weight:600;color:var(--accent)">${label}</div>
-          <div class="step-time">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>`;
-        timelineEl.appendChild(step);
-        timelineEl.scrollTop = timelineEl.scrollHeight; // auto-scroll to bottom
-      };
-
-      const _updateProgress = (pct, msg) => {
-        if (progressFill) progressFill.style.width = pct + '%';
-        if (progressFill) progressFill.style.background = pct >= 100 ? 'var(--success)' : 'linear-gradient(90deg,var(--accent),#34d399)';
-        if (progressMsg)  progressMsg.textContent = msg || 'Processing...';
-        if (progressPct)  progressPct.textContent = pct + '%';
-        if (progressPct)  progressPct.style.color = pct >= 100 ? 'var(--success)' : 'var(--accent)';
-      };
-
-      // Initial state
-      _addTimelineStep('extraction started', '');
-      _updateProgress(5, 'Starting AI extraction...');
-
-      // Clean up previous listeners
-      if (window._extractionProgressHandler) socket.off('extraction_progress', window._extractionProgressHandler);
-      if (window._extractionWfUpdateHandler)  socket.off('workflow_update',     window._extractionWfUpdateHandler);
-
-      // Primary: per-page extraction_progress events
-      window._extractionProgressHandler = (data) => {
-        if (data.workflow_id !== wfId) return;
-        _updateProgress(data.percent || 0, data.message || '');
-        // Add a timeline step for key stage transitions
-        const stageLabels = {
-          reading_pages:  `reading page ${data.pages_done||''}/${data.pages_total||''} — AI vision`,
-          extracted:      `parameters extracted (${data.percent||0}%)`,
-          icmr_analysis:  'clinical correlation running',
-          scoring:        'underwriting rules scoring',
-          complete:       'analysis complete ✓'
-        };
-        if (stageLabels[data.stage]) _addTimelineStep(stageLabels[data.stage]);
-        if (data.stage === 'complete') {
-          socket.off('extraction_progress', window._extractionProgressHandler);
-          socket.off('workflow_update',     window._extractionWfUpdateHandler);
-          window._extractionProgressHandler = null;
-          window._extractionWfUpdateHandler = null;
-          window._watchingExtractionFor = null;
-          setTimeout(() => viewWorkflow(wfId), 1500);
-        }
-      };
-      socket.on('extraction_progress', window._extractionProgressHandler);
-
-      // Fallback: coarser workflow_update events (always fired for every case type)
-      window._extractionWfUpdateHandler = (data) => {
-        if (data.workflow_id !== wfId) return;
-        const map = {
-          extracting:            { pct: 15, msg: 'AI reading documents...',          label: 'AI extraction running'         },
-          extraction_complete:   { pct: 65, msg: 'Parameters extracted',             label: 'extraction complete'           },
-          icmr_analysis:         { pct: 75, msg: 'Running clinical analysis...',     label: 'clinical correlation running'  },
-          analyzing:             { pct: 90, msg: 'Scoring against UW rules...',      label: 'underwriting scoring'          },
-          ai_analysis_complete:  { pct:100, msg: 'Analysis complete — loading...',   label: 'analysis complete ✓'          },
-          extraction_failed:     { pct: 0,  msg: 'Extraction failed',                label: 'extraction failed ✗'          }
-        };
-        const m = map[data.state];
-        if (!m) return;
-        _updateProgress(m.pct, m.msg);
-        _addTimelineStep(m.label);
-        if (data.state === 'ai_analysis_complete') {
-          socket.off('extraction_progress', window._extractionProgressHandler);
-          socket.off('workflow_update',     window._extractionWfUpdateHandler);
-          window._extractionProgressHandler = null;
-          window._extractionWfUpdateHandler = null;
-          window._watchingExtractionFor = null;
-          setTimeout(() => viewWorkflow(wfId), 1500);
-        }
-      };
-      socket.on('workflow_update', window._extractionWfUpdateHandler);
-
+      // Nothing else to do here — the listeners registered above already
+      // rendered every stage live as it happened, and will navigate to
+      // viewWorkflow(wfId) themselves once the 'complete' event arrives.
     } else {
+      // Request failed outright (e.g. validation error) — clean up the
+      // listeners we registered above since there's no extraction to watch.
+      socket.off('extraction_progress', window._extractionProgressHandler);
+      socket.off('workflow_update',     window._extractionWfUpdateHandler);
+      window._extractionProgressHandler = null;
+      window._extractionWfUpdateHandler = null;
+      window._watchingExtractionFor = null;
+      if (progressBar) progressBar.style.display = 'none';
       showToast(res.error || res.message || 'Submission failed', 'error');
       if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Final Submit (' + docCount + ' docs + feedback)'; setTimeout(renderIcons, 0); }
     }
