@@ -215,6 +215,10 @@ textarea.form-control{resize:vertical;min-height:60px}
     <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;padding:6px 10px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary)">
       <i data-lucide="lock"></i> Fields marked with <span style="color:var(--primary)">🔒</span> are auto-filled from JSON and cannot be edited.
     </div>
+    <div class="form-group" id="wfQuotationNoWrap" style="display:none;margin-bottom:14px">
+      <label>Quotation Number 🔒</label>
+      <input class="form-control" id="wf_quotation_no" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-weight:600">
+    </div>
     <div class="grid-2">
       <div class="form-group"><label>Proposer Name * 🔒</label><input class="form-control" id="wf_name" placeholder="Auto-filled from JSON" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
       <div class="form-group"><label>Age 🔒</label><input class="form-control" id="wf_age" type="number" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
@@ -1246,7 +1250,7 @@ function filterDashboard(preset) {
   el.innerHTML = `<div style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:8px">Case Queue (${filtered.length} cases)</div>
   ${filtered.length === 0 ? '<div class="empty-state" style="padding:30px"><p>No cases match the current filters.</p></div>' : `
   <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
-    <th>Case ID</th><th>Proposer</th><th>Sum Assured</th><th>Started</th><th>Vendor</th><th>Product</th><th>Status</th><th>TAT</th>
+    <th>Case ID</th><th>Quotation No</th><th>Proposer</th><th>Sum Assured</th><th>Started</th><th>Vendor</th><th>Product</th><th>Status</th><th>TAT</th>
   </tr></thead><tbody>
   ${filtered.map(w => {
     const created = new Date(w.created_at);
@@ -1254,6 +1258,7 @@ function filterDashboard(preset) {
     const tatColor = tat > 3 ? 'var(--danger)' : tat > 1 ? 'var(--warning)' : 'var(--text-muted)';
     return `<tr style="cursor:pointer" onclick="viewWorkflow('${w.id}')">
       <td style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600">${w.proposal_id}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">${w.quotation_no||'—'}</td>
       <td style="font-weight:500">${w.proposer_name}</td>
       <td>₹${(w.sum_assured||0).toLocaleString('en-IN')}</td>
       <td style="font-size:12px;color:var(--text-muted)">${created.toLocaleDateString('en-IN')}, ${created.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</td>
@@ -2639,6 +2644,10 @@ async function handleSBIJsonUpload(input) {
 
     // ── Fill form fields (all read-only — from JSON) ────────────────
     if (name)       document.getElementById('wf_name').value  = name;
+    if (quotationNo) {
+      document.getElementById('wf_quotation_no').value = quotationNo;
+      document.getElementById('wfQuotationNoWrap').style.display = 'block';
+    }
     if (age)        document.getElementById('wf_age').value   = age;
     if (sumAssured) document.getElementById('wf_sum').value   = sumAssured;
     if (height)     document.getElementById('wf_height').value = height;
@@ -2741,7 +2750,7 @@ async function createWorkflow() {
   const weight = parseFloat(document.getElementById('wf_weight').value) || null;
   const bmi = (height && weight && height > 50) ? Math.round(weight / ((height/100) * (height/100)) * 10) / 10 : null;
   const data = {
-    proposer_name: document.getElementById('wf_name').value, age: parseInt(document.getElementById('wf_age').value)||35,
+    proposer_name: document.getElementById('wf_name').value, quotation_no: document.getElementById('wf_quotation_no')?.value || null, age: parseInt(document.getElementById('wf_age').value)||35,
     gender: document.getElementById('wf_gender').value, sum_assured: parseInt(document.getElementById('wf_sum').value)||5000000,
     product_name: document.getElementById('wf_product').value, nstp_reason: document.getElementById('wf_reason').value,
     observations: document.getElementById('wf_observations').value, required_tests: reqTests, vendor_id: vendorId,
@@ -4372,11 +4381,12 @@ function showVendorCaseTab(tab) {
   }
 
   el.innerHTML = `<div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
-    <th>Proposal</th><th>Proposer</th><th>Age</th><th>Sum Assured</th><th>Docs</th><th>Observations</th>
+    <th>Proposal</th><th>Quotation No</th><th>Proposer</th><th>Age</th><th>Sum Assured</th><th>Docs</th><th>Observations</th>
     <th>${tab==='pending'?'Required Tests':'Submitted On'}</th><th>Actions</th>
   </tr></thead><tbody>
   ${cases.map(c => `<tr>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${c.proposal_id}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">${c.quotation_no||'—'}</td>
     <td style="font-weight:500">${c.proposer_name}</td>
     <td>${c.age}/${c.gender?.charAt(0).toUpperCase()}</td>
     <td>₹${(c.sum_assured||0).toLocaleString('en-IN')}</td>

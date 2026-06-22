@@ -98,6 +98,7 @@ function createWorkflow(proposalData) {
   const workflow = {
     id,
     proposal_id: proposalData.proposal_id || `PROP-${Date.now()}`,
+    quotation_no: proposalData.quotation_no || null,
     proposer_name: proposalData.proposer_name,
     age: proposalData.age,
     gender: proposalData.gender,

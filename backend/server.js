@@ -841,7 +841,7 @@ app.get('/api/vendor-requests', requireAuth, (req, res) => res.json(vendorApi.li
 // Workflow
 app.post('/api/workflow/create', requireAuth, async (req, res) => {
   try {
-    const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi, pre_existing_conditions, detailed_ped } = req.body;
+    const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi, pre_existing_conditions, detailed_ped, quotation_no } = req.body;
     if (!proposer_name) return res.status(400).json({ error: 'proposer_name required' });
 
     // Resolve CAT level first to determine correct vendor
@@ -887,7 +887,7 @@ app.post('/api/workflow/create', requireAuth, async (req, res) => {
     const mergedTests = [...new Set([...policyMandatoryTests, ...uwSelectedTests])]
       .filter(t => t != null && typeof t === 'string' && t.trim() !== '');
 
-    const wf = workflowEngine.createWorkflow({ proposer_name, age: age||35, gender: gender||'male', sum_assured: sum_assured||0, product_name, policy_type, nstp_reason, observations: observations||'', required_tests: mergedTests, assigned_vendor_id: selectedVendor, cat_level: catResult.cat, cat_reason: catResult.reason, lifestyle: lifestyle||{}, medical_history: medical_history||{}, height_cm: height_cm||null, weight_kg: weight_kg||null, declared_bmi: declared_bmi||null });
+    const wf = workflowEngine.createWorkflow({ proposer_name, quotation_no: quotation_no || null, age: age||35, gender: gender||'male', sum_assured: sum_assured||0, product_name, policy_type, nstp_reason, observations: observations||'', required_tests: mergedTests, assigned_vendor_id: selectedVendor, cat_level: catResult.cat, cat_reason: catResult.reason, lifestyle: lifestyle||{}, medical_history: medical_history||{}, height_cm: height_cm||null, weight_kg: weight_kg||null, declared_bmi: declared_bmi||null });
 
     // Store historical evaluation on workflow
     if (pphcEvaluation && pphcEvaluation.match_count > 0) {
