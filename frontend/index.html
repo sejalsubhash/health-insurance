@@ -1182,59 +1182,71 @@ async function renderDashboard() {
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px">
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('all')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--primary);line-height:1.1">${workflows.length}</div>
+        <i data-lucide="layers" style="width:16px;height:16px;color:var(--primary)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--primary);line-height:1.1;margin-top:4px">${workflows.length}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Total</div>
       </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('approved')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--success);line-height:1.1">${approved}</div>
+        <i data-lucide="check-circle-2" style="width:16px;height:16px;color:var(--success)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--success);line-height:1.1;margin-top:4px">${approved}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Approved</div>
       </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('pending')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--warning);line-height:1.1">${pending}</div>
+        <i data-lucide="clock" style="width:16px;height:16px;color:var(--warning)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--warning);line-height:1.1;margin-top:4px">${pending}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Pending</div>
       </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('rejected')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--danger);line-height:1.1">${rejected}</div>
+        <i data-lucide="x-circle" style="width:16px;height:16px;color:var(--danger)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--danger);line-height:1.1;margin-top:4px">${rejected}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Rejected</div>
       </div>
+      <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('counter_offer')">
+        <i data-lucide="handshake" style="width:16px;height:16px;color:var(--accent)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--accent);line-height:1.1;margin-top:4px">${counterOffer}</div>
+        <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Counter Offer</div>
+      </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid ${breach>0?'var(--danger)':'var(--border)'};text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onclick="filterDashboard('breach')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:${breach>0?'var(--danger)':'var(--text-muted)'};line-height:1.1">${breach}</div>
+        <i data-lucide="alert-triangle" style="width:16px;height:16px;color:${breach>0?'var(--danger)':'var(--text-muted)'}"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:${breach>0?'var(--danger)':'var(--text-muted)'};line-height:1.1;margin-top:4px">${breach}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Breach</div>
       </div>
     </div>
 
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
-      <input type="text" id="dashSearch" placeholder="Search Case ID..." style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;width:160px" oninput="filterDashboard()">
-      <select id="dashStatus" class="form-control" style="width:130px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Status</option><option value="vendor_assigned">Vendor Assigned</option><option value="auto_approved">Approved</option><option value="auto_rejected">Rejected</option><option value="counter_offered">Counter Offer</option><option value="referred">Referred</option></select>
-      <select id="dashProduct" class="form-control" style="width:150px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Product</option><option value="Prime">Prime</option><option value="Elite">Elite</option><option value="Platinum">Platinum</option><option value="Premier">Premier</option><option value="Platinum Infinite">Platinum Infinite</option><option value="Group Health">Group Health</option></select>
-      <select id="dashVendor" class="form-control" style="width:130px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Vendor</option><option value="VEND-001">MedCheck India</option><option value="VEND-002">HealthAssure</option><option value="VEND-003">DigiMedic</option></select>
-      <span style="color:var(--primary);font-size:12px;cursor:pointer;margin-left:4px" onclick="document.getElementById('dashSearch').value='';document.getElementById('dashStatus').value='';document.getElementById('dashProduct').value='';document.getElementById('dashVendor').value='';filterDashboard()">Clear</span>
+      <input type="text" id="dashSearch" placeholder="Search Case ID or Proposer..." style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;width:220px" oninput="filterDashboard()">
+      <span style="color:var(--primary);font-size:12px;cursor:pointer;margin-left:4px" onclick="document.getElementById('dashSearch').value='';window._dashFilterState={status:'',product:'',vendor:''};filterDashboard()">Clear filters</span>
       <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="renderDashboard()">↻ Refresh</button>
     </div>
 
     <div id="dashCaseTable"></div>`;
+    renderIcons();
 
     filterDashboard('all');
   } catch(e) { el.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="alert-triangle"></i></div><p>Dashboard error: ${e.message||'Unknown error'}</p><button class="btn btn-primary" style="margin-top:12px" onclick="renderDashboard()">Retry</button></div>`; console.error('Dashboard error:', e); }
 }
 
+function updateDashFilter(key, value) {
+  window._dashFilterState = window._dashFilterState || { status: '', product: '', vendor: '' };
+  window._dashFilterState[key] = value;
+  filterDashboard();
+}
+
 function filterDashboard(preset) {
   let workflows = window._dashboardWorkflows || [];
-  const search = document.getElementById('dashSearch')?.value?.toLowerCase() || '';
-  const status = document.getElementById('dashStatus')?.value || '';
-  const product = document.getElementById('dashProduct')?.value || '';
-  const vendor = document.getElementById('dashVendor')?.value || '';
+  window._dashFilterState = window._dashFilterState || { status: '', product: '', vendor: '' };
 
-  if (preset === 'approved') { document.getElementById('dashStatus').value = 'auto_approved'; }
-  else if (preset === 'rejected') { document.getElementById('dashStatus').value = 'auto_rejected'; }
-  else if (preset === 'pending') { document.getElementById('dashStatus').value = ''; }
-  else if (preset === 'all') { document.getElementById('dashStatus').value = ''; document.getElementById('dashProduct').value = ''; document.getElementById('dashVendor').value = ''; document.getElementById('dashSearch').value = ''; }
+  if (preset === 'approved') { window._dashFilterState.status = 'auto_approved'; }
+  else if (preset === 'rejected') { window._dashFilterState.status = 'auto_rejected'; }
+  else if (preset === 'counter_offer') { window._dashFilterState.status = 'counter_offered'; }
+  else if (preset === 'pending') { window._dashFilterState.status = ''; }
+  else if (preset === 'all') { window._dashFilterState = { status: '', product: '', vendor: '' }; const s=document.getElementById('dashSearch'); if (s) s.value=''; }
 
-  const fStatus = document.getElementById('dashStatus')?.value || '';
-  const fProduct = document.getElementById('dashProduct')?.value || '';
-  const fVendor = document.getElementById('dashVendor')?.value || '';
+  const fStatus = window._dashFilterState.status || '';
+  const fProduct = window._dashFilterState.product || '';
+  const fVendor = window._dashFilterState.vendor || '';
   const fSearch = document.getElementById('dashSearch')?.value?.toLowerCase() || '';
 
   let filtered = workflows;
@@ -1245,12 +1257,30 @@ function filterDashboard(preset) {
   if (preset === 'pending') filtered = filtered.filter(w => !['auto_approved','uw_approved','auto_rejected','uw_rejected','counter_offered','policy_issued','customer_notified'].includes(w.state));
   if (preset === 'breach') filtered = filtered.filter(w => w.sla_deadline && !w.tat_completed_at && new Date(w.sla_deadline) < new Date());
 
+  const sel = (val, opts) => opts.map(([v,label]) => `<option value="${v}" ${val===v?'selected':''}>${label}</option>`).join('');
+
   const vendorNames = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic'};
   const el = document.getElementById('dashCaseTable');
   el.innerHTML = `<div style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:8px">Case Queue (${filtered.length} cases)</div>
   ${filtered.length === 0 ? '<div class="empty-state" style="padding:30px"><p>No cases match the current filters.</p></div>' : `
   <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
-    <th>Case ID</th><th>Quotation No</th><th>Proposer</th><th>Sum Assured</th><th>Started</th><th>Vendor</th><th>Product</th><th>Status</th><th>TAT</th>
+    <th>Case ID</th><th>Quotation No</th><th>Proposer</th><th>Sum Assured</th><th>Started</th>
+    <th>Vendor
+      <select onchange="updateDashFilter('vendor', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fVendor, [['','All'],['VEND-001','MedCheck India'],['VEND-002','HealthAssure'],['VEND-003','DigiMedic']])}
+      </select>
+    </th>
+    <th>Product
+      <select onchange="updateDashFilter('product', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fProduct, [['','All'],['Prime','Prime'],['Elite','Elite'],['Platinum','Platinum'],['Premier','Premier'],['Platinum Infinite','Platinum Infinite'],['Group Health','Group Health']])}
+      </select>
+    </th>
+    <th>Status
+      <select onchange="updateDashFilter('status', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fStatus, [['','All'],['vendor_assigned','Vendor Assigned'],['auto_approved','Approved'],['auto_rejected','Rejected'],['counter_offered','Counter Offer'],['referred','Referred']])}
+      </select>
+    </th>
+    <th>TAT</th>
   </tr></thead><tbody>
   ${filtered.map(w => {
     const created = new Date(w.created_at);
@@ -3287,11 +3317,17 @@ async function viewVendorCase(wfId, vendorId) {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">
           <div><span style="color:var(--text-muted)">Case Reference:</span> <strong>${wf.proposal_id}</strong></div>
           <div><span style="color:var(--text-muted)">Proposer Name:</span> <strong>${esc(wf.proposer_name)}</strong></div>
+        </div>
+        ${wf.quotation_no ? `<div style="margin-top:10px;padding:8px 10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:6px">
+          <span style="font-size:11px;color:#1D4ED8;font-weight:600;text-transform:uppercase;letter-spacing:0.3px">Quotation Number</span>
+          <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text-primary);margin-top:2px">${esc(wf.quotation_no)}</div>
+        </div>` : ''}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;margin-top:10px">
           <div><span style="color:var(--text-muted)">Age:</span> ${wf.age} years</div>
           <div><span style="color:var(--text-muted)">Gender:</span> ${wf.gender}</div>
         </div>
-        ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:4px">Observations / Instructions</div><div style="font-size:13px">${esc(wf.observations)}</div></div>` : ''}
-        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${(t||'unknown').toString().replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
+        ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:6px">Observations / Instructions</div><ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.6">${wf.observations.split(';').map(s=>s.trim()).filter(Boolean).map(s=>`<li>${esc(s)}</li>`).join('')}</ul></div>` : ''}
+        <div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div>${wf.required_tests?.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${(t||'unknown').toString().replace(/_/g,' ')}</span>`).join('')}</div>` : `<div style="font-size:12px;color:var(--text-muted)">No mandatory tests for this case</div>`}</div>
         <div style="margin-top:10px;padding:10px;background:${wf.pphc_biometrics?'var(--success-bg)':'var(--surface-alt)'};border-radius:8px;border-left:3px solid ${wf.pphc_biometrics?'var(--success)':'var(--warning)'}">
           <div style="font-size:11px;font-weight:600;color:${wf.pphc_biometrics?'var(--success)':'var(--warning)'};text-transform:uppercase;margin-bottom:6px">Identity Verification — Face Capture</div>
           ${wf.pphc_biometrics
