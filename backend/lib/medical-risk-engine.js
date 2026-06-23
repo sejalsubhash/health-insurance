@@ -150,7 +150,11 @@ function scoreLifestyleRisk(extractedData) {
   else if (smoking === 'former') smokingScore = 3;
   else if (smoking === 'current') smokingScore = 0;
   else smokingScore = 0; // unknown — no data = no credit
-  results.smoking = { score: smokingScore, max: 8, logic: `Smoking: ${smoking} → ${smokingScore}/8`, status: smoking };
+  const smokingSource = lifestyle?._source ? `Source: ${lifestyle._source}` : 'Source: page extraction or declared data';
+  const smokingProof = smoking === 'unknown'
+    ? `Q2 (Habits — Cigarettes/Bidis) not found in document or not readable.\nNo answer recorded → 0 pts.\n${smokingSource}`
+    : `Q2 (Habits — Cigarettes/Bidis/Paan/Gutkha) answer extracted from MER form.\nStatus: ${smoking}${lifestyle?.smoking?.years ? ', years: '+lifestyle.smoking.years : ''}${lifestyle?.smoking?.note ? ', note: '+lifestyle.smoking.note : ''}\n${smokingSource} → ${smokingScore}/8`;
+  results.smoking = { score: smokingScore, max: 8, logic: `Smoking: ${smoking} → ${smokingScore}/8`, status: smoking, proof: smokingProof };
 
   // Alcohol (6 pts)
   const alcohol = lifestyle?.alcohol?.status || 'unknown';
@@ -160,7 +164,10 @@ function scoreLifestyleRisk(extractedData) {
   else if (alcohol === 'regular')    alcoholScore = 2;
   else if (alcohol === 'heavy')      alcoholScore = 0;
   else alcoholScore = 0; // unknown — no data = no credit
-  results.alcohol = { score: alcoholScore, max: 6, logic: `Alcohol: ${alcohol} → ${alcoholScore}/6`, status: alcohol };
+  const alcoholProof = alcohol === 'unknown'
+    ? `Q3 (Alcohol consumption) not found in document or not readable.\nNo answer recorded → 0 pts.`
+    : `Q3 (Alcohol consumption) answer extracted from MER form.\nStatus: ${alcohol}${lifestyle?.alcohol?.units_per_week ? ', units/week: '+lifestyle.alcohol.units_per_week : ''}${lifestyle?.alcohol?.note ? ', note: '+lifestyle.alcohol.note : ''} → ${alcoholScore}/6`;
+  results.alcohol = { score: alcoholScore, max: 6, logic: `Alcohol: ${alcohol} → ${alcoholScore}/6`, status: alcohol, proof: alcoholProof };
 
   // Tobacco / Gutkha / Pan (4 pts)
   const tobacco = lifestyle?.tobacco_chewing?.status || 'unknown';
@@ -169,7 +176,10 @@ function scoreLifestyleRisk(extractedData) {
   else if (tobacco === 'former') tobaccoScore = 2;
   else if (tobacco === 'current') tobaccoScore = 0;
   else tobaccoScore = 0; // unknown — no data = no credit
-  results.tobacco_chewing = { score: tobaccoScore, max: 4, logic: `Tobacco: ${tobacco} → ${tobaccoScore}/4`, status: tobacco };
+  const tobaccoProof = tobacco === 'unknown'
+    ? `Q2 (Pan/Gutkha/tobacco chewing) not found in document or not readable.\nNo answer recorded → 0 pts.`
+    : `Q2 (Pan/Gutkha/tobacco chewing) answer extracted from MER form.\nStatus: ${tobacco}${lifestyle?.tobacco_chewing?.note ? ', note: '+lifestyle.tobacco_chewing.note : ''} → ${tobaccoScore}/4`;
+  results.tobacco_chewing = { score: tobaccoScore, max: 4, logic: `Tobacco: ${tobacco} → ${tobaccoScore}/4`, status: tobacco, proof: tobaccoProof };
 
   const rawTotal = results.smoking.score + results.alcohol.score + results.tobacco_chewing.score;
   const normalisedScore = Math.round((rawTotal / rawMax) * normalisedMax * 100) / 100;
@@ -256,11 +266,20 @@ function scoreMedicalHistory(extractedData) {
   }
 
   if (conditions.length === 0) pecScore = 9;
+  const pecProof = conditions.length === 0
+    ? 'No pre-existing conditions declared in MER Part 2 or medical history.\nFull marks by default.'
+    : conditions.map(c => {
+        const bp   = parseFloat(c.last_reading_systolic || c.bp_systolic || 0);
+        const a1c  = parseFloat(c.hba1c || 0);
+        const med  = (c.medication || 'none declared').trim();
+        return `• ${c.condition || 'unknown'}:\n  - Status: ${c.current_status || 'unknown'}\n  - Medication: ${med}\n  - Reading: ${bp?'BP '+bp:''}${a1c?' HbA1c '+a1c+'%':''}${!bp&&!a1c?'none recorded':''}\n  - Tier: ${c._scored_tier} → -${c._scored_deduction} pts`;
+      }).join('\n') + `\n→ Total deducted from 9: ${9 - pecScore}, Final: ${pecScore}/9`;
   results.pre_existing_conditions = {
     score: pecScore,
     max: 9,
     logic: `${conditions.length} condition(s) — severity-tier scoring → ${pecScore}/9`,
-    status: conditions.length === 0 ? 'none' : conditions.map(c => `${c.condition || 'unknown'}(${c._scored_tier})`).join(', ')
+    status: conditions.length === 0 ? 'none' : conditions.map(c => `${c.condition || 'unknown'}(${c._scored_tier})`).join(', '),
+    proof: pecProof
   };
 
   // ── Hospitalisation History (4 pts) ─────────────────────────────────────────
@@ -273,11 +292,17 @@ function scoreMedicalHistory(extractedData) {
   else if (hospitalizations.length === 1)   hospScore = Math.round(hospMax * 0.5);
   else if (hospitalizations.length <= 3)    hospScore = Math.round(hospMax * 0.25);
   else                                       hospScore = 0;
+  const hospProof = hospitalizations.length === 0
+    ? 'Q5 (Hospitalisation for accident/treatment/surgery) answered No — or no hospitalization detected in MER form.\nFull marks: ' + hospMax + '/' + hospMax
+    : `Q5 answered Yes — ${hospitalizations.length} event(s) recorded:\n` +
+      hospitalizations.map(h => `• ${h.reason || 'hospitalisation'}${h.year ? ' (' + h.year + ')' : ''}${h.is_surgery ? ' [surgery]' : ''}`).join('\n') +
+      `\n→ ${hospitalizations.length} event(s) → ${hospScore}/${hospMax}`;
   results.hospitalizations = {
     score:  hospScore,
     max:    hospMax,
     logic:  `${hospitalizations.length} hospitalisation(s) → ${hospScore}/${hospMax}`,
-    status: hospitalizations.length === 0 ? 'none' : `${hospitalizations.length} event(s)`
+    status: hospitalizations.length === 0 ? 'none' : `${hospitalizations.length} event(s)`,
+    proof:  hospProof
   };
 
   // ── Other Systemic Conditions (2 pts) ────────────────────────────────────────
@@ -288,7 +313,10 @@ function scoreMedicalHistory(extractedData) {
   if (systemicCount === 0)      systemicScore = 2;
   else if (systemicCount === 1) systemicScore = 1;
   else                           systemicScore = 0;
-  results.systemic_conditions = { score: systemicScore, max: 2, logic: `${systemicCount} systemic flag(s) → ${systemicScore}/2`, status: systemicCount === 0 ? 'clear' : `${systemicCount} flags` };
+  const sysProof = systemicCount === 0
+    ? 'No systemic flags raised — respiratory, renal, neurological, haematological sections all clear in MER Part 1 & Part 2.'
+    : `${systemicCount} systemic flag(s) detected:\n` + Object.entries(systemicFlags).filter(([,v])=>v===true).map(([k])=>`• ${k.replace(/_/g,' ')}`).join('\n') + ` → ${systemicScore}/2`;
+  results.systemic_conditions = { score: systemicScore, max: 2, logic: `${systemicCount} systemic flag(s) → ${systemicScore}/2`, status: systemicCount === 0 ? 'clear' : `${systemicCount} flags`, proof: sysProof };
 
   const rawTotal = results.pre_existing_conditions.score + results.hospitalizations.score + results.systemic_conditions.score;
   const normalisedScore = Math.round((rawTotal / rawMax) * normalisedMax * 100) / 100;
@@ -473,7 +501,12 @@ function scoreClinicalCorrelation(correlationData, extractedData) {
   if (undisclosed.length > 0) mismatchScore = undisclosed.length <= 1 ? 3 : 1;
   else if (correlation.medications_found?.length > 0) mismatchScore = 5;
   else mismatchScore = 0; // No medication data — no credit
-  results.drug_condition = { score: mismatchScore, max: 5, logic: `${undisclosed.length} undisclosed${correlation.medications_found?.length ? ', '+correlation.medications_found.length+' meds checked' : ', no medication data'} → ${mismatchScore}/5`, status: undisclosed.length === 0 ? (correlation.medications_found?.length ? 'consistent' : 'no data') : `${undisclosed.length} mismatches` };
+  const drugProof = correlation.medications_found?.length
+    ? `${correlation.medications_found.length} medication(s) found in document:\n` +
+      correlation.medications_found.map(m => `• ${m.drug || m.name || m}: expected for "${m.condition || 'known condition'}" — disclosed: ${m.disclosed !== false ? '✓' : '✗ UNDISCLOSED'}`).join('\n') +
+      (undisclosed.length ? `\n→ ${undisclosed.length} undisclosed condition(s) implied by medication` : '\n→ All medications match declared conditions')
+    : `No medication data found in extracted documents.\nDrug-condition matching requires medication names from lab/MER reports.\nScore: 0/5 (no data)`;
+  results.drug_condition = { score: mismatchScore, max: 5, logic: `${undisclosed.length} undisclosed${correlation.medications_found?.length ? ', '+correlation.medications_found.length+' meds checked' : ', no medication data'} → ${mismatchScore}/5`, status: undisclosed.length === 0 ? (correlation.medications_found?.length ? 'consistent' : 'no data') : `${undisclosed.length} mismatches`, proof: drugProof };
 
   // Multi-System Findings (5 pts) — also check EM interactions as backup
   const multiSystem = correlation?.multi_system_correlations || [];
@@ -496,7 +529,18 @@ function scoreClinicalCorrelation(correlationData, extractedData) {
   else if (missedPatterns > 0) multiScore = 3; // AI missed patterns but EM scoring caught them
   else if (hasCorrelationData) multiScore = 5; // Genuinely assessed and clean
   else multiScore = 0; // No correlation data — no credit
-  results.multi_system = { score: multiScore, max: 5, logic: `${significantFindings.length} significant correlations${missedPatterns > 0 ? ', '+missedPatterns+' patterns detected by EM' : ''} → ${multiScore}/5`, status: significantFindings.length === 0 ? (missedPatterns > 0 ? `${missedPatterns} EM patterns` : hasCorrelationData ? 'clean' : 'not assessed') : `${significantFindings.length} findings` };
+  const multiProof = !hasCorrelationData
+    ? 'No clinical correlation data available — ICMR analysis did not return multi-system findings.\nScore: 0/5 (no data)'
+    : significantFindings.length > 0
+      ? `${significantFindings.length} significant multi-system finding(s) from ICMR analysis:\n` +
+        significantFindings.map(f => `• ${f.finding_1 || ''} ↔ ${f.finding_2 || ''}: ${f.correlation || ''} (${f.clinical_significance})`).join('\n')
+      : missedPatterns > 0
+        ? `ICMR analysis showed clean findings but ${missedPatterns} pattern(s) detected by EM scoring rules:\n` +
+          (content.includes('atherogenic') ? '• Possible atherogenic dyslipidemia (low HDL + high TG)\n' : '') +
+          (content.includes('nephropathy') ? '• Possible renal stress (elevated glucose + creatinine)\n' : '') +
+          'These patterns were not flagged by AI correlation but flagged by rule engine.'
+        : 'Clinical correlation data present — no significant multi-system interactions found by ICMR analysis.';
+  results.multi_system = { score: multiScore, max: 5, logic: `${significantFindings.length} significant correlations${missedPatterns > 0 ? ', '+missedPatterns+' patterns detected by EM' : ''} → ${multiScore}/5`, status: significantFindings.length === 0 ? (missedPatterns > 0 ? `${missedPatterns} EM patterns` : hasCorrelationData ? 'clean' : 'not assessed') : `${significantFindings.length} findings`, proof: multiProof };
 
   // CV Risk (5 pts) — calculate from raw data if AI didn't provide it
   let cvRisk = correlation?.cardiovascular_risk?.framingham_risk_category || 'unknown';
@@ -530,7 +574,27 @@ function scoreClinicalCorrelation(correlationData, extractedData) {
     }
   }
   const cvScore = cvRisk === 'unknown' ? 0 : cvRisk === 'low' ? 5 : cvRisk === 'low_moderate' ? 4 : cvRisk === 'moderate' ? 3 : cvRisk === 'high' ? 1 : cvRisk === 'very_high' ? 0 : 0;
-  results.cv_risk = { score: cvScore, max: 5, logic: `CV Risk: ${cvRisk} (${cvRiskFactors} risk factors) → ${cvScore}/5`, status: cvRisk };
+  const cvProof = cvRisk === 'unknown'
+    ? 'No lab/exam data available to calculate CV risk.\nAge, BP, cholesterol, glucose all absent → 0/5'
+    : (() => {
+        const bc2 = extractedData?.blood_chemistry || {};
+        const pe2 = extractedData?.physical_exam || {};
+        const age2 = parseFloat(extractedData?._proposer_age) || 0;
+        const isMale2 = (extractedData?._proposer_gender || '').toLowerCase() !== 'female';
+        const isSmoker2 = (extractedData?.lifestyle?.smoking?.status || '').includes('current');
+        const sys2 = parseFloat(pe2.blood_pressure_systolic?.value || pe2.blood_pressure?.systolic?.value);
+        return [
+          `• Age ${age2||'unknown'} / ${isMale2?'Male':'Female'}: ${((isMale2&&age2>55)||(!isMale2&&age2>65))?'≥ threshold → ✗ risk factor':'below threshold → ✓'}`,
+          `• Smoking: ${isSmoker2?'current → ✗ risk factor':'not current → ✓'}`,
+          `• Fasting glucose: ${bc2.fasting_glucose?.value||'not tested'} ${parseFloat(bc2.fasting_glucose?.value)>126?'> 126 → ✗ risk factor':'→ ✓'}`,
+          `• Systolic BP: ${sys2||'not tested'} ${sys2>140?'> 140 → ✗ risk factor':'→ ✓'}`,
+          `• Total cholesterol: ${bc2.total_cholesterol?.value||'not tested'} ${parseFloat(bc2.total_cholesterol?.value)>240?'> 240 → ✗ risk factor':'→ ✓'}`,
+          `• HDL: ${bc2.hdl?.value||'not tested'} ${parseFloat(bc2.hdl?.value)<40?'< 40 → ✗ risk factor':'→ ✓'}`,
+          `• TC/HDL ratio: ${bc2.tc_hdl_ratio?.value||'not tested'} ${parseFloat(bc2.tc_hdl_ratio?.value)>5.5?'> 5.5 → ✗ risk factor':'→ ✓'}`,
+          `→ ${cvRiskFactors} risk factor(s) → CV risk: ${cvRisk} → ${cvScore}/5`
+        ].join('\n');
+      })();
+  results.cv_risk = { score: cvScore, max: 5, logic: `CV Risk: ${cvRisk} (${cvRiskFactors} risk factors) → ${cvScore}/5`, status: cvRisk, proof: cvProof };
 
   for (const key in results) {
     totalScore += results[key].score;
@@ -565,7 +629,17 @@ function scoreDocumentationQuality(extractedData) {
   // Completeness (8 pts)
   const completeness = totalParams > 0 ? testedParams / totalParams : 0;
   const compScore = completeness >= 0.9 ? 8 : completeness >= 0.75 ? 6 : completeness >= 0.5 ? 4 : 2;
-  results.completeness = { score: compScore, max: 8, logic: `${testedParams}/${totalParams} params (${(completeness * 100).toFixed(0)}%) → ${compScore}/8`, status: `${(completeness * 100).toFixed(0)}%` };
+  const compProofLines = [];
+  for (const section of sections) {
+    const data = extractedData?.[section] || {};
+    const secTotal = Object.keys(data).filter(k => typeof data[k]==='object'&&data[k]!==null&&'value' in data[k]).length;
+    const secTested = Object.keys(data).filter(k => typeof data[k]==='object'&&data[k]!==null&&'value' in data[k]&&data[k].value!==null&&data[k].value!==''&&data[k].flag!=='not_tested').length;
+    if (secTotal > 0) compProofLines.push(`• ${section.replace(/_/g,' ')}: ${secTested}/${secTotal} parameters extracted`);
+  }
+  const compProof = totalParams === 0
+    ? 'No lab/exam parameters found — no documents uploaded or extraction failed.'
+    : compProofLines.join('\n') + `\n→ Overall: ${testedParams}/${totalParams} (${(completeness*100).toFixed(0)}%) → ${compScore}/8`;
+  results.completeness = { score: compScore, max: 8, logic: `${testedParams}/${totalParams} params (${(completeness * 100).toFixed(0)}%) → ${compScore}/8`, status: `${(completeness * 100).toFixed(0)}%`, proof: compProof };
 
   // Module Coverage (4 pts)
   const modulesPresent = sections.filter(s => {
@@ -573,7 +647,13 @@ function scoreDocumentationQuality(extractedData) {
     return data && Object.keys(data).length > 0;
   }).length;
   const modScore = modulesPresent >= 5 ? 4 : modulesPresent >= 3 ? 3 : modulesPresent >= 2 ? 2 : 1;
-  results.module_coverage = { score: modScore, max: 4, logic: `${modulesPresent}/${sections.length} modules → ${modScore}/4`, status: `${modulesPresent} modules` };
+  const modProofLines = sections.map(s => {
+    const data = extractedData?.[s];
+    const present = data && Object.keys(data).length > 0;
+    return `• ${s.replace(/_/g,' ')}: ${present ? '✓ present' : '✗ not uploaded/extracted'}`;
+  });
+  const modProof = modProofLines.join('\n') + `\n→ ${modulesPresent}/${sections.length} modules present → ${modScore}/4`;
+  results.module_coverage = { score: modScore, max: 4, logic: `${modulesPresent}/${sections.length} modules → ${modScore}/4`, status: `${modulesPresent} modules`, proof: modProof };
 
   // Consistency (3 pts) — check for internal contradictions
   const consistencyIssues = [];
@@ -586,7 +666,10 @@ function scoreDocumentationQuality(extractedData) {
     }
   }
   const consistScore = consistencyIssues.length === 0 ? 3 : 1;
-  results.consistency = { score: consistScore, max: 3, logic: `${consistencyIssues.length} issues → ${consistScore}/3`, status: consistencyIssues.length === 0 ? 'consistent' : consistencyIssues.join(', ') };
+  const consProof = consistencyIssues.length === 0
+    ? `No internal data contradictions detected.\n• BMI vs height/weight: ${pe.height_cm&&pe.weight_kg&&pe.bmi?.value ? 'calculated BMI '+(pe.weight_kg/((pe.height_cm/100)**2)).toFixed(1)+' matches recorded '+pe.bmi.value+' ✓' : 'not enough data to verify'}\n→ Data appears internally consistent`
+    : `${consistencyIssues.length} internal contradiction(s) found:\n` + consistencyIssues.map(i=>`• ${i}`).join('\n');
+  results.consistency = { score: consistScore, max: 3, logic: `${consistencyIssues.length} issues → ${consistScore}/3`, status: consistencyIssues.length === 0 ? 'consistent' : consistencyIssues.join(', '), proof: consProof };
 
   for (const key in results) {
     totalScore += results[key].score;
