@@ -110,6 +110,35 @@ async function applyDynamicLoadingOverride(riskParams) {
   return riskParams;
 }
 
+// ─── Dynamic UW Guidelines override ──────────────────────────────────────────
+// Same pattern as applyDynamicLoadingOverride above. uw-guidelines.json's 50
+// built-in rules are git-tracked and get baked into every Docker image build,
+// so they need the same Postgres-backed override layer to be genuinely
+// editable rather than reset on every rebuild. Stored as a sparse map keyed
+// by rule id (config key 'uw-rule-overrides') -- only fields that were
+// actually edited are present, so this never requires touching the 50
+// built-in rule objects themselves, and the file stays the recoverable
+// original baseline if an override ever needs to be cleared.
+async function applyUWRuleOverrides(rules) {
+  try {
+    const overrides = await s3Client.getConfig('uw-rule-overrides');
+    if (overrides) {
+      for (const rule of rules) {
+        const o = overrides[rule.id];
+        if (o) {
+          if (o.threshold !== undefined) rule.threshold = o.threshold;
+          if (o.action) rule.action = o.action;
+          if (o.severity) rule.severity = o.severity;
+          if (o._disabled !== undefined) rule._disabled = o._disabled;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[UWRules] Postgres override check failed, using file defaults:', e.message);
+  }
+  return rules;
+}
+
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
@@ -1022,6 +1051,7 @@ app.post('/api/workflow/stp-evaluate', requireAuth, async (req, res) => {
     if (evaluation.eligible && !effectiveShadow) {
       // Run lightweight declared-only analysis as a final sanity check
       const uwGuidelines = JSON.parse(fs.readFileSync(path.join(__dirname, 'config', 'uw-guidelines.json'), 'utf8'));
+      await applyUWRuleOverrides(uwGuidelines.rules);
       const lightAnalysis = stpClassifier.runDeclaredDataAnalysis(proposal, riskParams, uwGuidelines, customRules, riskEngine);
 
       const stpScoreThreshold = stpRules.lightweight_score_min_for_stp || 85;
@@ -1191,7 +1221,7 @@ app.put('/api/stp-rules', requireRole('Super Admin'), async (req, res) => {
 });
 
 // POST /api/stp-evaluate-preview — evaluate a proposal WITHOUT creating a workflow (dry run for admin UI)
-app.post('/api/stp-evaluate-preview', requireAuth, (req, res) => {
+app.post('/api/stp-evaluate-preview', requireAuth, async (req, res) => {
   try {
     const evalStart = Date.now();
     const proposal = req.body;
@@ -1204,6 +1234,7 @@ app.post('/api/stp-evaluate-preview', requireAuth, (req, res) => {
     let lightAnalysis = null;
     if (evaluation.eligible) {
       const uwGuidelines = JSON.parse(fs.readFileSync(path.join(__dirname, 'config', 'uw-guidelines.json'), 'utf8'));
+      await applyUWRuleOverrides(uwGuidelines.rules);
       lightAnalysis = stpClassifier.runDeclaredDataAnalysis(proposal, riskParams, uwGuidelines, customRules, riskEngine);
     }
     res.json({ evaluation, lightweight_analysis: lightAnalysis, policy: productConfig?.policy ? { id: productConfig.policy.id, name: productConfig.policy.name, stp_eligible: policyOverrides.stp_eligible === true } : null });
@@ -2981,6 +3012,7 @@ async function runAIAnalysis(wf) {
   const configPath = require('path').join(__dirname, 'config');
   const medicalScoring = JSON.parse(fs.readFileSync(`${configPath}/medical-scoring.json`, 'utf8'));
   const uwGuidelines = JSON.parse(fs.readFileSync(`${configPath}/uw-guidelines.json`, 'utf8'));
+  await applyUWRuleOverrides(uwGuidelines.rules);
   const riskParams = JSON.parse(fs.readFileSync(`${configPath}/risk-params.json`, 'utf8'));
   await applyDynamicLoadingOverride(riskParams);
 
@@ -4212,10 +4244,47 @@ app.post('/api/communications/send', requireAuth, (req, res) => {
 // ─── Masters Configuration APIs ───
 
 // UW Guidelines — full rules list + CRUD
-app.get('/api/masters/uw-rules', requireAuth, (req, res) => {
-  const fs = require('fs');
-  const rules = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/uw-guidelines.json'), 'utf8'));
-  res.json({ built_in: rules.rules, custom: customRules, total: rules.rules.length + customRules.length });
+app.get('/api/masters/uw-rules', requireAuth, async (req, res) => {
+  try {
+    const fs = require('fs');
+    const rules = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/uw-guidelines.json'), 'utf8'));
+    await applyUWRuleOverrides(rules.rules);
+    res.json({ built_in: rules.rules, custom: customRules, total: rules.rules.length + customRules.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Bulk save — one request covers every edited rule (built-in + custom)
+// rather than firing 50+ individual PUT calls. Built-in rule IDs are written
+// to the Postgres override map (applyUWRuleOverrides); custom rule IDs update
+// the in-memory customRules array directly, same as the existing single-rule
+// PUT below. Both paths converge so a single Save Changes button on the
+// frontend can edit any rule, built-in or custom, with identical behavior.
+app.put('/api/masters/uw-rules/bulk', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const edits = req.body.rules || [];
+    const overrides = (await s3Client.getConfig('uw-rule-overrides')) || {};
+    let customChanged = false;
+    for (const e of edits) {
+      if (!e.id) continue;
+      if (e.id.startsWith('CUSTOM-')) {
+        const rule = customRules.find(r => r.id === e.id);
+        if (rule) {
+          if (e.threshold !== undefined) rule.threshold = e.threshold;
+          if (e.action) rule.action = e.action;
+          if (e.severity) rule.severity = e.severity;
+          customChanged = true;
+        }
+      } else {
+        overrides[e.id] = {
+          threshold: e.threshold !== undefined ? e.threshold : overrides[e.id]?.threshold,
+          action: e.action || overrides[e.id]?.action,
+          severity: e.severity || overrides[e.id]?.severity
+        };
+      }
+    }
+    await s3Client.saveConfig('uw-rule-overrides', overrides);
+    if (customChanged) await s3Client.saveCustomRules(customRules);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 app.post('/api/masters/uw-rules', requireRole('Super Admin'), async (req, res) => {
   try {
@@ -4229,16 +4298,29 @@ app.post('/api/masters/uw-rules', requireRole('Super Admin'), async (req, res) =
 });
 app.put('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, res) => {
   try {
-    const rule = customRules.find(r => r.id === req.params.id);
-    if (!rule) return res.status(404).json({ error: 'Custom rule not found (built-in rules cannot be edited via API)' });
     const { name, threshold, action, severity, disabled } = req.body;
-    if (name) rule.name = name;
-    if (threshold !== undefined) rule.threshold = threshold;
-    if (action) rule.action = action;
-    if (severity) rule.severity = severity;
-    if (disabled !== undefined) rule.disabled = disabled;
-    await s3Client.saveCustomRules(customRules);
-    res.json({ success: true, rule });
+    const customRule = customRules.find(r => r.id === req.params.id);
+    if (customRule) {
+      if (name) customRule.name = name;
+      if (threshold !== undefined) customRule.threshold = threshold;
+      if (action) customRule.action = action;
+      if (severity) customRule.severity = severity;
+      if (disabled !== undefined) customRule.disabled = disabled;
+      await s3Client.saveCustomRules(customRules);
+      return res.json({ success: true, rule: customRule });
+    }
+    // Not a custom rule — treat as a built-in rule ID and write to the
+    // Postgres override map instead (built-in rules can now be edited,
+    // just through a different storage path than custom ones).
+    const overrides = (await s3Client.getConfig('uw-rule-overrides')) || {};
+    overrides[req.params.id] = {
+      threshold: threshold !== undefined ? threshold : overrides[req.params.id]?.threshold,
+      action: action || overrides[req.params.id]?.action,
+      severity: severity || overrides[req.params.id]?.severity,
+      _disabled: disabled !== undefined ? disabled : overrides[req.params.id]?._disabled
+    };
+    await s3Client.saveConfig('uw-rule-overrides', overrides);
+    res.json({ success: true, rule: { id: req.params.id, ...overrides[req.params.id] } });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 app.delete('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, res) => {

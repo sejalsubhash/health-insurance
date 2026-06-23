@@ -4702,14 +4702,36 @@ async function renderMasters() {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
       const data = await api('/api/masters/uw-rules');
+      window._uwRulesData = data;
+      const actionOpts = ['decline','refer','loading'];
+      const severityOpts = ['critical','high','medium'];
+      const optTags = (opts, current) => opts.map(o => `<option value="${o}" ${o===current?'selected':''}>${o}</option>`).join('');
+      const editableRow = (r, isCustom) => `<tr ${isCustom?'style="background:var(--info-bg)"':''}>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.id}</td>
+        <td style="font-size:12px">${r.name}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.path||'—'}</td>
+        <td>${r.operator||'—'}</td>
+        <td><input type="number" step="any" class="form-control" id="uwr_threshold_${r.id}" value="${r.threshold}" style="width:90px;font-weight:600;font-family:'JetBrains Mono',monospace"></td>
+        <td><select id="uwr_action_${r.id}" class="form-control" style="width:105px;font-size:12px">${optTags(actionOpts, r.action)}</select></td>
+        <td><select id="uwr_severity_${r.id}" class="form-control" style="width:100px;font-size:12px">${optTags(severityOpts, r.severity)}</select></td>
+        <td style="white-space:nowrap">
+          <span style="font-size:11px;color:var(--text-muted)">${isCustom?'Custom':'Built-in'}</span>
+          ${isCustom?`<button class="btn btn-sm btn-danger" onclick="deleteCustomRule('${r.id}')">×</button>`:''}
+        </td>
+      </tr>`;
       el.innerHTML = backBtn + `
       <div style="display:flex;justify-content:space-between;margin-bottom:12px"><h3>UW Guidelines (${data.total} rules)</h3>
-        <div style="display:flex;gap:8px"><button class="btn btn-accent" onclick="addRulePrompt()"><i data-lucide="plus"></i> Add Rule</button><button class="btn btn-outline" onclick="uploadRulesDoc()"><i data-lucide="file-text"></i> Upload Rules Doc</button></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-accent" onclick="saveUWRules()"><i data-lucide="save"></i> Save Changes</button>
+          <button class="btn btn-outline" onclick="addRulePrompt()"><i data-lucide="plus"></i> Add Rule</button>
+          <button class="btn btn-outline" onclick="uploadRulesDoc()"><i data-lucide="file-text"></i> Upload Rules Doc</button>
+        </div>
       </div>
       <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr><th>ID</th><th>Name</th><th>Parameter</th><th>Op</th><th>Threshold</th><th>Action</th><th>Severity</th><th>Source</th></tr></thead><tbody>
-      ${data.built_in.map(r => `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.id}</td><td style="font-size:12px">${r.name}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.path}</td><td>${r.operator}</td><td style="font-weight:600">${r.threshold}</td><td><span class="badge ${r.action==='decline'?'badge-danger':r.action==='refer'?'badge-warning':'badge-info'}">${r.action}</span></td><td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='high'?'badge-warning':'badge-info'}">${r.severity}</span></td><td style="font-size:11px;color:var(--text-muted)">Built-in</td></tr>`).join('')}
-      ${data.custom.map(r => `<tr style="background:var(--info-bg)"><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.id}</td><td style="font-size:12px">${r.name}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.path||'—'}</td><td>${r.operator||'—'}</td><td style="font-weight:600">${r.threshold||'—'}</td><td><span class="badge ${r.action==='decline'?'badge-danger':r.action==='refer'?'badge-warning':'badge-info'}">${r.action||'—'}</span></td><td><span class="badge badge-info">${r.severity||'medium'}</span></td><td style="white-space:nowrap"><span style="font-size:11px;color:var(--text-muted)">Custom</span> <button class="btn btn-sm btn-danger" onclick="deleteCustomRule('${r.id}')">×</button></td></tr>`).join('')}
+      ${data.built_in.map(r => editableRow(r, false)).join('')}
+      ${data.custom.map(r => editableRow(r, true)).join('')}
       </tbody></table></div></div>`;
+      renderIcons();
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
   } else if (_mastersView === 'loading') {
@@ -6314,6 +6336,37 @@ function updateMapping(productId, policyId) {
     .then(r => { if (r.success) { window._ppData.mapping = mappings; showToast(policyId ? 'Mapped' : 'Reverted to defaults', 'success'); } else showToast(r.error, 'error'); })
     .catch(e => showToast(e.message, 'error'));
 }
+async function saveUWRules() {
+  const data = window._uwRulesData;
+  if (!data) { showToast('No loaded data to save from — reopen this page and try again', 'error'); return; }
+
+  const allRules = [...data.built_in, ...data.custom];
+  const edits = [];
+  for (const r of allRules) {
+    const tInput = document.getElementById(`uwr_threshold_${r.id}`);
+    const aSelect = document.getElementById(`uwr_action_${r.id}`);
+    const sSelect = document.getElementById(`uwr_severity_${r.id}`);
+    if (!tInput) continue;
+    const threshold = parseFloat(tInput.value);
+    edits.push({
+      id: r.id,
+      threshold: isNaN(threshold) ? r.threshold : threshold,
+      action: aSelect ? aSelect.value : r.action,
+      severity: sSelect ? sSelect.value : r.severity
+    });
+  }
+
+  try {
+    const res = await api('/api/masters/uw-rules/bulk', { method: 'PUT', body: JSON.stringify({ rules: edits }) });
+    if (res.success) {
+      showToast('UW Guidelines saved — takes effect on the next case scored', 'success');
+      renderMasters();
+    } else {
+      showToast(res.error || 'Save failed', 'error');
+    }
+  } catch(e) { showToast('Save error: ' + e.message, 'error'); }
+}
+
 function addRulePrompt() {
   const name = prompt('Rule Name:'); if (!name) return;
   const path = prompt('Parameter Path (e.g., blood_chemistry.fasting_glucose.value):'); if (!path) return;
