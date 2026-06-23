@@ -881,7 +881,7 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
     },
     tobacco: (ed) => {
       const v = ed?.telemer_data?.lifestyle?.tobacco_chewing?.status ||
-                ed?.lifestyle?.tobacco_chewing || ed?.lifestyle?.tobacco;
+                ed?.lifestyle?.tobacco_chewing?.status || ed?.lifestyle?.tobacco;
       return v || null;
     },
     occupation: (ed) => {
@@ -1137,6 +1137,240 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
     }
   };
 
+  // ── Proof generators — produce human-readable evidence per factor id ────────
+  // Each function receives the raw extracted data and returns a plain-English
+  // explanation of what was found in the document and why the band was matched.
+  const PROOF_GENERATORS = {
+    // Medical Parameters
+    bmi: (ed) => {
+      const v = ed?.physical_exam?.bmi?.value;
+      return v != null
+        ? `BMI ${v} extracted from physical exam measurements (height/weight table in MER form). Band assigned based on Indian UW thresholds.`
+        : 'BMI not found in physical exam — no height/weight measurements extracted from document.';
+    },
+    blood_pressure: (ed) => {
+      const s = ed?.physical_exam?.blood_pressure?.systolic?.value || ed?.physical_exam?.blood_pressure_systolic?.value;
+      const d = ed?.physical_exam?.blood_pressure?.diastolic?.value || ed?.physical_exam?.blood_pressure_diastolic?.value;
+      return s != null
+        ? `BP ${s}/${d||'?'} mmHg extracted from MER physical exam section (sphygmomanometer reading). Band assigned by systolic threshold.`
+        : 'Blood pressure not found in physical exam — check MER exam table or lab report.';
+    },
+    fasting_glucose: (ed) => {
+      const v = ed?.blood_chemistry?.fasting_glucose?.value;
+      return v != null
+        ? `Fasting glucose ${v} mg/dL extracted from lab report (blood chemistry section). Band assigned by glucose threshold.`
+        : 'Fasting glucose not found in lab reports — FBS/blood glucose was either not tested or not extracted.';
+    },
+    hba1c: (ed) => {
+      const v = ed?.blood_chemistry?.hba1c?.value;
+      return v != null
+        ? `HbA1c ${v}% extracted from lab report (biochemistry section). Band assigned by glycated haemoglobin threshold.`
+        : 'HbA1c not found in lab reports — was either not tested or not in uploaded documents.';
+    },
+    ecg: (ed) => {
+      const raw = ed?.cardiac?.ecg?.overall_interpretation || ed?.cardiac?.ecg?.value || ed?.cardiac?.ecg?.v;
+      return raw
+        ? `ECG interpretation "${raw}" extracted from cardiac report page. Classified by keyword matching against standard UW ECG categories.`
+        : 'ECG not found — cardiac report not uploaded or ECG page could not be read.';
+    },
+    urine_routine: (ed) => {
+      const p = ed?.urine_analysis?.protein?.value || ed?.urine_analysis?.albumin?.value;
+      return p != null
+        ? `Urine protein/albumin: "${p}" extracted from urine routine examination report. Band assigned by nil/trace/abnormal classification.`
+        : 'Urine analysis not found — urine routine report not uploaded or not extracted.';
+    },
+    cbc: (ed) => {
+      const hb  = ed?.hematology?.hemoglobin?.value;
+      const wbc = ed?.hematology?.wbc_count?.value;
+      const lines = [];
+      if (hb  != null) lines.push(`• Haemoglobin: ${hb} g/dL`);
+      else             lines.push('• Haemoglobin: not found');
+      if (wbc != null) lines.push(`• WBC count: ${wbc} cells/cumm`);
+      else             lines.push('• WBC count: not found');
+      return lines.join('\n') + '\nExtracted from haematology (CBC) section of lab report. Band assigned by worst of Hb/WBC status.';
+    },
+    esr: (ed) => {
+      const v = ed?.hematology?.esr?.value;
+      return v != null
+        ? `ESR ${v} mm/hr extracted from haematology report. Normal <20, borderline 20-40, high >40.`
+        : 'ESR not found in haematology report.';
+    },
+    lipid_profile: (ed) => {
+      const ldl   = ed?.blood_chemistry?.ldl?.value;
+      const ratio = ed?.blood_chemistry?.tc_hdl_ratio?.value;
+      const tc    = ed?.blood_chemistry?.total_cholesterol?.value;
+      const hdl   = ed?.blood_chemistry?.hdl?.value;
+      const lines = [];
+      if (tc    != null) lines.push(`• Total Cholesterol: ${tc} mg/dL`);
+      if (hdl   != null) lines.push(`• HDL: ${hdl} mg/dL`);
+      if (ldl   != null) lines.push(`• LDL: ${ldl} mg/dL`);
+      if (ratio != null) lines.push(`• TC/HDL Ratio: ${ratio}`);
+      return lines.length
+        ? lines.join('\n') + '\nExtracted from lipid profile section of lab report.'
+        : 'Lipid profile not found in lab reports.';
+    },
+    sgpt: (ed) => {
+      const v = ed?.blood_chemistry?.sgpt_alt?.value;
+      return v != null
+        ? `SGPT/ALT ${v} U/L extracted from liver function tests. Normal <40, mild 40-80, high >80.`
+        : 'SGPT/ALT not found in lab reports.';
+    },
+    serum_creatinine: (ed) => {
+      const v = ed?.blood_chemistry?.serum_creatinine?.value;
+      return v != null
+        ? `Serum Creatinine ${v} mg/dL extracted from kidney function tests. Normal <1.3, mild 1.3-1.7, high >1.7.`
+        : 'Serum Creatinine not found in lab reports.';
+    },
+    total_cholesterol: (ed) => {
+      const v = ed?.blood_chemistry?.total_cholesterol?.value;
+      return v != null
+        ? `Total Cholesterol ${v} mg/dL extracted from lipid profile. Desirable <200, borderline 200-239, high ≥240.`
+        : 'Total Cholesterol not found in lab reports.';
+    },
+    triglyceride: (ed) => {
+      const v = ed?.blood_chemistry?.triglycerides?.value;
+      return v != null
+        ? `Triglycerides ${v} mg/dL extracted from lipid profile. Normal <150, borderline 150-199, high 200-499.`
+        : 'Triglycerides not found in lab reports.';
+    },
+    lft: (ed) => {
+      const sgpt = ed?.blood_chemistry?.sgpt_alt?.value;
+      const bili = ed?.blood_chemistry?.total_bilirubin?.value;
+      const alb  = ed?.blood_chemistry?.albumin?.value;
+      return [
+        sgpt != null ? `• SGPT: ${sgpt} U/L` : '• SGPT: not found',
+        bili != null ? `• Bilirubin: ${bili} mg/dL` : '• Bilirubin: not found',
+        alb  != null ? `• Albumin: ${alb} g/dL` : '• Albumin: not found'
+      ].join('\n') + '\nExtracted from liver function test panel.';
+    },
+    kft: (ed) => {
+      const creat = ed?.blood_chemistry?.serum_creatinine?.value;
+      const bun   = ed?.blood_chemistry?.blood_urea?.value;
+      return [
+        creat != null ? `• Creatinine: ${creat} mg/dL` : '• Creatinine: not found',
+        bun   != null ? `• Blood Urea: ${bun} mg/dL` : '• Blood Urea: not found'
+      ].join('\n') + '\nExtracted from kidney function test panel.';
+    },
+    // Medical History
+    pre_existing: (ed) => {
+      const h     = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const conds = h.pre_existing_conditions || [];
+      if (conds.length === 0) return 'No pre-existing conditions declared in MER Part 2 or medical history form.\nFull marks by default.';
+      return conds.map(c =>
+        `• ${c.condition || 'Unknown'}: status="${c.current_status || 'unknown'}", medication="${c.medication || 'none'}", since=${c.since_year || 'unknown'}`
+      ).join('\n');
+    },
+    family_history: (ed) => {
+      const h   = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const fam = h.family_history || {};
+      const risks = ['cardiac','diabetes','cancer','stroke','hypertension'].filter(k => fam[k] === true);
+      return risks.length === 0
+        ? 'Q9 (Family history) answered No — no first-degree family history of cardiac/DM/cancer/stroke/HTN declared.'
+        : `Q9 (Family history) — the following conditions were declared in first-degree relatives:\n${risks.map(r=>`• ${r}`).join('\n')}\n${fam.details ? 'Details: '+fam.details : ''}`;
+    },
+    hospitalizations: (ed) => {
+      const h    = ed?.telemer_data?.medical_history || ed?.medical_history || {};
+      const list = h.hospitalizations || [];
+      return list.length === 0
+        ? 'Q5 (Hospitalisation) answered No — or no hospitalisation events detected in MER form.\nFull marks applied.'
+        : `Q5 answered Yes — ${list.length} hospitalisation event(s) recorded:\n` +
+          list.map(h => `• ${h.reason || 'Hospitalisation'}${h.year ? ' (' + h.year + ')' : ''}${h.is_surgery ? ' [surgery]' : ''}`).join('\n');
+    },
+    // Clinical Correlation
+    drug_condition: (ed, corr) => {
+      const meds = corr?.medications_found || [];
+      const mismatches = (corr?.drug_condition_mismatches || []).filter(m => !m.disclosed);
+      if (meds.length === 0) return 'No medication data found in extracted documents.\nDrug-condition matching requires medication names from MER or lab reports.';
+      return meds.map(m =>
+        `• ${m.drug || m.name || m}: for "${m.condition || 'declared condition'}" — ${m.disclosed !== false ? '✓ disclosed' : '✗ UNDISCLOSED'}`
+      ).join('\n') + (mismatches.length ? `\n→ ${mismatches.length} undisclosed condition(s) implied by medication` : '\n→ All medications match declared conditions');
+    },
+    multi_system: (ed, corr) => {
+      const ms  = corr?.multi_system_correlations || [];
+      const sig = ms.filter(m => m.clinical_significance === 'high' || m.clinical_significance === 'critical');
+      if (sig.length === 0) return 'ICMR clinical correlation analysis found no significant multi-system interactions.\nAll body systems appear to be functioning independently without cross-system risk patterns.';
+      return `${sig.length} significant multi-system finding(s) from ICMR analysis:\n` +
+        sig.map(f => `• ${f.finding_1||''} ↔ ${f.finding_2||''}: ${f.correlation||''} (${f.clinical_significance})`).join('\n');
+    },
+    cv_risk: (ed, corr) => {
+      const cat = corr?.cardiovascular_risk?.framingham_risk_category;
+      if (cat && !['unknown','low|moderate|high|very_high',''].includes(cat)) {
+        const factors = corr?.cardiovascular_risk?.contributing_factors || [];
+        return `Framingham cardiovascular risk: "${cat}" — from ICMR clinical correlation analysis.\n${factors.length ? 'Contributing factors:\n' + factors.map(f=>`• ${f}`).join('\n') : 'No specific contributing factors listed.'}`;
+      }
+      // Calculated from raw data
+      const bc  = ed?.blood_chemistry || {};
+      const pe  = ed?.physical_exam || {};
+      const age = parseFloat(ed?._proposer_age || 0);
+      const isMale = (ed?._proposer_gender || '').toLowerCase() !== 'female';
+      const sys = parseFloat(pe.blood_pressure_systolic?.value || pe.blood_pressure?.systolic?.value);
+      return [
+        `CV risk calculated from raw lab/exam data (ICMR analysis not available):`,
+        `• Age ${age||'unknown'} / ${isMale?'Male':'Female'}: ${((isMale&&age>55)||(!isMale&&age>65))?'≥ threshold → risk factor':'below threshold → ok'}`,
+        `• Systolic BP: ${sys||'not tested'} ${sys>140?'→ risk factor':'→ ok'}`,
+        `• Fasting glucose: ${bc.fasting_glucose?.value||'not tested'} ${parseFloat(bc.fasting_glucose?.value)>126?'→ risk factor':'→ ok'}`,
+        `• Total cholesterol: ${bc.total_cholesterol?.value||'not tested'} ${parseFloat(bc.total_cholesterol?.value)>240?'→ risk factor':'→ ok'}`,
+        `• HDL: ${bc.hdl?.value||'not tested'} ${parseFloat(bc.hdl?.value)<40?'→ risk factor':'→ ok'}`
+      ].join('\n');
+    },
+    // Documentation Quality
+    completeness: (ed) => {
+      const sections = ['blood_chemistry','hematology','urine_analysis','cardiac','physical_exam','imaging'];
+      const lines = sections.map(s => {
+        const data  = ed?.[s] || {};
+        const total  = Object.keys(data).filter(k => typeof data[k]==='object'&&data[k]!==null&&'value' in data[k]).length;
+        const filled = Object.keys(data).filter(k => typeof data[k]==='object'&&data[k]!==null&&'value' in data[k]&&data[k].value!=null&&data[k].value!==''&&data[k].flag!=='not_tested').length;
+        return total > 0 ? `• ${s.replace(/_/g,' ')}: ${filled}/${total} parameters` : `• ${s.replace(/_/g,' ')}: not uploaded`;
+      });
+      return lines.join('\n');
+    },
+    module_coverage: (ed) => {
+      const sections = ['blood_chemistry','hematology','urine_analysis','cardiac','physical_exam','imaging'];
+      return sections.map(s => {
+        const present = ed?.[s] && Object.keys(ed[s]).length > 0;
+        return `• ${s.replace(/_/g,' ')}: ${present ? '✓ present' : '✗ not uploaded/extracted'}`;
+      }).join('\n');
+    },
+    consistency: (ed) => {
+      const pe = ed?.physical_exam || {};
+      if (pe.height_cm && pe.weight_kg && pe.bmi?.value) {
+        const calc = pe.weight_kg / ((pe.height_cm / 100) ** 2);
+        if (Math.abs(calc - pe.bmi.value) > 1.5)
+          return `BMI contradiction: recorded ${pe.bmi.value} but height ${pe.height_cm}cm / weight ${pe.weight_kg}kg gives calculated BMI ${calc.toFixed(1)}`;
+        return `BMI cross-check: recorded ${pe.bmi.value} matches calculated ${calc.toFixed(1)} ✓\nNo internal data contradictions detected.`;
+      }
+      return 'Consistency check: insufficient height/weight/BMI data to cross-verify.\nNo contradictions detected in available data.';
+    },
+    // Lifestyle
+    smoking: (ed) => {
+      const ls = ed?.telemer_data?.lifestyle || ed?.lifestyle || {};
+      const s  = ls.smoking?.status || 'unknown';
+      return s === 'unknown'
+        ? 'Q2 (Habits — Cigarettes/Bidis) not found in MER form or not readable. No answer → 0 pts.'
+        : `Q2 (Habits — Cigarettes/Bidis) extracted from MER form.\nAnswer: ${s}${ls.smoking?.note ? '\nNote: ' + ls.smoking.note : ''}\nSource: ${ls._source || 'extracted'}`;
+    },
+    alcohol: (ed) => {
+      const ls = ed?.telemer_data?.lifestyle || ed?.lifestyle || {};
+      const a  = ls.alcohol?.status || 'unknown';
+      return a === 'unknown'
+        ? 'Q3 (Alcohol consumption) not found in MER form or not readable. No answer → 0 pts.'
+        : `Q3 (Alcohol consumption) extracted from MER form.\nAnswer: ${a}${ls.alcohol?.note ? '\nNote: ' + ls.alcohol.note : ''}\nSource: ${ls._source || 'extracted'}`;
+    },
+    tobacco: (ed) => {
+      const ls = ed?.telemer_data?.lifestyle || ed?.lifestyle || {};
+      const t  = ls.tobacco_chewing?.status || ls.tobacco || 'unknown';
+      return t === 'unknown'
+        ? 'Q2 (Pan/Gutkha/tobacco chewing) not found in MER form or not readable. No answer → 0 pts.'
+        : `Q2 (Pan/Gutkha/tobacco chewing) extracted from MER form.\nAnswer: ${t}${ls.tobacco_chewing?.note ? '\nNote: ' + ls.tobacco_chewing.note : ''}\nSource: ${ls._source || 'extracted'}`;
+    }
+  };
+  // Aliases for factor ids that differ from the key above
+  PROOF_GENERATORS['bmi_bp']              = (ed) => (PROOF_GENERATORS.bmi(ed) + '\n' + PROOF_GENERATORS.blood_pressure(ed));
+  PROOF_GENERATORS['drug_condition_match'] = PROOF_GENERATORS['drug_condition'];
+  PROOF_GENERATORS['multi_system_risk']    = PROOF_GENERATORS['multi_system'];
+  PROOF_GENERATORS['cv_proxy']             = PROOF_GENERATORS['cv_risk'];
+  PROOF_GENERATORS['tobacco_alcohol']      = (ed) => (PROOF_GENERATORS.smoking(ed) + '\n---\n' + PROOF_GENERATORS.alcohol(ed) + '\n---\n' + PROOF_GENERATORS.tobacco(ed));
+
   // ── Score each factor using its bands ──────────────────────────────────────
   const factorResults = {};
   let totalScore = 0;
@@ -1144,9 +1378,10 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
   for (const factor of compConfig.factors) {
     const extractor = FACTOR_VALUE_EXTRACTORS[factor.id];
     const rawValue  = extractor ? extractor(extractedData, correlationData) : null;
+    const proofGen  = PROOF_GENERATORS[factor.id];
+    const proof     = proofGen ? proofGen(extractedData, correlationData) : null;
 
     if (!rawValue || !Array.isArray(factor.bands) || factor.bands.length === 0) {
-      // No data extracted — score = 0 (unknown/missing data gets no credit)
       factorResults[factor.id] = {
         score: 0,
         max:   factor.max,
@@ -1154,28 +1389,25 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
         value: rawValue,
         matched_band: 'no data',
         logic: `${factor.label}: no data → 0/${factor.max}`,
-        status: 'missing'
+        status: 'missing',
+        proof
       };
       totalScore += 0;
       continue;
     }
 
-    // Find matching band — match by value field (case-insensitive substring)
     const val = String(rawValue).toLowerCase().trim();
     let matched = null;
 
-    // 1st pass: exact match on band.value
     for (const band of factor.bands) {
       if (String(band.value || '').toLowerCase().trim() === val) { matched = band; break; }
     }
-    // 2nd pass: substring match on band.label or band.value
     if (!matched) {
       for (const band of factor.bands) {
         const bv = String(band.value || band.label || '').toLowerCase();
         if (bv.includes(val) || val.includes(bv)) { matched = band; break; }
       }
     }
-    // 3rd pass: first band whose label contains a key word from value
     if (!matched) {
       const words = val.split(/[\s_\-]+/).filter(w => w.length > 2);
       for (const band of factor.bands) {
@@ -1183,7 +1415,6 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
         if (words.some(w => bl.includes(w))) { matched = band; break; }
       }
     }
-    // Fallback: no band matched — score 0 (unknown value gets no credit)
     if (!matched && factor.bands.length > 0) {
       matched = null;
     }
@@ -1196,7 +1427,8 @@ function scoreComponentFromConfig(compConfig, extractedData, correlationData) {
       value:        rawValue,
       matched_band: matched?.label || 'unknown',
       logic:        `${factor.label}: "${rawValue}" → band "${matched?.label}" → ${pts}/${factor.max}`,
-      status:       matched?.label || 'unknown'
+      status:       matched?.label || 'unknown',
+      proof
     };
     totalScore += pts;
   }
