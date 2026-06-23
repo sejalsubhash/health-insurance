@@ -6,6 +6,7 @@ const { Worker, Queue } = require('bullmq');
 const IORedis = require('ioredis');
 const extractor = require('./claude-extractor');
 const riskEngine = require('./medical-risk-engine');
+const telemerModel = require('./telemer-score');
 const s3Client = require('./s3-client');
 
 let connection;
@@ -70,7 +71,13 @@ async function processAssessment(job) {
 
       case 'telemer':
         extractedData = await processTeleMERModule(assessmentId, documents, assessment);
-        riskResult = riskEngine.calculateTeleMERRisk(extractedData.telemer_data, extractedData.voice_analysis);
+        // New 5-parameter, remarks-driven model. Map extractor output → model input → frontend shape.
+        {
+          const modelInput = telemerModel.fromExtractorData(extractedData.telemer_data, {
+            bmi: extractedData.telemer_data?.proposer_info?.bmi || 0
+          });
+          riskResult = telemerModel.toFrontendShape(telemerModel.scoreTeleMER(modelInput));
+        }
         break;
 
       case 'pphc':

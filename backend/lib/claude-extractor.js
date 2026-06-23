@@ -122,6 +122,7 @@ async function extractTeleMERData(documentText) {
   "proposer_info": {
     "name": "",
     "age": 0,
+    "date_of_birth": "",
     "gender": "male|female|other",
     "occupation": "",
     "annual_income": 0,
@@ -129,7 +130,7 @@ async function extractTeleMERData(documentText) {
   },
   "medical_history": {
     "pre_existing_conditions": [
-      { "condition": "", "icd10_code": "", "since_year": 0, "current_status": "active|controlled|resolved", "medication": "" }
+      { "condition": "", "icd10_code": "", "since_year": 0, "current_status": "active|controlled|resolved", "medication": "", "readings": { "systolic": 0, "diastolic": 0, "fbs": 0, "hba1c": 0 } }
     ],
     "surgical_history": [
       { "procedure": "", "year": 0, "outcome": "successful|complications" }
@@ -146,6 +147,10 @@ async function extractTeleMERData(documentText) {
       "mental_illness": false,
       "details": ""
     }
+  },
+  "question_answers": {
+    "_instruction": "For each numbered questionnaire item answered Yes/No in the form, record true for Yes and false for No. Use the key q<number>, e.g. q4, q12, q13, q26. Include every Yes/No item present in the document.",
+    "q4": null, "q12": null, "q13": null, "q26": null
   },
   "lifestyle": {
     "smoking": { "status": "never|former|current", "packs_per_day": 0, "years": 0 },
@@ -169,8 +174,14 @@ async function extractTeleMERData(documentText) {
   },
   "risk_flags": [],
   "auto_decision_eligible": false,
-  "remarks": ""
+  "remarks": "",
+  "examiner_remarks_verbatim": "Copy the doctor's/examiner's free-text remarks EXACTLY as written, including all condition details, durations, medications, and readings (e.g. the Q2/Q3 detail fields and the final Dr. remark). Do not summarise — preserve the original wording."
 }
+
+IMPORTANT:
+- Populate "question_answers" with the actual Yes/No values for every numbered item in the form (true=Yes, false=No).
+- Copy the raw examiner narrative verbatim into "examiner_remarks_verbatim" — this drives clinical scoring and contradiction detection.
+- Extract any blood pressure, fasting glucose (FBS), or HbA1c numbers mentioned in the remarks into the matching condition's "readings".
 
 Transcript:
 ${documentText}`;
