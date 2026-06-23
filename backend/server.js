@@ -6328,16 +6328,24 @@ function assembleTeleMERDataFromInterview(wf, answers) {
   }
 
   // ── Lifestyle — GEN_07 ───────────────────────────────────────────────────
+  // GEN_07 covers cigarette/beedi/pan/gutkha/alcohol together as one Yes/No
+  // question. Previously, a "Yes" only counted as adverse if the examiner's
+  // free-text followup happened to contain a specific matching keyword
+  // ("cigarette", "alcohol", etc.) -- if the note just said something like
+  // "Occasionally" or "Socially" with none of those exact words, all three
+  // categories silently fell back to 'never' (full marks) despite the
+  // person having just answered Yes to the question. Fixed: tie the score
+  // directly to the Yes/No answer itself -- Yes deducts (since at least one
+  // of the five substances applies, regardless of which), No gives full
+  // marks. No keyword-matching fragility left in this path.
   const gen07 = getAns('GEN_07');
   const lifestyle = { smoking: { status: 'unknown' }, alcohol: { status: 'unknown' }, tobacco_chewing: { status: 'unknown' } };
   if (gen07.value) {
-    if (gen07.value.toLowerCase() === 'no') {
+    const gen07Answer = gen07.value.toLowerCase();
+    if (gen07Answer === 'no') {
       lifestyle.smoking.status = 'never'; lifestyle.alcohol.status = 'never'; lifestyle.tobacco_chewing.status = 'never';
-    } else {
-      const text = (gen07.followup || '').toLowerCase();
-      lifestyle.smoking.status         = /cigarette|beedi|smok/i.test(text) ? 'current' : 'never';
-      lifestyle.alcohol.status         = /alcohol/i.test(text) ? 'current' : 'never';
-      lifestyle.tobacco_chewing.status = /gutkha|pan\b|tobacco/i.test(text) ? 'current' : 'never';
+    } else if (gen07Answer === 'yes') {
+      lifestyle.smoking.status = 'current'; lifestyle.alcohol.status = 'current'; lifestyle.tobacco_chewing.status = 'current';
     }
   }
 
