@@ -4127,7 +4127,14 @@ async function submitTeleMER() {
         msg += 'Escalation to full PPHC recommended: ' + (res.escalation_reasons || []).join(', ');
       }
       showToast(msg, res.recommendation === 'proceed_to_scoring' ? 'success' : 'warning');
-      viewVendorCase(wfId, vendorId);
+      // Scored cases go to the Decision page where the score/rationale
+      // actually render (viewVendorCase has no score display of its own).
+      // Escalated cases stay on the vendor page since there's no score yet.
+      if (res.recommendation === 'proceed_to_scoring' && res.score) {
+        viewWorkflow(wfId);
+      } else {
+        viewVendorCase(wfId, vendorId);
+      }
     } else showToast(res.error || 'Submission failed', 'error');
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }

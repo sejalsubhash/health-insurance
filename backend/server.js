@@ -6360,6 +6360,53 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
         wf.risk_result.telemer_grade    = telemerScore?.risk_score?.grade;
         wf.risk_result.telemer_decision = telemerScore?.decision?.recommendation;
         console.log(`[TeleMER] ${wf.id} scored via Per-CAT config: ${telemerScore?.risk_score?.normalized}/100 Grade=${telemerScore?.risk_score?.grade} Decision=${telemerScore?.decision?.recommendation}`);
+
+        // ── Populate wf.ai_analysis / wf.decision so the Decision and
+        // Calculations tabs actually have something to show ───────────────
+        // This path (Q&A interview submission) never calls runAIAnalysis()
+        // -- it only computes telemerScore directly above. Without this,
+        // wf.ai_analysis stays unset, the Decision tab's hasAnalysis check
+        // fails, and the page shows nothing beyond the Workflow Timeline's
+        // single 'telemer_completed' entry, even though a real score and
+        // decision were genuinely computed. Mirrors the shape runAIAnalysis()
+        // builds (see analysisResult further up in this file) closely enough
+        // for the Decision/Calculations tabs to render correctly, with safe
+        // empty defaults for the parts that don't apply here (no ICMR
+        // analysis or UW Guidelines violation check run in this path --
+        // those remain specific to the document-upload pipeline for now).
+        if (telemerScore) {
+          wf.ai_analysis = {
+            recommendation: telemerScore.decision?.recommendation || 'refer',
+            risk_score: telemerScore.risk_score || { normalized: 0, grade: 'N/A' },
+            guidelines_compliance: { violations: [], warnings: [], total_rules_checked: 0, custom_rules_count: 0 },
+            component_analysis: telemerScore.risk_score?.components || {},
+            findings: [],
+            loading_percentage: telemerScore.decision?.loading_percentage || 0,
+            loading_factors: [],
+            loading_capped: false,
+            max_loading: null,
+            effective_score: telemerScore.risk_score?.normalized || 0,
+            referral: null,
+            exclusions: telemerScore.decision?.exclusions || [],
+            waiting_periods: [],
+            applied_policy: null,
+            sa_tier: null,
+            age_loading: null,
+            historical_reference: null,
+            calibration_applied: null,
+            em_scoring: null,
+            rationale: telemerScore.decision?.rationale || `TeleMER interview scored ${telemerScore.risk_score?.normalized||0}/100 (Grade ${telemerScore.risk_score?.grade||'N/A'}).`,
+            customer_profile: null,
+            documents_analyzed: 0,
+            generated_via: 'telemer_interview'
+          };
+          wf.decision = {
+            recommendation: wf.ai_analysis.recommendation,
+            loading_percentage: wf.ai_analysis.loading_percentage,
+            exclusions: wf.ai_analysis.exclusions,
+            rationale: wf.ai_analysis.rationale
+          };
+        }
       } catch(scoreErr) { console.error('[TeleMER] Scoring error (non-fatal):', scoreErr.message); }
       wf.docs_submitted = true;
       wf.docs_submitted_at = new Date().toISOString();
