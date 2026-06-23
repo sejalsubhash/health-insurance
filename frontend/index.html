@@ -4121,7 +4121,7 @@ async function submitTeleMER() {
     if (res.success) {
       let msg = 'Tele-MER interview submitted. ';
       if (res.recommendation === 'proceed_to_scoring') {
-        if (res.score) msg += `Score: ${res.score.score}/100 (Grade ${res.score.grade}) → ${(res.score.decision||'').replace(/_/g,' ')}`;
+        if (res.score) msg += `Score: ${res.score.risk_score?.normalized ?? 'N/A'}/100 (Grade ${res.score.risk_score?.grade ?? 'N/A'}) → ${(res.score.decision?.recommendation || '').replace(/_/g,' ')}`;
         else msg += 'Proceeding to AI scoring.';
       } else {
         msg += 'Escalation to full PPHC recommended: ' + (res.escalation_reasons || []).join(', ');
