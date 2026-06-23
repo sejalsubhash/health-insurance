@@ -3352,15 +3352,34 @@ async function runAIAnalysis(wf) {
       if (_merFromPages.hospitalizations.length)   console.log('[MERForm] Hospitalizations from Q5:', _merFromPages.hospitalizations.map(h=>h.reason).join('; '));
     }
 
-    // ── Lifestyle merge — priority: MER form page ticks > Claude extraction > unknown ──
+    // ── Lifestyle merge ───────────────────────────────────────────────────────
+    // Priority order:
+    //   1. assembleTeleMERDataFromPDF result (Q7-driven, already in telemer_data.lifestyle)
+    //      → highest priority for TeleMER cases — DO NOT overwrite with MER form parser
+    //   2. MER form page ticks (Q2/Q3 for CAT 1-4 PPHC forms)
+    //   3. Claude document extraction
+    //   4. Unknown fallback
     if (!extractedData.telemer_data) extractedData.telemer_data = {};
+
+    // Check if assembly already produced a valid lifestyle (TeleMER Q7 path)
+    const _assembledLifestyle = extractedData.telemer_data.lifestyle;
+    const _hasAssembledLifestyle = _assembledLifestyle?.smoking?.status &&
+                                   _assembledLifestyle.smoking.status !== 'unknown' &&
+                                   _assembledLifestyle.smoking.status !== '' &&
+                                   _assembledLifestyle._source === 'telemer_pdf_q7';
+
     const _claudeLifestyle = extractedData.lifestyle;
     const _hasClaudeLifestyle = _claudeLifestyle?.smoking?.status &&
                                 _claudeLifestyle.smoking.status !== 'unknown' &&
                                 _claudeLifestyle.smoking.status !== '';
     const _hasMERLifestyle = _merFromPages.smoking !== null;
 
-    if (_hasMERLifestyle) {
+    if (_hasAssembledLifestyle) {
+      // TeleMER Q7 already correctly assembled — keep it, just sync top-level
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+      console.log(`[Lifestyle] TeleMER Q7-assembled — Smoking: ${_assembledLifestyle.smoking.status}, Alcohol: ${_assembledLifestyle.alcohol?.status||'?'}, Tobacco: ${_assembledLifestyle.tobacco_chewing?.status||'?'}`);
+    } else if (_hasMERLifestyle) {
+      // CAT 1-4 MER form Q2/Q3 ticks
       extractedData.telemer_data.lifestyle = {
         smoking:           { status: _merFromPages.smoking.status,         note: _merFromPages.smoking.note },
         alcohol:           _merFromPages.alcohol
@@ -3373,8 +3392,10 @@ async function runAIAnalysis(wf) {
         exercise:          _claudeLifestyle?.exercise || { frequency: 'unknown' },
         _source:           'mer_form_page_extraction'
       };
-      console.log(`[Lifestyle] MER-form — Smoking: ${_merFromPages.smoking.status}, Alcohol: ${_merFromPages.alcohol?.status||'unknown'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'unknown'}`);
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+      console.log(`[Lifestyle] MER-form Q2/Q3 — Smoking: ${_merFromPages.smoking.status}, Alcohol: ${_merFromPages.alcohol?.status||'unknown'}`);
     } else if (_hasClaudeLifestyle) {
+      // Claude document extraction
       extractedData.telemer_data.lifestyle = {
         smoking:          _claudeLifestyle.smoking,
         alcohol:          _claudeLifestyle.alcohol         || { status: 'unknown' },
@@ -3383,17 +3404,19 @@ async function runAIAnalysis(wf) {
         exercise:         _claudeLifestyle.exercise         || { frequency: 'unknown' },
         _source: 'document_extracted'
       };
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
       console.log(`[Lifestyle] Claude-extracted — Smoking: ${_claudeLifestyle.smoking?.status}, Alcohol: ${_claudeLifestyle.alcohol?.status}`);
     } else {
+      // Nothing found
       extractedData.telemer_data.lifestyle = {
         smoking: { status: 'unknown' }, alcohol: { status: 'unknown' },
         tobacco_chewing: { status: 'unknown' },
         occupation_hazard: wf.lifestyle?.occupation_hazard || 'unknown',
         exercise: { frequency: 'unknown' }, _source: 'no_data_found'
       };
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
       console.log('[Lifestyle] No lifestyle data found — unknown fallback');
     }
-    extractedData.lifestyle = extractedData.telemer_data.lifestyle;
 
     // ── Merge Q5 hospitalizations + surgical_history into medical_history ───────
     if (_merFromPages.hospitalizations.length || _merFromPages.surgical_history.length) {
