@@ -205,7 +205,7 @@ textarea.form-control{resize:vertical;min-height:60px}
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0;">
           <i data-lucide="upload"></i> Choose file
-          <input type="file" id="sbiJsonInput" accept=".json,application/json" style="display:none;position:absolute;width:0;height:0;" onchange="handleSBIJsonUpload(this)">
+          <input type="file" id="sbiJsonInput" style="display:none;position:absolute;width:0;height:0;" onchange="handleSBIJsonUpload(this)">
         </label>
         <span id="sbiJsonFileName" style="font-size:12px;color:var(--text-muted);">No file chosen</span>
       </div>
@@ -809,10 +809,10 @@ function renderBulkUpload() {
       ondragover="event.preventDefault();this.style.borderColor='var(--accent)';this.style.background='var(--info-bg)'"
       ondragleave="this.style.borderColor='var(--border)';this.style.background='var(--surface-alt)'"
       ondrop="handleBulkDrop(event)">
-      <input type="file" id="bulkFileInput" accept=".json,application/json,.zip" multiple style="display:none"
+      <input type="file" id="bulkFileInput" multiple style="display:none"
         onchange="handleBulkFiles(this.files)">
       <div style="font-size:40px;margin-bottom:12px;color:var(--text-muted)"><i data-lucide="files" class="i-2xl i-muted"></i></div>
-      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop JSON or ZIP files here or click to browse</div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop proposal files (any extension) or a ZIP here, or click to browse</div>
       <div style="font-size:12px;color:var(--text-muted)">SBI PAS API JSON format — up to 100 JSON files or one ZIP containing multiple JSONs</div>
       <div style="margin-top:14px;display:flex;justify-content:center;gap:20px;font-size:11px;color:var(--text-muted)">
         <span><strong>STP cases</strong> are skipped automatically (no PPHC needed)</span>
@@ -845,30 +845,55 @@ async function handleBulkFiles(files) {
   // ── Collect all JSON texts (from .json files directly or extracted from ZIP) ─
   const jsonEntries = []; // { name, text }
 
+  // A small set of extensions that are unambiguously never going to be JSON
+  // text (binary/media formats) -- skipped outright so we don't waste time
+  // reading large binary blobs as text. Everything else gets attempted,
+  // regardless of extension, since client systems have already shown up
+  // with .json, .txt, and .log for what's structurally the same content --
+  // rather than keep adding extensions one at a time, anything not
+  // obviously binary is treated as a JSON candidate and validated by
+  // actually trying to parse it.
+  const NEVER_JSON_EXT = ['.exe','.dll','.png','.jpg','.jpeg','.gif','.bmp','.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.mp3','.mp4','.avi'];
+  const looksBinary = (name) => NEVER_JSON_EXT.some(ext => name.toLowerCase().endsWith(ext));
+
   for (const file of Array.from(files)) {
+    // Skip Office-style lock/temp files (e.g. "~$FullQuote_....log") -- these
+    // get auto-created whenever the real file is open in another application
+    // and are pure binary, never valid JSON. Silently skipping avoids a
+    // confusing parse error for a file the person never meant to upload.
+    if (file.name.startsWith('~$')) continue;
+
     if (file.name.toLowerCase().endsWith('.zip')) {
-      // Extract all .json files from ZIP using JSZip
+      // Extract every non-binary, non-lock file from the ZIP -- same
+      // content-based approach as the top level, not an extension allowlist.
       try {
         if (typeof JSZip === 'undefined') {
           showToast('JSZip library not loaded — refresh the page and try again', 'error'); return;
         }
         const zip = await JSZip.loadAsync(file);
-        const zipJsonFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.json'));
+        const zipJsonFiles = Object.values(zip.files).filter(f => {
+          const base = f.name.split('/').pop();
+          return !f.dir && !base.startsWith('~$') && !looksBinary(base);
+        });
         for (const zipFile of zipJsonFiles) {
           const text = await zipFile.async('string');
           jsonEntries.push({ name: zipFile.name.split('/').pop(), text });
         }
-        showToast(`ZIP extracted: ${zipJsonFiles.length} JSON file(s) found`, 'info');
+        showToast(`ZIP extracted: ${zipJsonFiles.length} file(s) found`, 'info');
       } catch(e) {
         showToast('ZIP extraction failed: ' + e.message, 'error'); return;
       }
-    } else if (file.name.toLowerCase().endsWith('.json')) {
+    } else if (!looksBinary(file.name)) {
+      // Any non-binary, non-ZIP file is attempted as JSON regardless of
+      // extension. JSON.parse (further down) validates the actual content;
+      // a file that isn't valid JSON gets a clear per-file error there,
+      // same as a malformed .json file always would have.
       const text = await file.text();
       jsonEntries.push({ name: file.name, text });
     }
   }
 
-  if (!jsonEntries.length) { showToast('No .json files found in selection or ZIP', 'error'); return; }
+  if (!jsonEntries.length) { showToast('No usable files found in selection or ZIP', 'error'); return; }
   if (jsonEntries.length > 100) {
     showToast('Maximum 100 files. Only first 100 will be processed.', 'warning');
     jsonEntries.splice(100);
@@ -1715,13 +1740,14 @@ function showWfTab(tab, wfId) {
         </div>
         <div class="card-body" style="padding:0">
           ${wf.cat_level === 'tele_mer' ? `<div style="padding:8px 16px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--border-light)"><i data-lucide="info"></i> TeleMER — values derived from examiner remarks, not lab reports.</div>` : ''}
-          <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Score</th><th>Rating</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
           ${Object.entries(compA.medical_parameters?.breakdown||{}).map(([pk,pv])=>`<tr>
               <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-primary)">${pv.value||'—'}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
               <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
               <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+              <td>${pv.proof?`<details style="font-size:11px;color:var(--text-muted)"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
             </tr>`).join('')}
           </tbody></table>
         </div>
@@ -1765,12 +1791,13 @@ function showWfTab(tab, wfId) {
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.lifestyle_risk?.percentage||0}%;background:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
           ${Object.entries(compA.lifestyle_risk?.breakdown||{}).map(([pk,pv])=>`<tr>
             <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='never'||pv.status==='none'?'badge-success':pv.status==='former'||pv.status==='occasional'||pv.status==='low'?'badge-info':pv.status==='current'||pv.status==='heavy'||pv.status==='high'?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+            <td>${pv.proof?`<details style="font-size:11px"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
           </tr>`).join('')}
           </tbody></table>
         </div>
@@ -1783,12 +1810,13 @@ function showWfTab(tab, wfId) {
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.medical_history?.percentage||0}%;background:${compA.medical_history?.percentage>=80?'var(--success)':compA.medical_history?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
           ${Object.entries(compA.medical_history?.breakdown||{}).map(([pk,pv])=>`<tr>
             <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='none'||pv.status==='clean'||pv.status==='0 events'?'badge-success':pv.status?.includes('found')||pv.status?.includes('active')?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+            <td>${pv.proof?`<details style="font-size:11px"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
           </tr>`).join('')}
           </tbody></table>
         </div>
@@ -1801,12 +1829,13 @@ function showWfTab(tab, wfId) {
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.clinical_correlation?.percentage||0}%;background:${compA.clinical_correlation?.percentage>=80?'var(--success)':compA.clinical_correlation?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
           ${Object.entries(compA.clinical_correlation?.breakdown||{}).map(([pk,pv])=>`<tr>
               <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
               <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
               <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+              <td>${pv.proof?`<details style="font-size:11px;color:var(--text-muted)"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
             </tr>`).join('')}
           </tbody></table>
         </div>
@@ -1819,12 +1848,13 @@ function showWfTab(tab, wfId) {
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.documentation_quality?.percentage||0}%;background:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
           ${Object.entries(compA.documentation_quality?.breakdown||{}).map(([pk,pv])=>`<tr>
               <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
               <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
               <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+              <td>${pv.proof?`<details style="font-size:11px;color:var(--text-muted)"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
             </tr>`).join('')}
           </tbody></table>
         </div>

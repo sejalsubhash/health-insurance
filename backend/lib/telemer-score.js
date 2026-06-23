@@ -273,8 +273,8 @@ function lookupBand(value, bands) {
 // ─── 1) MEDICAL PARAMETERS ───────────────────────────────────────────────────
 function scoreMedicalParameters(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic, value) =>
-    checks.push({ label, points: round2(pts), max, logic, value: value ?? null });
+  const add = (label, pts, max, logic, value, proof) =>
+    checks.push({ label, points: round2(pts), max, logic, value: value ?? null, proof: proof || null });
 
   const D  = DEFAULTS.medical_parameters;
   const gb = (id) => resolver.getBands('medical', id);
@@ -284,7 +284,8 @@ function scoreMedicalParameters(d, resolver) {
   const bmiCfg = gb('bmi');
   const bmiR = lookupPoints(bmi, D.bmi.bands, bmiCfg?.bands);
   add('BMI', bmiR.pts, bmiCfg?.max || D.bmi.max,
-    `BMI ${bmi || 'unknown'} — ${bmiR.label} → ${bmiR.pts}`, bmi || null);
+    `BMI ${bmi || 'unknown'} — ${bmiR.label} → ${bmiR.pts}`, bmi || null,
+    bmi ? `Extracted from proposer info: BMI = ${bmi}` : 'BMI not found in document — computed from height/weight if available');
 
   // Blood Pressure — two-layer: DEFAULTS ranges → DB points override
   const remarkReadings = parseReadingsFromRemarks(d.remarks);
@@ -293,7 +294,8 @@ function scoreMedicalParameters(d, resolver) {
   const bpR = lookupPoints(sys, D.blood_pressure.bands, bpCfg?.bands);
   add('Blood Pressure', bpR.pts, bpCfg?.max || D.blood_pressure.max,
     `${sys ? sys + ' mmHg systolic' : 'No BP reading'} — ${bpR.label} → ${bpR.pts}`,
-    sys ? `${sys}/${maxReading(d.conditions,'diastolic')||remarkReadings.diastolic||'?'} mmHg` : null);
+    sys ? `${sys}/${maxReading(d.conditions,'diastolic')||remarkReadings.diastolic||'?'} mmHg` : null,
+    sys ? `BP ${sys}/${maxReading(d.conditions,'diastolic')||remarkReadings.diastolic||'?'} mmHg extracted from ${remarkReadings.systolic ? 'examiner remarks (Q48/Q2)' : 'condition readings'}` : 'No BP reading found in remarks or condition fields — check Q2/Q48 notes');
 
   // Fasting Glucose — two-layer
   const fbs = maxReading(d.conditions, 'fbs') || remarkReadings.fbs || 0;
@@ -301,7 +303,8 @@ function scoreMedicalParameters(d, resolver) {
   const fbsR = lookupPoints(fbs, D.fasting_glucose.bands, fbsCfg?.bands);
   add('Fasting Glucose', fbsR.pts, fbsCfg?.max || D.fasting_glucose.max,
     `${fbs ? fbs + ' mg/dl' : 'No reading'} — ${fbsR.label} → ${fbsR.pts}`,
-    fbs ? `${fbs} mg/dl` : null);
+    fbs ? `${fbs} mg/dl` : null,
+    fbs ? `Fasting glucose ${fbs} mg/dl extracted from ${remarkReadings.fbs ? 'examiner remarks (Q2/Q48 — e.g. "fasting 101 mg/dl")' : 'condition readings'}` : 'No fasting glucose found — check Q2/Q48 handwritten notes for values like "fasting 101"');
 
   // HbA1c — two-layer
   const hba1c = maxReading(d.conditions, 'hba1c') || remarkReadings.hba1c || 0;
@@ -309,7 +312,8 @@ function scoreMedicalParameters(d, resolver) {
   const a1cR = lookupPoints(hba1c, D.hba1c.bands, a1cCfg?.bands);
   add('HbA1c', a1cR.pts, a1cCfg?.max || D.hba1c.max,
     `${hba1c ? hba1c + '%' : 'Not available'} — ${a1cR.label} → ${a1cR.pts}`,
-    hba1c ? `${hba1c}%` : null);
+    hba1c ? `${hba1c}%` : null,
+    hba1c ? `HbA1c ${hba1c}% extracted from condition readings or remarks` : 'HbA1c not found in document — not always required for TeleMER; neutral score applied');
 
   // Age Band — two-layer
   const age = d.age || 0;
@@ -317,7 +321,8 @@ function scoreMedicalParameters(d, resolver) {
   const ageR = lookupPoints(age, D.age_band.bands, ageCfg?.bands);
   add('Age Band', ageR.pts, ageCfg?.max || D.age_band.max,
     `Age ${age || 'unknown'} — ${ageR.label} → ${ageR.pts}`,
-    age ? `${age} yrs` : null);
+    age ? `${age} yrs` : null,
+    age ? `Age ${age} years — ${d.dob ? 'computed from DOB ' + d.dob : 'from proposer info'}` : 'Age not found in document');
 
   const maxPts = (ageCfg?.max||D.age_band.max) + (bmiCfg?.max||D.bmi.max) +
                  (bpCfg?.max||D.blood_pressure.max) + (fbsCfg?.max||D.fasting_glucose.max) +
@@ -329,7 +334,7 @@ function scoreMedicalParameters(d, resolver) {
 // ─── 2) MEDICAL HISTORY ──────────────────────────────────────────────────────
 function scoreMedicalHistory(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const add = (label, pts, max, logic, value, proof) => checks.push({ label, points: round2(pts), max, logic, value: value ?? null, proof: proof || null });
   const D = DEFAULTS.medical_history;
   const th = resolver.th;
   const conds = d.conditions || [];
@@ -346,8 +351,17 @@ function scoreMedicalHistory(d, resolver) {
     notes.push(`${c.name}(${status}) -${ded}`);
   }
   pecScore = clamp(pecScore, 0, pecMax);
+  // Build per-condition proof lines
+  const pecProof = conds.length
+    ? conds.map(c => {
+        const status = lc(c.status);
+        const ded = deds[status] ?? deds.active ?? 2;
+        return `• ${c.name}: status="${status}", medication="${c.medication||'none'}", duration=${c.duration_years!=null?c.duration_years+'yr':'unknown'} → -${ded} pts`;
+      }).join('\n') + `\n→ Total deducted: ${pecMax - pecScore}/${pecMax}`
+    : 'No pre-existing conditions declared in Q2/Q3 or examiner remarks';
   add('Pre-existing Conditions', pecScore, pecMax,
-    conds.length ? `${conds.length} condition(s): ${notes.join(', ')} → ${pecScore}/${pecMax}` : `none → ${pecMax}/${pecMax}`);
+    conds.length ? `${conds.length} condition(s): ${notes.join(', ')} → ${pecScore}/${pecMax}` : `none → ${pecMax}/${pecMax}`,
+    null, pecProof);
 
   // Condition control
   const ctrlMax = th.control_max ?? D.control_max;
@@ -355,7 +369,10 @@ function scoreMedicalHistory(d, resolver) {
   let chronPts  = ctrlMax;
   for (const c of conds) { if (lc(c.status) === 'uncontrolled') chronPts -= ctrlDed; }
   chronPts = clamp(chronPts, 0, ctrlMax);
-  add('Condition Control', chronPts, ctrlMax, `control adjustment → ${chronPts}/${ctrlMax}`);
+  const ctrlProof = conds.length
+    ? conds.map(c => `• ${c.name}: ${lc(c.status) === 'uncontrolled' ? 'UNCONTROLLED → -' + ctrlDed + ' pts' : lc(c.status) + ' → no deduction'}`).join('\n')
+    : 'No conditions to assess';
+  add('Condition Control', chronPts, ctrlMax, `control adjustment → ${chronPts}/${ctrlMax}`, null, ctrlProof);
 
   // Family history
   const fhCfg  = th.family_history || D.family_history;
@@ -363,8 +380,12 @@ function scoreMedicalHistory(d, resolver) {
   const serious = fam.some(f => (fhCfg.serious_conditions || D.family_history.serious_conditions)
     .some(s => lc(f).includes(s)));
   const famPts = fam.length === 0 ? (fhCfg.none ?? 4) : (serious ? (fhCfg.serious ?? 1) : (fhCfg.minor ?? 2));
+  const famProof = fam.length === 0
+    ? 'Q9 answered No — no first-degree family history of cardiac/DM/cancer/stroke/HTN declared'
+    : `Q9 answer: ${fam.join(', ')} — ${serious ? 'serious condition (cardiac/cancer/stroke) → severe deduction' : 'minor condition → partial deduction'}`;
   add('Family History', famPts, fhCfg.none ?? 4,
-    fam.length === 0 ? `no family history → ${famPts}` : `${fam.join(', ')} → ${famPts}`);
+    fam.length === 0 ? `no family history → ${famPts}` : `${fam.join(', ')} → ${famPts}`,
+    null, famProof);
 
   const maxTotal = pecMax + ctrlMax + (fhCfg.none ?? 4);
   const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
@@ -374,7 +395,7 @@ function scoreMedicalHistory(d, resolver) {
 // ─── 3) LIFESTYLE RISK ───────────────────────────────────────────────────────
 function scoreLifestyle(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const add = (label, pts, max, logic, value, proof) => checks.push({ label, points: round2(pts), max, logic, value: value ?? null, proof: proof || null });
   const D  = DEFAULTS.lifestyle_risk;
   const th = resolver.th;
 
@@ -401,7 +422,8 @@ function scoreLifestyle(d, resolver) {
     source = `lifestyle.smoking=${smokingStatus} alcohol=${alcoholStatus||'?'} tobacco=${tobaccoStatus||'?'}`;
   } else if (smokingStatus === 'unknown' || alcoholStatus === 'unknown') {
     // Explicitly unknown (Q7 not found in document) — no data = no credit
-    add('Tobacco / Alcohol', 0, taMax, 'Q7 not found in document — unknown → 0');
+    add('Tobacco / Alcohol', 0, taMax, 'Q7 not found in document — unknown → 0', null,
+      'Q7 (Cigarette/Beedi/Pan/Gutkha/Alcohol) was not found or could not be read from the form. No answer recorded → 0 pts');
     hasTob = false; hasAlc = false; // skip the normal add() below
   } else {
     // No structured data — fall back to remarks keyword scan
@@ -414,12 +436,21 @@ function scoreLifestyle(d, resolver) {
   let taPts = taMax;
   if (smokingStatus === 'unknown' || alcoholStatus === 'unknown') {
     // Q7 not found in document — no data = 0 points
-    add('Tobacco / Alcohol', 0, taMax, 'Q7 not found in document — unknown → 0');
+    add('Tobacco / Alcohol', 0, taMax, 'Q7 not found in document — unknown → 0', null,
+      'Q7 (Cigarette/Beedi/Pan/Gutkha/Alcohol) was not found or could not be read from the form. No answer recorded → 0 pts');
   } else {
     if (hasTob) taPts -= taDed;
     if (hasAlc) taPts -= alDed;
     taPts = clamp(taPts, 0, taMax);
-    add('Tobacco / Alcohol', taPts, taMax, `${source} → ${taPts}/${taMax}`);
+    const taProof = ls._source === 'telemer_pdf_q7'
+      ? `Q7 answer read from TeleMER form:\n` +
+        `• Smoking/tobacco (cigarette/beedi/pan/gutkha): ${smokingStatus}${tobaccoStatus && tobaccoStatus !== smokingStatus ? ' / tobacco: '+tobaccoStatus : ''}` +
+        `${hasTob ? ' → DEDUCT ' + taDed + ' pts' : ' → no deduction'}\n` +
+        `• Alcohol: ${alcoholStatus||'never'}${hasAlc ? ' → DEDUCT ' + alDed + ' pts' : ' → no deduction'}\n` +
+        `• Net: ${taMax} - ${hasTob?taDed:0} - ${hasAlc?alDed:0} = ${taPts}/${taMax}`
+      : `Remarks scan used (no structured Q7 data):\n` +
+        `• Tobacco keywords found in remarks: ${hasTob}\n• Alcohol keywords found: ${hasAlc}`;
+    add('Tobacco / Alcohol', taPts, taMax, `${source} → ${taPts}/${taMax}`, null, taProof);
   }
 
   // Weight stability
@@ -427,15 +458,20 @@ function scoreLifestyle(d, resolver) {
   const wChange = th.weight_change_pts ?? D.weight_change_pts;
   const wMax    = th.weight_max        ?? D.weight_max;
   const changed = d.answers?.q6 === true;
+  const wsProof = changed
+    ? 'Q6 answered Yes — significant weight gain/loss reported → deduction applied'
+    : 'Q6 answered No — weight is stable, no recent significant change';
   add('Weight Stability', changed ? wChange : wStable, wMax,
-    changed ? `recent weight change → ${wChange}/${wMax}` : `stable weight → ${wStable}/${wMax}`);
+    changed ? `recent weight change → ${wChange}/${wMax}` : `stable weight → ${wStable}/${wMax}`,
+    null, wsProof);
 
   // BMI proxy — always use DEFAULTS.lifestyle_risk.bmi_proxy.bands for numeric lookup
   const bmiDProxy = D.bmi_proxy;
   const bmiProxy  = num(d.bmi) || 0;
   const bmiBProxy = lookupBand(bmiProxy, bmiDProxy.bands);
   add('BMI (lifestyle proxy)', bmiBProxy.pts, bmiDProxy.max,
-    `BMI ${bmiProxy || 'unknown'} → ${bmiBProxy.pts}/${bmiDProxy.max}`);
+    `BMI ${bmiProxy || 'unknown'} → ${bmiBProxy.pts}/${bmiDProxy.max}`,
+    null, bmiProxy ? `BMI ${bmiProxy} — lifestyle proxy (independent of Medical Parameters BMI check which uses lab values)` : 'BMI not available');
 
   const maxTotal = taMax + wMax + bmiDProxy.max;
   const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
@@ -445,7 +481,7 @@ function scoreLifestyle(d, resolver) {
 // ─── 4) CLINICAL CORRELATION ─────────────────────────────────────────────────
 function scoreClinicalCorrelation(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const add = (label, pts, max, logic, value, proof) => checks.push({ label, points: round2(pts), max, logic, value: value ?? null, proof: proof || null });
   const D    = DEFAULTS.clinical_correlation;
   const th   = resolver.th;
   const conds = d.conditions || [];
@@ -462,8 +498,16 @@ function scoreClinicalCorrelation(d, resolver) {
   else if (matched === conds.length)   drugPts = dmCfg.all_match     ?? 5;
   else if (matched > 0)               drugPts = dmCfg.partial        ?? 3;
   else                                 drugPts = dmCfg.none           ?? 1;
+  const drugProof = conds.length === 0
+    ? 'No pre-existing conditions declared — full marks by default'
+    : conds.map(c => {
+        const med = Array.isArray(c.medication) ? c.medication.join(', ') : String(c.medication || '');
+        const hasMed = med.trim() && med.trim().toLowerCase() !== 'unknown';
+        return `• ${c.name}: medication="${hasMed ? med : 'NONE FOUND'}" → ${hasMed ? '✓ medicated' : '✗ no medication recorded'}`;
+      }).join('\n') + `\n→ ${matched}/${conds.length} conditions have documented medication`;
   add('Drug-Condition Match', drugPts, dmCfg.max ?? 5,
-    conds.length === 0 ? `no conditions → ${drugPts}` : `${matched}/${conds.length} medicated → ${drugPts}`);
+    conds.length === 0 ? `no conditions → ${drugPts}` : `${matched}/${conds.length} medicated → ${drugPts}`,
+    null, drugProof);
 
   // Multi-system load
   const msCfg  = th.multi_system || D.multi_system;
@@ -483,8 +527,20 @@ function scoreClinicalCorrelation(d, resolver) {
     // defaults
     sysPts = sc === 0 ? 5 : sc === 1 ? 4 : sc === 2 ? 3 : sc === 3 ? 2 : 1;
   }
+  const msProof = conds.length === 0
+    ? 'No conditions declared — no system involvement'
+    : conds.map(c => {
+        const n = lc(c.name);
+        let sys = 'other';
+        if (/diabet|dm|sugar|thyroid|endocrine/.test(n)) sys = 'endocrine';
+        else if (/hypertension|htn|cardiac|heart|bp/.test(n)) sys = 'cardiovascular';
+        else if (/varicose|vein|vascular/.test(n)) sys = 'vascular';
+        else if (/kidney|renal|liver|gi|gall/.test(n)) sys = 'gi_renal';
+        return `• ${c.name} → classified as "${sys}" system`;
+      }).join('\n') + `\n→ ${sc} distinct system(s) affected: ${[...systems].join(', ')||'none'}`;
   add('Multi-System Load', sysPts, msCfg.max ?? 5,
-    `${sc} system(s): ${[...systems].join(', ') || 'none'} → ${sysPts}`);
+    `${sc} system(s): ${[...systems].join(', ') || 'none'} → ${sysPts}`,
+    null, msProof);
 
   // CV proxy
   const cvCfg = th.cv_proxy || D.cv_proxy;
@@ -499,8 +555,16 @@ function scoreClinicalCorrelation(d, resolver) {
   if (!hasDM) prot++;
   if (conds.length < 3) prot++;
   const cvPts = clamp(prot, cvCfg.min ?? 1, cvCfg.max ?? 5);
+  const cvProof = [
+    `• Age ${age||'unknown'} ${age && age < 55 ? '< 55 → ✓ protective' : '≥ 55 or unknown → ✗'}`,
+    `• BMI ${bmi||'unknown'} ${bmi && bmi < 30 ? '< 30 → ✓ protective' : '≥ 30 or unknown → ✗'}`,
+    `• Systolic BP ${sys||'unknown'} ${!sys || sys < 140 ? '< 140 or unknown → ✓ protective' : '≥ 140 → ✗'}`,
+    `• Diabetes: ${hasDM ? 'YES → ✗ not protective' : 'No DM → ✓ protective'}`,
+    `• Conditions count: ${conds.length} ${conds.length < 3 ? '< 3 → ✓ protective' : '≥ 3 → ✗'}`
+  ].join('\n') + `\n→ ${prot}/5 protective factors present`;
   add('Cardiovascular Proxy', cvPts, cvCfg.max ?? 5,
-    `${prot}/5 protective factors → ${cvPts}`);
+    `${prot}/5 protective factors → ${cvPts}`,
+    null, cvProof);
 
   const maxTotal = (dmCfg.max??5) + (msCfg.max??5) + (cvCfg.max??5);
   const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
@@ -510,7 +574,7 @@ function scoreClinicalCorrelation(d, resolver) {
 // ─── 5) DOCUMENTATION QUALITY ────────────────────────────────────────────────
 function scoreDocumentationQuality(d, resolver) {
   const checks = [];
-  const add = (label, pts, max, logic) => checks.push({ label, points: round2(pts), max, logic, value: null });
+  const add = (label, pts, max, logic, value, proof) => checks.push({ label, points: round2(pts), max, logic, value: value ?? null, proof: proof || null });
   const D  = DEFAULTS.documentation_quality;
   const th = resolver.th;
 
@@ -518,18 +582,25 @@ function scoreDocumentationQuality(d, resolver) {
   const compMax = th.completeness_max ?? D.completeness_max;
   const conds   = d.conditions || [];
   let comp = compMax;
+  let full = 0;
+  const compLines = [];
   if (conds.length > 0) {
-    let full = 0;
     for (const c of conds) {
       const hasDur  = c.duration_years != null;
       const hasMed  = !!(c.medication && String(c.medication).trim());
       const hasRead = !!(c.systolic || c.fbs || c.hba1c);
       if (hasDur && hasMed && hasRead) full++;
+      const readStr = c.systolic ? `BP ${c.systolic}/${c.diastolic||'?'} mmHg` : c.fbs ? `FBS ${c.fbs} mg/dl` : c.hba1c ? `HbA1c ${c.hba1c}%` : 'none';
+      compLines.push(`• ${c.name}: duration=${hasDur?c.duration_years+'yr ✓':'missing ✗'}, medication=${hasMed?c.medication+' ✓':'missing ✗'}, reading=${hasRead?readStr+' ✓':'missing ✗'} → ${hasDur&&hasMed&&hasRead?'COMPLETE':'INCOMPLETE'}`);
     }
     comp = round2(compMax * (full / conds.length));
   }
+  const compProof = conds.length === 0
+    ? 'No conditions declared — nothing to assess'
+    : compLines.join('\n') + `\n→ ${full}/${conds.length} conditions fully described = score ${comp}/${compMax}`;
   add('Completeness', comp, compMax,
-    `${conds.length} condition(s) fully described → ${comp}/${compMax}`);
+    `${conds.length} condition(s) fully described → ${comp}/${compMax}`,
+    null, compProof);
 
   // Examiner & reports
   const exMax   = th.examiner_max      ?? D.examiner_max;
@@ -541,7 +612,12 @@ function scoreDocumentationQuality(d, resolver) {
   if (d.examiner?.reg_no) det += exReg;
   if (d.reports_available) det += repPts;
   det = clamp(det, 0, exMax);
-  add('Examiner & Reports', det, exMax, `examiner+reports → ${det}/${exMax}`);
+  const exProof = [
+    `• Examiner name: ${d.examiner?.name ? d.examiner.name + ' ✓' : 'NOT FOUND ✗ (' + exName + ' pts)'}`,
+    `• Registration no: ${d.examiner?.reg_no ? d.examiner.reg_no + ' ✓' : 'NOT FOUND ✗ (' + exReg + ' pts)'}`,
+    `• Reports available: ${d.reports_available ? 'Yes ✓' : 'Not confirmed ✗ (' + repPts + ' pts)'}`
+  ].join('\n') + `\n→ Total: ${det}/${exMax}`;
+  add('Examiner & Reports', det, exMax, `examiner+reports → ${det}/${exMax}`, null, exProof);
 
   // Form consistency
   const conBands = th.consistency_bands || D.consistency_bands;
@@ -549,8 +625,14 @@ function scoreDocumentationQuality(d, resolver) {
   const contras  = detectContradictions(d);
   let cons = 0;
   for (const b of conBands) { if (contras.length <= b.contradictions) { cons = b.pts; break; } }
+  const fcProof = contras.length === 0
+    ? 'No contradictions detected — all Yes/No answers are consistent with the examiner remarks'
+    : `${contras.length} contradiction(s) found between Yes/No boxes and examiner remarks:\n` +
+      contras.map(c => `• ${c}`).join('\n') +
+      `\nEach contradiction means a condition is mentioned in the doctor's narrative but the corresponding question box was answered No.`;
   add('Form Consistency', cons, conMax,
-    `${contras.length} contradiction(s) → ${cons}/${conMax}`);
+    `${contras.length} contradiction(s) → ${cons}/${conMax}`,
+    null, fcProof);
 
   const maxTotal = compMax + exMax + conMax;
   const total = clamp(checks.reduce((s,c) => s + c.points, 0), 0, maxTotal);
@@ -648,7 +730,8 @@ function toFrontendShape(result) {
         max:    c.max,
         status: statusFor(c.points, c.max),
         logic:  c.logic,
-        value:  c.value ?? null    // ← actual reading (e.g. "130/86 mmHg") for Value column
+        value:  c.value ?? null,
+        proof:  c.proof ?? null   // evidence from document for this check
       };
     }
     return out;
