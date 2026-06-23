@@ -6228,6 +6228,134 @@ app.get('/api/workflow/:id/telemer-questionnaire', requireAuth, (req, res) => {
   });
 });
 
+// ── NEW FEATURE — translates Q&A interview answers into the same structured
+// shape the scoring engine actually reads (medical_history.pre_existing_
+// conditions, lifestyle, family_history, bmi). Mirrors assembleTeleMERDataFromPDF()
+// but keyed by question ID (BIO_03, CARD_03, CARD_04, GEN_07, GEN_09, etc. --
+// see config/telemer-questions.json) instead of free text parsed from a PDF.
+// Without this, interview answers were saved correctly on the workflow but
+// never reached the scoring engine at all -- the engine looks for
+// medical_history.pre_existing_conditions, which nothing in the interview
+// path ever built, regardless of how completely the form was filled in.
+// Purely additive: does not touch wf.telemer_data.answers or anything else
+// already being read/written by the existing interview submission flow.
+function assembleTeleMERDataFromInterview(wf, answers) {
+  const getAns = (qId) => answers[qId] || {};
+  const isYes = (qId) => (getAns(qId).value || '').toLowerCase() === 'yes';
+  const followupText = (qId) => getAns(qId).followup || '';
+
+  const pre_existing_conditions = [];
+
+  // ── Biometrics — BIO_01 height, BIO_02 weight, BIO_03 BMI ──────────────
+  const heightCm = parseFloat(getAns('BIO_01').value) || wf.height_cm || null;
+  const weightKg = parseFloat(getAns('BIO_02').value) || wf.weight_kg || null;
+  let bmi = parseFloat(getAns('BIO_03').value) || null;
+  if (!bmi && heightCm && weightKg) bmi = Math.round((weightKg / Math.pow(heightCm / 100, 2)) * 10) / 10;
+  if (!bmi) bmi = wf.declared_bmi || null;
+
+  // ── Hypertension — CARD_03 ──────────────────────────────────────────────
+  if (isYes('CARD_03')) {
+    const text = followupText('CARD_03');
+    const bpMatch  = text.match(/(\d{2,3})\s*[\/\-]\s*(\d{2,3})/);
+    const durMatch = text.match(/since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const medMatch = text.match(/(telmisartan|telma|amlodipine|enalapril|ramipril|losartan|metoprolol|coversyl|diovan|atenolol|nebivolol|olmesartan|valsartan|bisoprolol)[^,\s]*/i);
+    const durationMonths = durMatch ? (durMatch[2].toLowerCase().startsWith('year') ? parseInt(durMatch[1]) * 12 : parseInt(durMatch[1])) : null;
+    pre_existing_conditions.push({
+      condition: 'Hypertension', icd10_code: 'I10', current_status: 'active',
+      medication: medMatch ? medMatch[0] : 'unknown',
+      since_year: durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
+      last_reading_systolic:  bpMatch ? parseInt(bpMatch[1]) : null,
+      last_reading_diastolic: bpMatch ? parseInt(bpMatch[2]) : null,
+      reading_verified: !!bpMatch,
+      duration_months: durationMonths,
+      _source: 'telemer_interview'
+    });
+  }
+
+  // ── Diabetes — CARD_04 ──────────────────────────────────────────────────
+  if (isYes('CARD_04')) {
+    const text = followupText('CARD_04');
+    const hba1cMatch = text.match(/hba1c\s*[:\s]*(\d+\.?\d*)/i);
+    const fbsMatch   = text.match(/fbs\s*[:\s]*(\d+)/i) || text.match(/fasting\s*(?:blood\s*sugar)?\s*[:\s]*(\d+)/i);
+    const durMatch   = text.match(/since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const medMatch   = text.match(/(metformin|janumet|januvia|glimepiride|glipizide|insulin|dapagliflozin|sitagliptin|reclimet|vildagliptin|empagliflozin)[^,\s]*/i);
+    const durationMonths = durMatch ? (durMatch[2].toLowerCase().startsWith('year') ? parseInt(durMatch[1]) * 12 : parseInt(durMatch[1])) : null;
+    pre_existing_conditions.push({
+      condition: 'Type 2 Diabetes', icd10_code: 'E11', current_status: 'active',
+      medication: medMatch ? medMatch[0] : 'unknown',
+      since_year: durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
+      hba1c: hba1cMatch ? parseFloat(hba1cMatch[1]) : null,
+      fbs:   fbsMatch   ? parseFloat(fbsMatch[1])   : null,
+      reading_verified: !!(hba1cMatch || fbsMatch),
+      duration_months: durationMonths,
+      _source: 'telemer_interview'
+    });
+  }
+
+  // ── Varicose veins / eczema / psoriasis — GEN_08 ────────────────────────
+  if (isYes('GEN_08')) {
+    const text = followupText('GEN_08').toLowerCase();
+    let cond = 'Skin/Vascular disorder';
+    if (text.includes('varicose')) cond = 'Varicose Veins';
+    else if (text.includes('eczema')) cond = 'Eczema';
+    else if (text.includes('psoriasis')) cond = 'Psoriasis';
+    pre_existing_conditions.push({ condition: cond, current_status: 'active', medication: 'none', _source: 'telemer_interview' });
+  }
+
+  // ── Thyroid / endocrine — ENDO_01, ENDO_02 ──────────────────────────────
+  if (isYes('ENDO_01') || isYes('ENDO_02')) {
+    const text = (followupText('ENDO_01') + ' ' + followupText('ENDO_02')).toLowerCase();
+    const medMatch = text.match(/(levothyroxine|eltroxin|thyroxine|thyronorm)[^,\s]*/i);
+    pre_existing_conditions.push({ condition: 'Thyroid disorder', current_status: 'active', medication: medMatch ? medMatch[0] : 'unknown', _source: 'telemer_interview' });
+  }
+
+  // ── Generic catch-all for remaining condition sections ──────────────────
+  // Anything answered 'yes' across the other systems still counts toward
+  // Multi-System Active Condition Count even without detailed med/reading
+  // parsing -- better to count it generically than silently drop it.
+  const genericConditionQIds = [
+    'CARD_01','CARD_02','CARD_05','RESP_01','GI_01','GI_02','RENAL_01','RENAL_02',
+    'HAEM_01','ENT_01','ENT_02','MSK_01','MSK_02','ONC_01','NEURO_01','NEURO_02','NEURO_03','MISC_01'
+  ];
+  for (const qId of genericConditionQIds) {
+    if (isYes(qId)) {
+      const text = followupText(qId);
+      pre_existing_conditions.push({
+        condition: text ? text.substring(0, 60) : `Declared condition (${qId})`,
+        current_status: 'active', medication: 'unknown', _source: 'telemer_interview', _question_id: qId
+      });
+    }
+  }
+
+  // ── Lifestyle — GEN_07 ───────────────────────────────────────────────────
+  const gen07 = getAns('GEN_07');
+  const lifestyle = { smoking: { status: 'unknown' }, alcohol: { status: 'unknown' }, tobacco_chewing: { status: 'unknown' } };
+  if (gen07.value) {
+    if (gen07.value.toLowerCase() === 'no') {
+      lifestyle.smoking.status = 'never'; lifestyle.alcohol.status = 'never'; lifestyle.tobacco_chewing.status = 'never';
+    } else {
+      const text = (gen07.followup || '').toLowerCase();
+      lifestyle.smoking.status         = /cigarette|beedi|smok/i.test(text) ? 'current' : 'never';
+      lifestyle.alcohol.status         = /alcohol/i.test(text) ? 'current' : 'never';
+      lifestyle.tobacco_chewing.status = /gutkha|pan\b|tobacco/i.test(text) ? 'current' : 'never';
+    }
+  }
+
+  // ── Family history — GEN_09 ──────────────────────────────────────────────
+  const gen09 = getAns('GEN_09');
+  const family_history = { cardiac: false, diabetes: false, cancer: false, hypertension: false, stroke: false, details: gen09.followup || 'None' };
+  if ((gen09.value || '').toLowerCase() === 'yes') {
+    const text = (gen09.followup || '').toLowerCase();
+    family_history.cardiac      = /heart|cardiac/.test(text);
+    family_history.diabetes     = /diabetes/.test(text);
+    family_history.cancer       = /cancer/.test(text);
+    family_history.hypertension = /blood pressure|hypertension/.test(text);
+    family_history.stroke       = /stroke/.test(text);
+  }
+
+  return { pre_existing_conditions, lifestyle, family_history, bmi, height_cm: heightCm, weight_kg: weightKg };
+}
+
 // POST /api/workflow/:id/telemer-submit — submit tele-MER interview data
 app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
   try {
@@ -6345,8 +6473,27 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
     let telemerScore = null;
     if (telemer_recommendation === 'proceed_to_scoring') {
       try {
+        // NEW: translate Q&A answers into the structured shape the scoring
+        // engine actually reads (medical_history.pre_existing_conditions,
+        // lifestyle, family_history, bmi) -- without this, answers were
+        // saved correctly but invisible to scoring regardless of how
+        // completely the form was filled in. Purely additive: only adds
+        // new fields, does not modify wf.telemer_data.answers or anything
+        // else already set above.
+        const interviewAssembled = assembleTeleMERDataFromInterview(wf, answers);
+        wf.telemer_data.medical_history = {
+          pre_existing_conditions: interviewAssembled.pre_existing_conditions,
+          family_history: interviewAssembled.family_history
+        };
+        wf.telemer_data.lifestyle = interviewAssembled.lifestyle;
+        wf.telemer_data.bmi = interviewAssembled.bmi;
+        if (interviewAssembled.height_cm && !wf.height_cm) wf.height_cm = interviewAssembled.height_cm;
+        if (interviewAssembled.weight_kg && !wf.weight_kg) wf.weight_kg = interviewAssembled.weight_kg;
+        if (interviewAssembled.bmi && !wf.declared_bmi) wf.declared_bmi = interviewAssembled.bmi;
+        console.log(`[TeleMER Interview Assemble] PEC: ${interviewAssembled.pre_existing_conditions.map(c=>c.condition).join(', ') || 'none'} | BMI: ${interviewAssembled.bmi || 'n/a'}`);
+
         const telemerCatCfg = catScoringConfig?.['tele_mer'] || {};
-        const telemerInput  = { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures };
+        const telemerInput  = { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures, _proposer_age: wf.age, _proposer_gender: wf.gender };
         const telemerDynCfg = {
           component_weights:  telemerCatCfg.components ? Object.fromEntries(Object.entries(telemerCatCfg.components).map(([k,c])=>[k,c.weight])) : null,
           scoring_components: telemerCatCfg.components || null,
