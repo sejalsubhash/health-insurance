@@ -3,6 +3,7 @@
  * v4.0.0 — STP Fast-Lane + Custom Rules Enforcement + UW Routing Foundation
  */
 require('dotenv').config();
+const sharp = require('sharp');
 const { BedrockRuntimeClient, InvokeModelCommand, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { STSClient, AssumeRoleCommand } = require('@aws-sdk/client-sts');
 
@@ -78,9 +79,71 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
 const s3Client = require('./lib/pg-client');  // PostgreSQL for JSON + S3 for binary files
+
+// ─── Dynamic Loading Config override ─────────────────────────────────────────
+// risk-params.json on disk gets baked into the Docker image on every build
+// (it's git-tracked, and the Dockerfile does COPY . .), so any edit made via
+// the Loading Table PUT endpoint previously got silently wiped on the next
+// rebuild. This helper checks Postgres (masters table, type='loading-config')
+// for an override and merges ONLY the four loading-related fields onto
+// whatever was loaded from the file -- every other field in risk-params.json
+// (stp_eligibility_rules, sum_assured_tiers, gender_thresholds, etc.) is left
+// completely untouched, so this only affects loading-table behavior and
+// nothing else in the application.
+async function applyDynamicLoadingOverride(riskParams) {
+  try {
+    // NOTE: uses getConfig/the 'config' table, NOT getMasters/'masters' --
+    // confirmed live that 'masters' does not exist in this deployment's
+    // database (missing from schema.sql, and initSchema() is never called
+    // anywhere in server.js). 'config' is the table Per-CAT Scoring already
+    // uses successfully (getConfig('cat-scoring')), so this is the proven,
+    // working table rather than an untested one.
+    const dyn = await s3Client.getConfig('loading-config');
+    if (dyn) {
+      if (dyn.loading_table)    riskParams.loading_table    = dyn.loading_table;
+      if (dyn.age_loading)      riskParams.age_loading      = dyn.age_loading;
+      if (dyn.loading_cap)      riskParams.loading_cap      = dyn.loading_cap;
+      if (dyn.waiting_periods) riskParams.waiting_periods = dyn.waiting_periods;
+    }
+  } catch (e) {
+    console.warn('[LoadingConfig] Postgres override check failed, using file defaults:', e.message);
+  }
+  return riskParams;
+}
+
+// ─── Dynamic UW Guidelines override ──────────────────────────────────────────
+// Same pattern as applyDynamicLoadingOverride above. uw-guidelines.json's 50
+// built-in rules are git-tracked and get baked into every Docker image build,
+// so they need the same Postgres-backed override layer to be genuinely
+// editable rather than reset on every rebuild. Stored as a sparse map keyed
+// by rule id (config key 'uw-rule-overrides') -- only fields that were
+// actually edited are present, so this never requires touching the 50
+// built-in rule objects themselves, and the file stays the recoverable
+// original baseline if an override ever needs to be cleared.
+async function applyUWRuleOverrides(rules) {
+  try {
+    const overrides = await s3Client.getConfig('uw-rule-overrides');
+    if (overrides) {
+      for (const rule of rules) {
+        const o = overrides[rule.id];
+        if (o) {
+          if (o.threshold !== undefined) rule.threshold = o.threshold;
+          if (o.action) rule.action = o.action;
+          if (o.severity) rule.severity = o.severity;
+          if (o._disabled !== undefined) rule._disabled = o._disabled;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[UWRules] Postgres override check failed, using file defaults:', e.message);
+  }
+  return rules;
+}
+
 const socketManager = require('./lib/socket-manager');
 const bullQueue = require('./lib/bull-queue');
 const riskEngine = require('./lib/medical-risk-engine');
+const telemerModel = require('./lib/telemer-score');
 const vendorApi = require('./lib/vendor-api');
 const icmrAnalyser = require('./lib/icmr-analyser');
 const workflowEngine = require('./lib/workflow-engine');
@@ -840,7 +903,7 @@ app.get('/api/vendor-requests', requireAuth, (req, res) => res.json(vendorApi.li
 // Workflow
 app.post('/api/workflow/create', requireAuth, async (req, res) => {
   try {
-    const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi, pre_existing_conditions, detailed_ped } = req.body;
+    const { proposer_name, age, gender, sum_assured, product_name, policy_type, nstp_reason, observations, required_tests, vendor_id, lifestyle, medical_history, height_cm, weight_kg, declared_bmi, pre_existing_conditions, detailed_ped, quotation_no } = req.body;
     if (!proposer_name) return res.status(400).json({ error: 'proposer_name required' });
 
     // Resolve CAT level first to determine correct vendor
@@ -886,7 +949,7 @@ app.post('/api/workflow/create', requireAuth, async (req, res) => {
     const mergedTests = [...new Set([...policyMandatoryTests, ...uwSelectedTests])]
       .filter(t => t != null && typeof t === 'string' && t.trim() !== '');
 
-    const wf = workflowEngine.createWorkflow({ proposer_name, age: age||35, gender: gender||'male', sum_assured: sum_assured||0, product_name, policy_type, nstp_reason, observations: observations||'', required_tests: mergedTests, assigned_vendor_id: selectedVendor, cat_level: catResult.cat, cat_reason: catResult.reason, lifestyle: lifestyle||{}, medical_history: medical_history||{}, height_cm: height_cm||null, weight_kg: weight_kg||null, declared_bmi: declared_bmi||null });
+    const wf = workflowEngine.createWorkflow({ proposer_name, quotation_no: quotation_no || null, age: age||35, gender: gender||'male', sum_assured: sum_assured||0, product_name, policy_type, nstp_reason, observations: observations||'', required_tests: mergedTests, assigned_vendor_id: selectedVendor, cat_level: catResult.cat, cat_reason: catResult.reason, lifestyle: lifestyle||{}, medical_history: medical_history||{}, height_cm: height_cm||null, weight_kg: weight_kg||null, declared_bmi: declared_bmi||null });
 
     // Store historical evaluation on workflow
     if (pphcEvaluation && pphcEvaluation.match_count > 0) {
@@ -989,6 +1052,7 @@ app.post('/api/workflow/stp-evaluate', requireAuth, async (req, res) => {
     if (evaluation.eligible && !effectiveShadow) {
       // Run lightweight declared-only analysis as a final sanity check
       const uwGuidelines = JSON.parse(fs.readFileSync(path.join(__dirname, 'config', 'uw-guidelines.json'), 'utf8'));
+      await applyUWRuleOverrides(uwGuidelines.rules);
       const lightAnalysis = stpClassifier.runDeclaredDataAnalysis(proposal, riskParams, uwGuidelines, customRules, riskEngine);
 
       const stpScoreThreshold = stpRules.lightweight_score_min_for_stp || 85;
@@ -1158,7 +1222,7 @@ app.put('/api/stp-rules', requireRole('Super Admin'), async (req, res) => {
 });
 
 // POST /api/stp-evaluate-preview — evaluate a proposal WITHOUT creating a workflow (dry run for admin UI)
-app.post('/api/stp-evaluate-preview', requireAuth, (req, res) => {
+app.post('/api/stp-evaluate-preview', requireAuth, async (req, res) => {
   try {
     const evalStart = Date.now();
     const proposal = req.body;
@@ -1171,6 +1235,7 @@ app.post('/api/stp-evaluate-preview', requireAuth, (req, res) => {
     let lightAnalysis = null;
     if (evaluation.eligible) {
       const uwGuidelines = JSON.parse(fs.readFileSync(path.join(__dirname, 'config', 'uw-guidelines.json'), 'utf8'));
+      await applyUWRuleOverrides(uwGuidelines.rules);
       lightAnalysis = stpClassifier.runDeclaredDataAnalysis(proposal, riskParams, uwGuidelines, customRules, riskEngine);
     }
     res.json({ evaluation, lightweight_analysis: lightAnalysis, policy: productConfig?.policy ? { id: productConfig.policy.id, name: productConfig.policy.name, stp_eligible: policyOverrides.stp_eligible === true } : null });
@@ -1381,6 +1446,8 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
     let extractedData = {};
     let extractionMethod = 'none';
     const apiLog = [];
+    let _docsDone = 0;
+    const _docsTotal = wf.documents.length;
 
     // Try AI extraction from actual document content
     if (true) { // Bedrock — no API key needed, uses IAM role
@@ -1393,8 +1460,27 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         console.log('[Extraction] Using ConverseCommand — ModelId:', modelId);
 
         const converseContent = [];
+        // Pages successfully parsed via direct text extraction (pdftotext) instead
+        // of image rasterization — merged into pageExtractions after the main
+        // per-page image loop completes. See isPdf branch below for why this exists.
+        const textBasedPages = [];
+        const __textParseClient = await getBedrockClient();
+
+        // Emit initial progress
+        socketManager.emitGlobal('extraction_progress', {
+          workflow_id: wf.id, stage: 'starting',
+          docs_done: 0, docs_total: _docsTotal, percent: 0,
+          message: `Starting extraction of ${_docsTotal} document(s)...`
+        });
 
         for (const doc of wf.documents) {
+          // Emit per-doc start
+          socketManager.emitGlobal('extraction_progress', {
+            workflow_id: wf.id, stage: 'extracting',
+            docs_done: _docsDone, docs_total: _docsTotal,
+            percent: Math.round((_docsDone / _docsTotal) * 70), // 0-70% for extraction phase
+            current_doc: doc.name, message: `Extracting: ${doc.name}`
+          });
           // Lazy-load from S3 if content not in memory (IAM instance role or static keys)
           if (!doc.base64_data && doc.has_content) {
             try {
@@ -1431,10 +1517,167 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
             const tmpPdf  = tmpDir + '.pdf';
             let imagesAdded = 0;
 
+            let __handledViaText = false;
             try {
               fs.writeFileSync(tmpPdf, Buffer.from(doc.base64_data, 'base64'));
               fs.mkdirSync(tmpDir, { recursive: true });
 
+              // ── Try direct text extraction FIRST ──────────────────────────────
+              // Some PDFs (e.g. SBI TeleMER forms) are digitally generated — the
+              // Yes/No answers and detail text are typed directly into the form by
+              // the calling system, not handwritten/scanned. For these, pdftotext
+              // extracts perfectly even when pdftoppm rasterizes the page BLANK due
+              // to a font/glyph rendering issue (text extraction reads character
+              // codes directly; rasterization has to draw the actual glyph shapes,
+              // which can fail independently of whether the text itself is intact).
+              // Confirmed on a real failing case: pdftotext returned 100% complete
+              // 48-question content while pdftoppm produced blank images for all
+              // 9 pages of the same file.
+              let __pdfText = '';
+              try {
+                __pdfText = execSync(`pdftotext -layout "${tmpPdf}" -`, { timeout: 30000, maxBuffer: 15 * 1024 * 1024 }).toString('utf8');
+              } catch (textErr) {
+                console.warn('[Extraction] pdftotext failed for', doc.name, ':', textErr.message);
+              }
+
+              if (__pdfText.trim().length > 300) {
+                console.log(`[Extraction] ${doc.name}: pdftotext extracted ${__pdfText.length} chars — attempting TEXT-based parse (skips image rasterization)`);
+                try {
+                  // ── Helper: parse one chunk of raw TeleMER text into structured
+                  // Yes/No entries via a single Bedrock call. Returns null on total
+                  // failure; salvages partial results if the JSON is truncated.
+                  const __parseTeleMERChunk = async (chunkText, chunkLabel) => {
+                    const __textSchema = `Return ONLY valid JSON, no markdown. This is a PORTION of the raw extracted text of a TeleMER (telephonic medical examination) form with numbered questions, Yes/No answers, and free-text detail. It may start or end mid-question if it was split from a longer document — only extract questions that are fully present in this portion.
+{"page_type":"exam_form","personal_info":{"height_cm":null,"weight_kg":null,"bmi":null,"calling_date":""},"yes_no":[{"q_number":"","answer":"yes|no","handwritten_note":""}],"free_text":[]}
+Extract EVERY numbered question fully present here with its Yes/No answer exactly as printed, and the FULL detail/Details text verbatim into handwritten_note (even though it's typed, not handwritten — same field name for downstream compatibility). Do NOT include the question text itself, only q_number + answer + handwritten_note. If the identical detail text repeats for multiple questions, write it in full every time — do not abbreviate or reference earlier entries. personal_info comes from the header section if present in this portion (Height, Weight, BMI, Calling Date) — otherwise leave fields null/empty.`;
+                    const __tRes = await __textParseClient.send(new ConverseCommand({
+                      modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+                      system: [{ text: 'You are a precise form-data extraction AI. Parse the structured Q&A table from raw PDF text. Return ONLY valid JSON, no markdown, no prose.' }],
+                      messages: [{ role: 'user', content: [{ text: __textSchema + '\n\nRAW TEXT (' + chunkLabel + '):\n' + chunkText }] }],
+                      inferenceConfig: { maxTokens: 4096, temperature: 0 }
+                    }));
+                    const __tTxt = __tRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+                    console.log(`[Extraction] ${doc.name} [${chunkLabel}]: stop reason: ${__tRes.stopReason}, output chars: ${__tTxt.length}, tokens in/out: ${__tRes.usage?.inputTokens}/${__tRes.usage?.outputTokens}`);
+                    const __tMatch = __tTxt.match(/\{[\s\S]*\}/);
+                    let __parsed = null;
+                    if (__tMatch) {
+                      try {
+                        __parsed = JSON.parse(__tMatch[0]);
+                      } catch (firstParseErr) {
+                        console.warn(`[Extraction] ${doc.name} [${chunkLabel}]: direct JSON parse failed (${firstParseErr.message}) — attempting salvage`);
+                        const __entryMatches = __tTxt.match(/\{\s*"q_number"\s*:[^{}]*?"handwritten_note"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g);
+                        if (__entryMatches && __entryMatches.length > 0) {
+                          const __salvaged = [];
+                          for (const em of __entryMatches) { try { __salvaged.push(JSON.parse(em)); } catch(_) {} }
+                          if (__salvaged.length > 0) {
+                            __parsed = { page_type: 'exam_form', personal_info: {}, yes_no: __salvaged, free_text: [] };
+                            console.log(`[Extraction] ${doc.name} [${chunkLabel}]: salvaged ${__salvaged.length} complete entries out of a truncated response`);
+                          }
+                        }
+                      }
+                    }
+                    return {
+                      parsed: __parsed,
+                      tokensIn: __tRes.usage?.inputTokens || 0,
+                      tokensOut: __tRes.usage?.outputTokens || 0
+                    };
+                  };
+
+                  // ── Split the raw text into N small chunks at clean question
+                  // boundaries, instead of one call for the whole form. A single call
+                  // on the full 48-question text exceeded the model's hard 4096-output-
+                  // token ceiling (confirmed live). Target ~6 questions per chunk —
+                  // small enough that even a form with much longer repeated detail
+                  // blocks stays comfortably under that ceiling on every chunk, and
+                  // adapts automatically to shorter or longer forms by chunk count
+                  // rather than a fixed split.
+                  const __QUESTIONS_PER_CHUNK_TARGET = 6;
+                  // Question numbers in pdftotext -layout output sit at the START of a
+                  // column-wrapped line followed by a wide whitespace gap before the next
+                  // column's content (e.g. "        2          complaints, ... Yes ...") —
+                  // they are NOT alone on their own line. Verified against a real extracted
+                  // 48-question form: this pattern matches all 48 boundaries in sequence;
+                  // the earlier \n\s*\d{1,2}\s*\n attempt matched only 2 (start/end), which
+                  // would have silently collapsed back to a single oversized chunk.
+                  const __boundaryRegex = /\n[ \t]*(\d{1,2})[ \t]{2,}/g;
+                  const __boundaries = [0];
+                  let __bm;
+                  while ((__bm = __boundaryRegex.exec(__pdfText)) !== null) __boundaries.push(__bm.index);
+                  __boundaries.push(__pdfText.length);
+                  const __uniqueBoundaries = [...new Set(__boundaries)].sort((a,b) => a-b);
+
+                  // Estimate roughly how many question-boundary markers exist, then
+                  // group consecutive boundaries into chunks of ~__QUESTIONS_PER_CHUNK_TARGET
+                  // questions each.
+                  const __estimatedQuestions = Math.max(1, __uniqueBoundaries.length - 2);
+                  const __numChunks = Math.max(1, Math.ceil(__estimatedQuestions / __QUESTIONS_PER_CHUNK_TARGET));
+                  const __boundariesPerChunk = Math.max(1, Math.ceil((__uniqueBoundaries.length - 1) / __numChunks));
+
+                  const __chunks = [];
+                  for (let bi = 0; bi < __uniqueBoundaries.length - 1; bi += __boundariesPerChunk) {
+                    const startIdx = __uniqueBoundaries[bi];
+                    const endBi = Math.min(bi + __boundariesPerChunk, __uniqueBoundaries.length - 1);
+                    const endIdx = __uniqueBoundaries[endBi];
+                    if (endIdx > startIdx) __chunks.push(__pdfText.substring(startIdx, endIdx));
+                  }
+                  if (__chunks.length === 0) __chunks.push(__pdfText); // safety net — never send zero chunks
+
+                  console.log(`[Extraction] ${doc.name}: split text into ${__chunks.length} chunk(s) (~${__QUESTIONS_PER_CHUNK_TARGET} questions each, estimated ${__estimatedQuestions} questions total)`);
+
+                  const __chunkResults = [];
+                  for (let ci = 0; ci < __chunks.length; ci++) {
+                    __chunkResults.push(await __parseTeleMERChunk(__chunks[ci], `part ${ci+1} of ${__chunks.length}`));
+                  }
+
+                  const __mergedYesNo = [];
+                  const __mergedFreeText = [];
+                  let __totalTokensIn = 0, __totalTokensOut = 0;
+                  const __perChunkCounts = [];
+                  for (const r of __chunkResults) {
+                    const yn = Array.isArray(r.parsed?.yes_no) ? r.parsed.yes_no : [];
+                    __mergedYesNo.push(...yn);
+                    __perChunkCounts.push(yn.length);
+                    if (Array.isArray(r.parsed?.free_text)) __mergedFreeText.push(...r.parsed.free_text);
+                    __totalTokensIn  += r.tokensIn;
+                    __totalTokensOut += r.tokensOut;
+                  }
+                  // De-duplicate by q_number in case overlapping boundary text caused
+                  // the same question to appear in two adjacent chunks — keep whichever
+                  // occurrence has the longer (more complete) handwritten_note.
+                  const __byQNumber = new Map();
+                  for (const row of __mergedYesNo) {
+                    const key = String(row.q_number || '').trim();
+                    if (!key) continue;
+                    const existing = __byQNumber.get(key);
+                    if (!existing || (row.handwritten_note || '').length > (existing.handwritten_note || '').length) {
+                      __byQNumber.set(key, row);
+                    }
+                  }
+                  const __dedupedYesNo = Array.from(__byQNumber.values());
+                  const __qCount = __dedupedYesNo.length;
+
+                  if (__qCount >= 5) {
+                    textBasedPages.push({
+                      page: 1, page_type: 'exam_form', values: [],
+                      yes_no: __dedupedYesNo, free_text: __mergedFreeText,
+                      medications: [], was_split: true,
+                      tokens: { input: __totalTokensIn, output: __totalTokensOut },
+                      note: `Extracted via pdftotext + ${__chunks.length}-chunk text parse (image rasterization skipped — see extraction logs)`
+                    });
+                    converseContent.push({ text: `[Document: ${doc.name} — ${doc.category} — extracted via text layer (${__chunks.length} chunks), ${__qCount} questions parsed]` });
+                    console.log(`[Extraction] ${doc.name}: text-based parse succeeded — ${__qCount} unique questions (raw per-chunk: ${__perChunkCounts.join(', ')}), skipping image rasterization`);
+                    __handledViaText = true;
+                  } else {
+                    console.warn(`[Extraction] ${doc.name}: text-based parse returned only ${__qCount} unique questions total — falling back to image rasterization`);
+                  }
+                } catch (parseErr) {
+                  console.error(`[Extraction] ${doc.name}: text-based parse call failed (${parseErr.message}) — falling back to image rasterization`);
+                }
+              }
+
+              if (__handledViaText) {
+                // Skip rasterization entirely for this document — text parse already succeeded.
+              } else {
               // Convert all pages to JPEG at 150 DPI (good quality, reasonable size)
               execSync(`pdftoppm -jpeg -r 150 "${tmpPdf}" "${tmpDir}/page"`, { timeout: 60000, stdio: 'pipe' });
 
@@ -1470,6 +1713,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
                   }
                 });
               }
+              } // close: else branch for !__handledViaText (image rasterization path)
             } catch(pdfErr) {
               console.warn('[Extraction] pdftoppm failed for', doc.name, ':', pdfErr.message);
               // Fallback: send as document block
@@ -1515,6 +1759,129 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
 
         console.log('[Extraction] converseContent blocks:', converseContent.length, '| docs:', wf.documents.length);
 
+        // ── ECG AI Analysis Functions ─────────────────────────────────────────
+        // detectECGOrientation: sends the ECG image to Claude and asks which way
+        // it is rotated. Returns one of: upright | rotated_90_left | rotated_90_right | rotated_180
+        const detectECGOrientation = async (imgBytes) => {
+          try {
+            const res = await __client.send(new ConverseCommand({
+              modelId,
+              system: [{ text: 'You are looking at a medical ECG image. Your only job is to determine its rotation. Return ONLY valid JSON, no other text.' }],
+              messages: [{ role: 'user', content: [
+                { image: { format: 'jpeg', source: { bytes: imgBytes } } },
+                { text: `Look at this ECG image carefully. Determine its orientation by finding the ECG waveform traces and grid lines.
+A correctly oriented ECG has: horizontal baseline lines running left-to-right, QRS peaks pointing upward, lead labels (I, II, III, aVR, aVL, aVF, V1-V6) readable normally.
+Return ONLY this JSON:
+{"orientation":"upright|rotated_90_left|rotated_90_right|rotated_180","reason":"one sentence explaining what you see","confidence":"high|medium|low"}
+- upright: baseline runs left-right, peaks point up, text readable
+- rotated_90_left: image needs 90° clockwise rotation to correct (baseline runs top-to-bottom, peaks point right)
+- rotated_90_right: image needs 90° counter-clockwise rotation (baseline runs top-to-bottom, peaks point left)
+- rotated_180: image is upside down, peaks point down` }
+              ]}],
+              inferenceConfig: { maxTokens: 100, temperature: 0 }
+            }));
+            const txt = res.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+            const m = txt.match(/\{[\s\S]*?\}/);
+            if (m) {
+              const parsed = JSON.parse(m[0]);
+              console.log(`[ECG] Orientation detected: ${parsed.orientation} (confidence: ${parsed.confidence}) — ${parsed.reason}`);
+              return parsed.orientation || 'upright';
+            }
+          } catch (e) {
+            console.warn('[ECG] Orientation detection failed:', e.message);
+          }
+          return 'upright'; // safe default
+        };
+
+        // correctECGOrientation: rotates the image buffer using sharp to make it upright
+        const correctECGOrientation = async (imgBytes, orientation) => {
+          if (orientation === 'upright') return imgBytes; // no correction needed
+          const rotateMap = {
+            rotated_90_left:  90,   // rotate clockwise 90° to correct
+            rotated_90_right: 270,  // rotate counter-clockwise 90° (= 270° clockwise)
+            rotated_180:      180   // flip upside down
+          };
+          const degrees = rotateMap[orientation] || 0;
+          if (degrees === 0) return imgBytes;
+          try {
+            const corrected = await sharp(Buffer.from(imgBytes)).rotate(degrees).jpeg({ quality: 90 }).toBuffer();
+            console.log(`[ECG] Image corrected: rotated ${degrees}° clockwise`);
+            return corrected;
+          } catch (e) {
+            console.warn('[ECG] Image rotation failed:', e.message, '— using original');
+            return imgBytes;
+          }
+        };
+
+        // analyseECGWaveform: sends a corrected (upright) ECG image to Claude for
+        // clinical waveform analysis. Returns structured findings.
+        const analyseECGWaveform = async (imgBytes) => {
+          try {
+            const res = await __client.send(new ConverseCommand({
+              modelId,
+              system: [{ text: 'You are an experienced cardiologist interpreting ECG waveforms for insurance underwriting. Analyse the waveform carefully and return structured findings. Return ONLY valid JSON.' }],
+              messages: [{ role: 'user', content: [
+                { image: { format: 'jpeg', source: { bytes: imgBytes } } },
+                { text: `Analyse this ECG waveform carefully. Look at the actual traces, not just any printed text on the page.
+
+Return ONLY this JSON:
+{
+  "rhythm": "sinus_regular|sinus_irregular|atrial_fibrillation|atrial_flutter|other",
+  "heart_rate_bpm": null,
+  "pr_interval_ms": null,
+  "pr_assessment": "normal|prolonged|short|not_measurable",
+  "qrs_duration_ms": null,
+  "qrs_assessment": "normal|wide_lbbb|wide_rbbb|wide_other|not_measurable",
+  "st_segment": "normal|elevated|depressed|not_assessable",
+  "t_wave": "normal|inverted|peaked|biphasic|flat|not_assessable",
+  "qtc_assessment": "normal|borderline_prolonged|prolonged|not_measurable",
+  "axis": "normal|left_axis_deviation|right_axis_deviation|not_assessable",
+  "lvh_voltage_criteria": false,
+  "pathological_q_waves": false,
+  "specific_findings": ["list any notable findings — e.g. First degree AV block, ST depression in V4-V6, T wave inversion in III"],
+  "overall_interpretation": "normal|borderline|abnormal",
+  "interpretation_reason": "plain English sentence explaining the verdict",
+  "ai_confidence": "high|medium|low",
+  "disclaimer": "AI preliminary screen only — clinical correlation required"
+}
+
+Rules:
+- Base your verdict on the WAVEFORM only, not on any printed text interpretation on the page
+- If leads are too faint or image quality is poor, set ai_confidence to low and note it
+- A single isolated finding like first-degree AV block → borderline
+- ST changes, LBBB, AF, significant LVH, pathological Q waves → abnormal
+- If you cannot reliably read the waveform, return overall_interpretation: "not_assessable"` }
+              ]}],
+              inferenceConfig: { maxTokens: 800, temperature: 0 }
+            }));
+            const txt = res.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+            const m = txt.match(/\{[\s\S]*\}/);
+            if (m) {
+              const result = JSON.parse(m[0]);
+              console.log(`[ECG] Waveform analysis: ${result.overall_interpretation} (confidence: ${result.ai_confidence}) — ${result.interpretation_reason}`);
+              return result;
+            }
+          } catch (e) {
+            console.warn('[ECG] Waveform analysis failed:', e.message);
+          }
+          return null;
+        };
+
+        // isECGPage: detect if a page contains an ECG waveform graph (not just a text report)
+        // Uses the diagnostic description text already computed per page, plus raw_parameters check
+        const isECGGraphPage = (descriptionText, pd) => {
+          const txt = (descriptionText || '').toLowerCase();
+          // Strong signals: grid pattern + lead labels
+          const hasGrid   = /grid|graph|trace|waveform|rhythm strip|ecg strip/i.test(txt);
+          const hasLeads  = /\b(lead|avr|avl|avf|v[1-6]|v1|v2|v3|v4|v5|v6)\b/i.test(txt);
+          const hasQRS    = /\b(qrs|p wave|t wave|r wave|s wave|peak|deflection)\b/i.test(txt);
+          const hasMM     = /\b(mm\/s|mv|milli|25mm)\b/i.test(txt);
+          // Exclude pure text report pages (those have "impression", "report", "patient" but no graph)
+          const isPureText = /impression:|ecg status:|reviewed by:|report generated/i.test(txt) && !hasGrid;
+          if (isPureText) return false;
+          return (hasGrid && hasLeads) || (hasGrid && hasQRS) || (hasLeads && hasQRS) || hasMM;
+        };
+
         // ── Extract just the page-image blocks for per-page sequential scanning ──
         // Each image block becomes one page we scan individually (Sequential + Process-all).
         const pageImages = converseContent.filter(b => b.image);
@@ -1530,7 +1897,7 @@ app.post('/api/workflow/:id/submit-documents', requireAuth, async (req, res) => 
         const __client = await getBedrockClient();
 
         // One combined schema per page — the page may contain physical, lab, or nothing.
-        const PAGE_SCHEMA = `Return ONLY valid JSON (no markdown, no prose). If this page has NO medical values, return {"parameters_found":0}.
+        const PAGE_SCHEMA = `Return ONLY valid JSON (no markdown, no prose). This page may contain EITHER lab/measurement values OR a Yes/No questionnaire (or both) — TeleMER form pages have NO lab values at all but DO have numbered Yes/No questions with tick boxes and handwritten notes, and that content must still be extracted. Only return {"parameters_found":0} if the page is truly blank, a photo with no text, or an ID card with nothing relevant — never just because lab values are absent while questions are present.
 {
   "page_type": "lab_report|exam_form|photo|id_card|other",
   "lifestyle": { "smoking": {"status":"never|former|current"}, "alcohol": {"status":"never|occasional|regular|heavy"}, "tobacco_chewing": {"status":"never|former|current"}, "occupation_hazard": "none|low|moderate|high", "exercise": {"frequency":"none|occasional|regular|daily"} },
@@ -1708,7 +2075,31 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 
         for (let pi = 0; pi < pageImages.length; pi++) {
           const pageNum = pi + 1;
+          // Emit per-page progress (pages span 20%-65% of total progress)
+          const _pagePercent = 20 + Math.round((pi / Math.max(pageImages.length, 1)) * 45);
+          socketManager.emitGlobal('extraction_progress', {
+            workflow_id: wf.id, stage: 'reading_pages',
+            docs_done: _docsDone || 0, docs_total: _docsTotal,
+            pages_done: pi, pages_total: pageImages.length,
+            percent: _pagePercent,
+            message: `Reading page ${pageNum} of ${pageImages.length}...`
+          });
           try {
+            // ── Page description — used for diagnostics AND ECG detection ─────
+            let _pageDescTxt = '';
+            try {
+              const descRes = await __client.send(new ConverseCommand({
+                modelId,
+                system: [{ text: 'You are looking at one page image. Describe in plain English exactly what you see — do not return JSON.' }],
+                messages: [{ role: 'user', content: [ pageImages[pi], { text: 'Describe everything visible on this page: is there printed text, handwriting, tables, tick marks, a photo, ECG waveform graph with grid lines and lead labels, or is the page blank? Be specific and brief (2-4 sentences).' } ] }],
+                inferenceConfig: { maxTokens: 300, temperature: 0 }
+              }));
+              _pageDescTxt = descRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+              console.log(`[DiagDescribe] Page ${pageNum}/${pageImages.length}:`, _pageDescTxt.replace(/\n/g, ' '));
+            } catch (descErr) {
+              console.error(`[DiagDescribe] Page ${pageNum} describe call failed:`, descErr.message);
+            }
+
             // First attempt: one combined call for the whole page.
             let r = await _callPage(pageImages[pi], pagePrompt);
             let _pin = r.in, _pout = r.out;
@@ -1753,7 +2144,52 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
             }
             const isLabPage = pd.page_type === 'lab_report';
 
-            // ── Per-page record for the UI (page image ↔ extracted values) ──
+            // ── ECG Waveform AI Analysis ──────────────────────────────────────
+            // If this page looks like an ECG graph (not just a printed text report),
+            // run orientation detection + waveform analysis and merge into cardiac.ecg
+            let _ecgAiResult = null;
+            if (isECGGraphPage(_pageDescTxt, pd)) {
+              console.log(`[ECG] Page ${pageNum}: detected as ECG graph — running AI waveform analysis`);
+              try {
+                const rawBytes = pageImages[pi]?.image?.source?.bytes;
+                if (rawBytes) {
+                  // Step 1: detect orientation
+                  const orientation = await detectECGOrientation(rawBytes);
+                  // Step 2: correct orientation if needed
+                  const correctedBytes = await correctECGOrientation(rawBytes, orientation);
+                  // Step 3: analyse the corrected waveform
+                  _ecgAiResult = await analyseECGWaveform(correctedBytes);
+                  if (_ecgAiResult) {
+                    _ecgAiResult._page = pageNum;
+                    _ecgAiResult._orientation_detected = orientation;
+                    _ecgAiResult._orientation_corrected = orientation !== 'upright';
+                    // Merge into extractedData.cardiac.ecg — AI result takes priority
+                    // over the text-scanned interpretation if confidence is medium or high
+                    const shouldOverride = _ecgAiResult.overall_interpretation !== 'not_assessable' &&
+                                           (_ecgAiResult.ai_confidence === 'high' || _ecgAiResult.ai_confidence === 'medium');
+                    if (shouldOverride) {
+                      if (!extractedData.cardiac) extractedData.cardiac = {};
+                      extractedData.cardiac.ecg = {
+                        overall_interpretation: _ecgAiResult.overall_interpretation,
+                        findings: _ecgAiResult.specific_findings?.join('; ') || '',
+                        ai_analysis: _ecgAiResult,
+                        _source: 'ai_waveform_analysis'
+                      };
+                      console.log(`[ECG] ✓ Merged AI waveform result: ${_ecgAiResult.overall_interpretation} — ${_ecgAiResult.interpretation_reason}`);
+                    } else {
+                      console.log(`[ECG] Low confidence or not assessable — keeping text-scanned result`);
+                      if (!extractedData.cardiac) extractedData.cardiac = {};
+                      if (!extractedData.cardiac.ecg) extractedData.cardiac.ecg = {};
+                      extractedData.cardiac.ecg.ai_analysis = _ecgAiResult; // attach for reference
+                    }
+                  }
+                }
+              } catch (ecgErr) {
+                console.warn(`[ECG] Page ${pageNum}: AI analysis error —`, ecgErr.message);
+              }
+            }
+
+
             // Build a flat value list from raw_parameters (lossless) plus any mapped leaves on this page.
             const _pageVals = [];
             if (Array.isArray(pd.raw_parameters)) {
@@ -1764,7 +2200,16 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 
             // ── Row-by-row Yes/No for form pages (replaces the holistic grid read) ──
             // Trigger when the holistic pass saw any questions or thinks it's a form page.
-            const _looksLikeForm = (pd.page_type === 'exam_form') || (Array.isArray(pd.yes_no) && pd.yes_no.length > 0);
+            // Safety net: also trigger when the holistic pass found NOTHING at all
+            // (parameters_found:0, no lab values, no page_type) — this is exactly the
+            // shape returned for a pure Yes/No page under the old prompt instruction,
+            // so we can't assume "found nothing" means "nothing to find". The discovery
+            // stage inside _extractYesNoRowByRow independently re-checks the image and
+            // is cheap to skip (one call) if the page genuinely has no questions.
+            const _foundNothingAtAll = !pd.page_type
+              && (!Array.isArray(pd.raw_parameters) || pd.raw_parameters.length === 0)
+              && (!Array.isArray(pd.yes_no) || pd.yes_no.length === 0);
+            const _looksLikeForm = (pd.page_type === 'exam_form') || (Array.isArray(pd.yes_no) && pd.yes_no.length > 0) || _foundNothingAtAll;
             let _yesNo;
             if (_looksLikeForm) {
               try {
@@ -1788,7 +2233,8 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
               free_text: Array.isArray(pd.free_text) ? pd.free_text : [],
               medications: pd.correlation_data?.medications_found || [],
               was_split: wasSplit,
-              tokens: { input: _pin, output: _pout }
+              tokens: { input: _pin, output: _pout },
+              ecg_ai_analysis: _ecgAiResult || null  // AI waveform result if this was an ECG page
             });
 
             // Merge LAB sections — lab page values always win; non-lab page lab values only fill empty slots
@@ -1855,6 +2301,17 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
           cost_inr: Math.round(_inr * 100) / 100,
           pages_scanned: pagesScanned, model: modelId, duration_ms: elapsed
         };
+        // Merge in any pages handled via direct text extraction (pdftotext) instead
+        // of image rasterization — these were never part of the per-page image loop.
+        if (textBasedPages.length > 0) {
+          for (const tp of textBasedPages) {
+            wf.extraction_usage.input_tokens  += tp.tokens?.input  || 0;
+            wf.extraction_usage.output_tokens += tp.tokens?.output || 0;
+          }
+          wf.extraction_usage.total_tokens = wf.extraction_usage.input_tokens + wf.extraction_usage.output_tokens;
+          pageExtractions.push(...textBasedPages);
+          console.log(`[Extraction] Merged ${textBasedPages.length} text-extracted page(s) into page_extractions`);
+        }
         // Attach the per-page records for the Page-by-Page Extraction subtab.
         wf.page_extractions = pageExtractions;
         console.log(`[Extraction] Tokens: ${totalInTok} in + ${totalOutTok} out | $${_usd.toFixed(4)} | ₹${_inr.toFixed(2)}`);
@@ -2034,7 +2491,11 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
         }
         wf.state_history.push({ state: 'extraction_complete', timestamp: new Date().toISOString(), actor: 'AI Engine',
           note: `Extracted ${extractedData.parameters_found||0} parameters from ${wf.documents.length} document(s) via Converse API` });
-
+        socketManager.emitGlobal('extraction_progress', {
+          workflow_id: wf.id, stage: 'extracted',
+          docs_done: _docsTotal, docs_total: _docsTotal,
+          percent: 65, message: `Extracted ${extractedData.parameters_found||0} parameters — running clinical analysis...`
+        });
 
       } catch(claudeErr) {
         console.error('[Extraction] ❌ EXTRACTION FAILED — full error details:');
@@ -2079,6 +2540,11 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
     // ICMR Indian-population guidelines using Bedrock.
     // Does NOT re-score numeric values — Per-CAT Scoring Config handles those.
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'icmr_analysis', message: 'Running ICMR clinical text analysis...' });
+    socketManager.emitGlobal('extraction_progress', {
+      workflow_id: wf.id, stage: 'icmr_analysis',
+      docs_done: _docsTotal || wf.documents.length, docs_total: _docsTotal || wf.documents.length,
+      percent: 75, message: 'Running clinical correlation analysis...'
+    });
     try {
       const _icmrGuidelines = await s3Client.getConfig('icmr-guidelines').catch(() => null);
       const _icmrResult     = await icmrAnalyser.runICMRAnalysis(wf, _icmrGuidelines?.text || null);
@@ -2097,6 +2563,11 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 
     // Step 2: Run AI analysis against rules (numeric Per-CAT scoring)
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'analyzing', message: 'Scoring against UW rules...' });
+    socketManager.emitGlobal('extraction_progress', {
+      workflow_id: wf.id, stage: 'scoring',
+      docs_done: _docsTotal || wf.documents.length, docs_total: _docsTotal || wf.documents.length,
+      percent: 90, message: 'Scoring against underwriting rules...'
+    });
     wf.state_history.push({ state: 'rule_engine_started', timestamp: new Date().toISOString(), actor: 'Rule Engine', note: 'Evaluating against medical-scoring, uw-guidelines, risk-params' });
 
     const analysis = await runAIAnalysis(wf);
@@ -2171,6 +2642,12 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
     }, ['email','sms']);
 
     socketManager.emitGlobal('workflow_update', { workflow_id: wf.id, state: 'ai_analysis_complete', decision: wf.decision });
+    socketManager.emitGlobal('extraction_progress', {
+      workflow_id: wf.id, stage: 'complete',
+      docs_done: _docsTotal || wf.documents.length, docs_total: _docsTotal || wf.documents.length,
+      percent: 100, message: 'Analysis complete — loading decision...',
+      decision: wf.decision?.recommendation || 'complete'
+    });
 
     // Step 4: Auto-generate AI summary (non-blocking — don't fail the request if summary fails)
     try {
@@ -2240,6 +2717,447 @@ CRITICAL LAYOUT: each question row has THREE columns — column 1 (WIDE left) is
 });
 
 // AI Analysis function
+// ─────────────────────────────────────────────────────────────────────────────
+// assembleTeleMERDataFromPDF
+// ─────────────────────────────────────────────────────────────────────────────
+// Converts raw page_extractions (yes_no[], handwritten_note, free_text[]) that
+// Bedrock produced from an uploaded TeleMER PDF into the exact telemer_data
+// structure that calculateTeleMERRiskDynamic() and detectContradictions() need.
+//
+// Called inside runAIAnalysis() when catForAI.cat === 'tele_mer' and the data
+// arrived via document upload (not the live interview API).  Never touches
+// CAT 1-4 workflows.
+//
+// Output written directly into extractedData.telemer_data so the rest of the
+// scoring pipeline sees it without any other changes.
+// ─────────────────────────────────────────────────────────────────────────────
+async function assembleTeleMERDataFromPDF(wf, extractedData) {
+  const pageExtractions = wf.page_extractions || [];
+  if (!pageExtractions.length) {
+    console.log('[TeleMER Assemble] No page_extractions — skipping assembly');
+    return;
+  }
+
+  // ── Step 1: Collect all yes_no rows and free_text across all pages ─────────
+  const allYesNo   = [];   // { q_number, answer:'yes'|'no', handwritten_note }
+  const allFreeText = [];  // raw strings
+
+  for (const pg of pageExtractions) {
+    if (Array.isArray(pg.yes_no)) {
+      for (const row of pg.yes_no) {
+        if (row && row.q_number) allYesNo.push(row);
+      }
+    }
+    if (Array.isArray(pg.free_text)) {
+      for (const ft of pg.free_text) {
+        if (ft && String(ft).trim()) allFreeText.push(String(ft).trim());
+      }
+    }
+  }
+  console.log(`[TeleMER Assemble] ${allYesNo.length} yes/no rows, ${allFreeText.length} free-text blocks across ${pageExtractions.length} pages`);
+
+  // ── Step 2: Build answers{} map  q1..q48 → true/false ────────────────────
+  const answers = {};
+  const detail_text = {};   // q_number → handwritten note (free text detail)
+  const notesByQ = {};      // accumulate multiple notes for same question
+
+  for (const row of allYesNo) {
+    const qKey = 'q' + String(row.q_number).replace(/\D/g, '');
+    if (!qKey || qKey === 'q') continue;
+
+    // Normalise answer across all three extraction formats:
+    //   text-based PDF:   row.answer = "yes"|"no"
+    //   image-based PDF:  row.tick_column = "yes_col"|"no_col"
+    //   older image pass: row.middle_box_marked = true|false
+    let isYes = false, isNo = false;
+    if (row.answer !== undefined && row.answer !== null) {
+      const a = String(row.answer).toLowerCase().trim();
+      isYes = a === 'yes'; isNo = a === 'no';
+    } else if (row.tick_column !== undefined) {
+      isYes = row.tick_column === 'yes_col'; isNo = row.tick_column === 'no_col';
+    } else if (row.middle_box_marked !== undefined) {
+      isYes = row.middle_box_marked === true; isNo = row.middle_box_marked === false;
+    }
+    // Only record if we got a definitive answer
+    if (isYes || isNo) answers[qKey] = isYes;
+
+    // Accumulate all handwritten notes for this question
+    const note = (row.handwritten_note || '').trim();
+    if (note) {
+      notesByQ[qKey] = notesByQ[qKey] ? notesByQ[qKey] + ' ' + note : note;
+    }
+  }
+  for (const [k, v] of Object.entries(notesByQ)) detail_text[k] = v;
+
+  console.log('[TeleMER Assemble] answers built:', Object.keys(answers).length, 'questions');
+  console.log('[TeleMER Assemble] detail_text keys:', Object.keys(detail_text).join(', ') || 'none');
+
+  // ── Step 3: Calling date — use wf.created_at or free_text parse ───────────
+  // The PDF header says "Calling Date: 20 March 2026". The per-page extractor
+  // puts it in free_text.  Fallback to wf.created_at.
+  let calling_date = null;
+  const datePattern = /calling\s*date[:\s]+(\d{1,2}\s+\w+\s+\d{4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{4}-\d{2}-\d{2})/i;
+  const allText = allFreeText.concat(Object.values(detail_text)).join(' ');
+  const dateMatch = allText.match(datePattern);
+  if (dateMatch) {
+    try { calling_date = new Date(dateMatch[1]).toISOString().split('T')[0]; } catch(_) {}
+  }
+  if (!calling_date) {
+    calling_date = (wf.created_at || new Date().toISOString()).split('T')[0];
+  }
+  console.log('[TeleMER Assemble] calling_date:', calling_date);
+
+  // ── Step 4: Examiner remarks — Q48 handwritten note ──────────────────────
+  const examiner_remarks = detail_text['q48'] || notesByQ['q48'] || '';
+  console.log('[TeleMER Assemble] Q48 remarks:', examiner_remarks.substring(0, 120) || '(none)');
+
+  // ── Step 5: Lifestyle — Q7 ────────────────────────────────────────────────
+  // Q7 asks: "Cigarette / Beedi / Pan / Gutkha / Alcohol"
+  // answer=false (No) → never for all three substances
+  // answer=true (Yes) → parse handwritten_note for detail
+  const q7Answer  = answers['q7'];   // true=Yes, false=No, undefined=not found
+  const q7Detail  = (detail_text['q7'] || '').toLowerCase();
+  let smoking = { status: q7Answer === undefined ? 'unknown' : 'never' };
+  let alcohol  = { status: q7Answer === undefined ? 'unknown' : 'never' };
+  let tobacco  = { status: q7Answer === undefined ? 'unknown' : 'never' };
+
+  if (q7Answer === true) {
+    // Has habits — parse detail text
+    const hasSmoke   = /cigarette|beedi|bidi|smok/i.test(q7Detail);
+    const hasAlcohol = /alcohol|beer|wine|whisky|brandy|rum/i.test(q7Detail);
+    const hasTobacco = /gutkha|pan\b|khaini|zarda|tobacco|chewing/i.test(q7Detail);
+    const quitMatch  = q7Detail.match(/quit\s*(?:since\s*)?(\d+)\s*(?:yr|year)/i);
+    const quitYears  = quitMatch ? parseInt(quitMatch[1]) : 0;
+
+    if (hasSmoke) {
+      smoking = quitYears > 0
+        ? { status: quitYears > 5 ? 'former_gt5' : 'former', years_quit: quitYears }
+        : { status: 'current' };
+    }
+    if (hasAlcohol) {
+      const isOcc  = /occasional|social|weekend/i.test(q7Detail);
+      const isReg  = /regular|daily|every\s*day|\d+\s*times?\s*(?:a|per)\s*week/i.test(q7Detail);
+      alcohol = { status: isOcc ? 'occasional' : isReg ? 'regular' : 'current' };
+    }
+    if (hasTobacco) {
+      const tobQuit = q7Detail.match(/quit\s*(?:since\s*)?(\d+)\s*(?:yr|year)/i);
+      tobacco = tobQuit
+        ? { status: 'former', years_quit: parseInt(tobQuit[1]) }
+        : { status: 'current' };
+    }
+  }
+  // If Q7 was explicitly No → all never (already set above as defaults)
+  const lifestyle = {
+    smoking,
+    alcohol,
+    tobacco_chewing: tobacco,
+    occupation_hazard: extractedData.lifestyle?.occupation_hazard || wf.lifestyle?.occupation_hazard || 'none',
+    exercise: extractedData.lifestyle?.exercise || { frequency: 'unknown' },
+    _source: 'telemer_pdf_q7'
+  };
+  console.log(`[TeleMER Assemble] Lifestyle — Smoking: ${smoking.status}, Alcohol: ${alcohol.status}, Tobacco: ${tobacco.status}`);
+
+  // ── Step 6: Family history — Q9 ──────────────────────────────────────────
+  const q9Detail = (detail_text['q9'] || '').toLowerCase();
+  const family_history = {
+    cardiac:      /heart|cardiac|coronary/i.test(q9Detail),
+    diabetes:     /diabetes|blood\s*sugar|dm\b/i.test(q9Detail),
+    cancer:       /cancer|carcinoma|tumou?r|malignancy|leukaemia|lymphoma/i.test(q9Detail),
+    hypertension: /htn|hypertension|blood\s*pressure/i.test(q9Detail),
+    stroke:       /stroke|tia|paralys/i.test(q9Detail),
+    details:      detail_text['q9'] || ''
+  };
+  if (answers['q9'] === false) {
+    // Q9 answered No — clear all
+    Object.assign(family_history, { cardiac:false, diabetes:false, cancer:false, hypertension:false, stroke:false });
+  }
+  console.log('[TeleMER Assemble] Family history:', JSON.stringify(family_history));
+
+  // ── Step 7: Pre-existing conditions from Q2/Q3/Q48 detail ────────────────
+  // Parse free-text detail in Q2, Q3, Q48 to build structured PEC list
+  const conditionSources = [detail_text['q2'], detail_text['q3'], examiner_remarks]
+    .filter(Boolean).join(' ');
+
+  const pre_existing_conditions = [];
+  let __pecFromAI = false;
+
+  // ── PRIMARY: AI-based structured condition extraction ──────────────────
+  // Reading Q2/Q3/Q48 with fixed keyword regex means every new condition
+  // wording (e.g. "C/O-VARICOSE VEINS", "K/C/O-DM") has to be anticipated and
+  // hand-coded in advance, and numeric patterns like "since 6-7 years" silently
+  // fail when they don't match the exact expected shape. Ask the model to read
+  // the same text directly and return whatever conditions are actually present,
+  // instead of pattern-matching against a fixed list. Falls back to the regex
+  // blocks below (now also fixed for both issues) if this call fails for any
+  // reason — never leaves pre_existing_conditions silently empty.
+  if (conditionSources.trim().length > 20) {
+    try {
+      const __pecClient = await getBedrockClient();
+      const __pecPrompt = `Extract every medical condition mentioned in this TeleMER declaration text into structured JSON. Return ONLY valid JSON, no markdown.
+{"conditions":[{"condition_name":"","medication":null,"duration_years_min":null,"duration_years_max":null,"bp_systolic":null,"bp_diastolic":null,"hba1c":null,"fbs_mgdl":null,"complications_declared":false,"compliance_note":""}]}
+Rules: include EVERY condition mentioned (diabetes, hypertension, varicose veins, thyroid, cholesterol, cardiac, or anything else) — do not skip any, even ones without medication or readings. If a duration is given as a range like "6-7 years", set duration_years_min=6 and duration_years_max=7. If a single number, set both to that number. bp_systolic/diastolic only for hypertension-type readings (e.g. "130/86"). hba1c/fbs_mgdl only for diabetes-type readings. compliance_note should capture anything about irregular/non-standard dosing (e.g. "takes alternate day" when prescribed once daily) — leave empty string if nothing notable. condition_name should be a clean clinical name (e.g. "Hypertension", "Type 2 Diabetes", "Varicose Veins"), not the raw abbreviation.
+
+TEXT:
+${conditionSources.substring(0, 8000)}`;
+      const __pecRes = await __pecClient.send(new ConverseCommand({
+        modelId: process.env.BEDROCK_INFERENCE_PROFILE || process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0',
+        system: [{ text: 'You are a precise medical text extraction AI. Return ONLY valid JSON, no markdown, no prose.' }],
+        messages: [{ role: 'user', content: [{ text: __pecPrompt }] }],
+        inferenceConfig: { maxTokens: 2048, temperature: 0 }
+      }));
+      const __pecTxt = __pecRes.output?.message?.content?.filter(b => b.text)?.map(b => b.text)?.join('') || '';
+      const __pecMatch = __pecTxt.match(/\{[\s\S]*\}/);
+      if (__pecMatch) {
+        const __pecParsed = JSON.parse(__pecMatch[0]);
+        if (Array.isArray(__pecParsed.conditions) && __pecParsed.conditions.length > 0) {
+          for (const c of __pecParsed.conditions) {
+            if (!c.condition_name) continue;
+            const durMin = c.duration_years_min != null ? Number(c.duration_years_min) : null;
+            const sinceYear = durMin != null ? new Date().getFullYear() - durMin : null;
+            pre_existing_conditions.push({
+              condition:              c.condition_name,
+              icd10_code:             null,
+              current_status:         'active',
+              medication:             (typeof c.medication === 'string' && c.medication.trim()) ? c.medication.trim() : 'unknown',
+              since_year:             sinceYear,
+              last_reading_systolic:  c.bp_systolic  != null ? Number(c.bp_systolic)  : null,
+              last_reading_diastolic: c.bp_diastolic != null ? Number(c.bp_diastolic) : null,
+              hba1c:                  c.hba1c        != null ? Number(c.hba1c)        : null,
+              fbs:                    c.fbs_mgdl     != null ? Number(c.fbs_mgdl)     : null,
+              reading_verified:       c.bp_systolic != null || c.hba1c != null || c.fbs_mgdl != null,
+              duration_months:        durMin != null ? durMin * 12 : null,
+              complications_declared: !!c.complications_declared,
+              compliance_note:        c.compliance_note || '',
+              _source:                'telemer_pdf_ai_extraction'
+            });
+          }
+          __pecFromAI = pre_existing_conditions.length > 0;
+          console.log(`[TeleMER Assemble] PEC extracted via AI: ${pre_existing_conditions.map(c=>c.condition).join(', ')} | tokens: ${__pecRes.usage?.inputTokens}/${__pecRes.usage?.outputTokens}`);
+        }
+      }
+    } catch (pecErr) {
+      console.warn('[TeleMER Assemble] AI-based PEC extraction failed:', pecErr.message, '— falling back to regex parsing');
+    }
+  }
+
+  // ── FALLBACK: regex-based condition parsing ─────────────────────────────
+  // Only runs if the AI extraction above failed or found nothing. Two fixes
+  // applied vs the original version: (1) duration regex now handles ranges
+  // like "6-7 years" / "3-4 years" instead of silently failing on them —
+  // confirmed via direct testing that the original pattern returned NULL on
+  // this exact wording; (2) Varicose Veins added as a recognized condition
+  // type — confirmed it was entirely absent from the keyword list before.
+  if (!__pecFromAI) {
+    // HTN / Blood Pressure
+    const htnMatch = conditionSources.match(/(?:htn|hypertension|high\s*bp|blood\s*pressure)[^.]*?since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const bpReading = conditionSources.match(/(\d{2,3})\s*[\/\-]\s*(\d{2,3})\s*(?:mm\s*of\s*hg|mmhg)?/i);
+    const htnMed    = conditionSources.match(/tab\s+([\w\s]+?)\s+(?:\d+\s*mg)/i) ||
+                      conditionSources.match(/(telmisartan|telma|amlodipine|enalapril|ramipril|losartan|metoprolol|coversyl|diovan|atenolol|nebivolol)[^,\s]*/i);
+    if (htnMatch || /htn|hypertension/i.test(conditionSources)) {
+      const durationMonths = htnMatch
+        ? (htnMatch[2].toLowerCase().startsWith('year')
+            ? parseInt(htnMatch[1]) * 12
+            : parseInt(htnMatch[1]))
+        : null;
+      const sinceYear = durationMonths
+        ? new Date().getFullYear() - Math.floor(durationMonths / 12)
+        : null;
+      const medName = htnMed ? htnMed[1].trim() : null;
+      const bpSys   = bpReading ? parseInt(bpReading[1]) : null;
+      const bpDia   = bpReading ? parseInt(bpReading[2]) : null;
+      const isControlled = medName && bpSys && bpSys <= 140;
+      pre_existing_conditions.push({
+        condition:              'Hypertension',
+        icd10_code:             'I10',
+        current_status:         isControlled ? 'active' : 'active',
+        medication:             medName || 'unknown',
+        since_year:             sinceYear,
+        last_reading_systolic:  bpSys,
+        last_reading_diastolic: bpDia,
+        reading_verified:       bpSys !== null,
+        duration_months:        durationMonths,
+        _source:                'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Diabetes
+    const dmMatch = conditionSources.match(/(?:dm|diabetes|blood\s*sugar|t2dm)[^.]*?since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const hba1cMatch = conditionSources.match(/hba1c\s*[:\s]*(\d+\.?\d*)/i);
+    const fbsMatch   = conditionSources.match(/fbs\s*[:\s]*(\d+)/i) || conditionSources.match(/fasting\s*(?:blood\s*sugar)?\s*[:\s]*(\d+)/i);
+    const dmMed      = conditionSources.match(/(metformin|janumet|januvia|glimepiride|glipizide|insulin|dapagliflozin|sitagliptin|reclimet)[^,\s]*/i);
+    if (dmMatch || /\b(?:dm|diabetes)\b/i.test(conditionSources)) {
+      const durationMonths = dmMatch
+        ? (dmMatch[2].toLowerCase().startsWith('year') ? parseInt(dmMatch[1]) * 12 : parseInt(dmMatch[1]))
+        : null;
+      pre_existing_conditions.push({
+        condition:      'Type 2 Diabetes',
+        icd10_code:     'E11',
+        current_status: 'active',
+        medication:     dmMed ? dmMed[1] : 'unknown',
+        since_year:     durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
+        hba1c:          hba1cMatch ? parseFloat(hba1cMatch[1]) : null,
+        fbs:            fbsMatch   ? parseFloat(fbsMatch[1])   : null,
+        reading_verified: !!(hba1cMatch || fbsMatch),
+        duration_months: durationMonths,
+        _source:        'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Thyroid
+    const thyMed = conditionSources.match(/(levothyroxine|eltroxin|thyroxine|thyronorm)[^,\s]*/i);
+    if (/thyroid|hypothyroid|hyperthyroid/i.test(conditionSources)) {
+      pre_existing_conditions.push({
+        condition: 'Thyroid disorder', icd10_code: 'E07.9',
+        current_status: 'active', medication: thyMed ? thyMed[1] : 'unknown',
+        _source: 'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Cholesterol / Dyslipidaemia
+    const statinMed = conditionSources.match(/(rosuvastatin|atorvastatin|simvastatin|rosuvas|lipitor)[^,\s]*/i);
+    if (/cholesterol|dyslipidaemia|statin|lipid/i.test(conditionSources)) {
+      pre_existing_conditions.push({
+        condition: 'Dyslipidaemia', icd10_code: 'E78.5',
+        current_status: 'active', medication: statinMed ? statinMed[1] : 'unknown',
+        _source: 'telemer_pdf_q2q3q48_regex'
+      });
+    }
+
+    // Varicose Veins — was entirely missing before; confirmed via grep on a
+    // real case where this is explicitly declared (Q8) and is the only
+    // condition type with zero handling anywhere in this file.
+    if (/varicose/i.test(conditionSources)) {
+      pre_existing_conditions.push({
+        condition: 'Varicose Veins', icd10_code: 'I83.9',
+        current_status: 'active', medication: 'none',
+        _source: 'telemer_pdf_q2q3q48_regex'
+      });
+    }
+  }
+
+  console.log(`[TeleMER Assemble] PEC list (${__pecFromAI ? 'AI' : 'regex fallback'}): ${pre_existing_conditions.map(c=>c.condition).join(', ') || 'none'}`);
+
+  // ── Step 8: Surgical history — Q5 ────────────────────────────────────────
+  const surgical_history = [];
+  const q5Detail = (detail_text['q5'] || '').toLowerCase();
+  if (answers['q5'] === true && q5Detail) {
+    const surgYr = q5Detail.match(/(\d{4})/)?.[1];
+    surgical_history.push({
+      procedure: detail_text['q5'] || 'Surgery declared',
+      year: surgYr ? parseInt(surgYr) : null,
+      records_available: !/no\s*record|record\s*(?:not|unavail)/i.test(q5Detail),
+      _source: 'telemer_pdf_q5'
+    });
+  }
+  // Gallstone — cross-reference Q17
+  const gallRef = conditionSources.match(/gall\s*(?:stone|bladder|cholecyst)/i);
+  if (gallRef && answers['q17'] !== true) {
+    const gallYr = conditionSources.match(/(?:gall[^.]*?)(\d{4})/i)?.[1];
+    surgical_history.push({
+      procedure: 'Gallbladder surgery / Gallstone',
+      year: gallYr ? parseInt(gallYr) : null,
+      records_available: true,
+      _source: 'telemer_pdf_q2q3'
+    });
+  }
+  // Spine — cross-reference Q24/Q25
+  const spineRef = conditionSources.match(/spine|lumbar|sciatica|laminectomy|spinal\s*surgery/i);
+  if (spineRef) {
+    const spineYr = conditionSources.match(/(?:spine|lumbar|sciatica)[^.]*?(\d{4})/i)?.[1];
+    surgical_history.push({
+      procedure: 'Spinal surgery',
+      year: spineYr ? parseInt(spineYr) : null,
+      records_available: true,
+      _source: 'telemer_pdf_q2q5'
+    });
+  }
+
+  // ── Step 9: Hospitalizations — Q4 ────────────────────────────────────────
+  const hospitalizations = [];
+  if (answers['q4'] === true) {
+    hospitalizations.push({ reason: detail_text['q4'] || 'Declared', year: new Date().getFullYear() });
+  }
+
+  // ── Step 10: BMI / height / weight from PDF header ────────────────────────
+  // These are in free_text because they're in the "Personal Information" table,
+  // not a yes/no question. Try to pull them if not already in physical_exam.
+  const fullText = allFreeText.join(' ') + ' ' + Object.values(detail_text).join(' ');
+  if (!extractedData.physical_exam?.bmi?.value) {
+    const bmiM   = fullText.match(/bmi\s*[:\s]*(\d+\.?\d*)/i);
+    const htM    = fullText.match(/height\s*(?:\(cm\))?\s*[:\s]*(\d+\.?\d*)/i);
+    const wtM    = fullText.match(/weight\s*(?:\(kg\))?\s*[:\s]*(\d+\.?\d*)/i);
+    if (!extractedData.physical_exam) extractedData.physical_exam = {};
+    if (bmiM) {
+      const bmi = parseFloat(bmiM[1]);
+      if (bmi > 10 && bmi < 70) {
+        extractedData.physical_exam.bmi = { value: bmi, flag: bmi < 18.5 ? 'low' : bmi < 25 ? 'normal' : 'high', source: 'telemer_pdf_header' };
+        console.log('[TeleMER Assemble] BMI from PDF header:', bmi);
+      }
+    }
+    if (htM)  extractedData.physical_exam.height_cm = parseFloat(htM[1]);
+    if (wtM)  extractedData.physical_exam.weight_kg = parseFloat(wtM[1]);
+  }
+
+  // ── Step 11: Write everything into extractedData.telemer_data ────────────
+  if (!extractedData.telemer_data) extractedData.telemer_data = {};
+
+  extractedData.telemer_data.answers         = answers;
+  extractedData.telemer_data.detail_text     = detail_text;
+  extractedData.telemer_data.calling_date    = calling_date;
+  extractedData.telemer_data.examiner_remarks = examiner_remarks;
+  extractedData.calling_date                 = calling_date; // top-level alias used by engine
+
+  // Only overwrite lifestyle if Q7 was explicitly on the form
+  if (Object.keys(answers).length > 0) {
+    extractedData.telemer_data.lifestyle = lifestyle;
+    extractedData.lifestyle              = lifestyle;
+  }
+
+  // Build medical history from PDF, merging with any already-declared data
+  const existingPEC = (extractedData.telemer_data.medical_history?.pre_existing_conditions || [])
+    .filter(c => c._source !== 'telemer_pdf_q2q3q48'); // don't double-add
+  const mergedPEC = [...pre_existing_conditions, ...existingPEC];
+
+  extractedData.telemer_data.medical_history = {
+    pre_existing_conditions: mergedPEC,
+    surgical_history,
+    hospitalizations,
+    family_history,
+    systemic_flags: {
+      respiratory:    answers['q15'] === true,
+      digestive:      answers['q16'] === true,
+      renal:          answers['q19'] === true,
+      haematological: answers['q21'] === true,
+      neurological:   answers['q29'] === true || answers['q30'] === true,
+      endocrine:      answers['q26'] === true,
+      musculoskeletal:answers['q24'] === true || answers['q25'] === true,
+      skin:           answers['q8']  === true,
+      psychiatric:    answers['q31'] === true,
+      oedema:         answers['q32'] === true
+    }
+  };
+  extractedData.medical_history = extractedData.telemer_data.medical_history;
+
+  // proposer / insured names from PDF if workflow doesn't have them
+  const pdfName = allFreeText.join(' ').match(/(?:insured\s*name|proposer\s*name)\s*[:\-]\s*([A-Z][A-Z\s]+)/i)?.[1]?.trim();
+  if (pdfName && !extractedData.insured_name) extractedData.insured_name = pdfName;
+  if (!extractedData.proposer_name) extractedData.proposer_name = wf.proposer_name || '';
+
+  // Medications list for contradiction C3/C7 checks
+  if (pre_existing_conditions.length && !extractedData.correlation_data?.medications_found?.length) {
+    extractedData.correlation_data = extractedData.correlation_data || { medications_found: [] };
+    for (const cond of pre_existing_conditions) {
+      if (cond.medication && cond.medication !== 'unknown') {
+        extractedData.correlation_data.medications_found.push({
+          name: cond.medication, condition: cond.condition, disclosed: true
+        });
+      }
+    }
+  }
+
+  console.log(`[TeleMER Assemble] ✅ Done — answers:${Object.keys(answers).length}, PEC:${mergedPEC.length}, surgical:${surgical_history.length}, FH cancer:${family_history.cancer}`);
+}
+
 async function runAIAnalysis(wf) {
   // Debug: log what extracted_data contains before scoring
   const ed = wf.extracted_data || {};
@@ -2257,7 +3175,9 @@ async function runAIAnalysis(wf) {
   const configPath = require('path').join(__dirname, 'config');
   const medicalScoring = JSON.parse(fs.readFileSync(`${configPath}/medical-scoring.json`, 'utf8'));
   const uwGuidelines = JSON.parse(fs.readFileSync(`${configPath}/uw-guidelines.json`, 'utf8'));
+  await applyUWRuleOverrides(uwGuidelines.rules);
   const riskParams = JSON.parse(fs.readFileSync(`${configPath}/risk-params.json`, 'utf8'));
+  await applyDynamicLoadingOverride(riskParams);
 
   // Product-specific policy lookup and merge
   // catForAI declared here so it's accessible everywhere in runAIAnalysis
@@ -2268,11 +3188,41 @@ async function runAIAnalysis(wf) {
   // (3) re-derive from age+SA via product rules. This fixes older/restored workflows whose
   // cat_level wasn't persisted — without it they default to STP and score on the wrong weights.
   function resolveCatForScoring() {
+    const VENDOR_CAT_MAP = { 'VEND-003':'tele_mer', 'VEND-001':'CAT_1', 'VEND-002':'CAT_2', 'VEND-004':'CAT_3', 'VEND-005':'CAT_4' };
+
+    // 0) detect TeleMER from uploaded document content FIRST — if page_extractions has
+    //    10+ numbered questions and no lab sections, this is a TeleMER form PDF.
+    //    Runs before trusting any stored cat_level, because a case can be created with
+    //    a provisional CAT (e.g. CAT_1 from initial age/SA rule) and only later get
+    //    correctly routed to the TeleMER vendor + TeleMER form — the stored cat_level
+    //    is stale in that situation and must not block detection from real content.
+    if (wf.page_extractions?.length > 0 && wf.cat_level !== 'tele_mer') {
+      const allQNums = new Set();
+      let hasLabData = false;
+      for (const pg of wf.page_extractions) {
+        for (const row of (pg.yes_no || [])) { if (row.q_number) allQNums.add(String(row.q_number)); }
+        if (pg.values?.length > 0) hasLabData = true;
+      }
+      if (allQNums.size >= 10 && !hasLabData) {
+        console.log('[resolveCAT AI] Detected TeleMER form PDF —', allQNums.size, 'questions, no lab values → forcing tele_mer (was:', wf.cat_level, ')');
+        wf.cat_level = 'tele_mer';
+        return { cat: 'tele_mer', reason: 'detected from TeleMER form PDF (question structure, no lab data)' };
+      }
+    }
+
+    // 0b) vendor/cat_level consistency check — if assigned vendor is the dedicated
+    //     TeleMER vendor (VEND-003) but stored cat_level says otherwise, the stored
+    //     value is stale (set before vendor reassignment). Trust the vendor.
+    if (wf.assigned_vendor_id === 'VEND-003' && wf.cat_level !== 'tele_mer') {
+      console.log('[resolveCAT AI] Vendor/cat_level mismatch — vendor is VEND-003 (TeleMER) but cat_level was', wf.cat_level, '→ correcting to tele_mer');
+      wf.cat_level = 'tele_mer';
+      return { cat: 'tele_mer', reason: 'corrected — assigned vendor is dedicated TeleMER vendor' };
+    }
+
     // 1) stored cat_level (normal path)
     if (wf.cat_level && wf.cat_level !== 'STP') return { cat: wf.cat_level, reason: 'stored cat_level' };
     // 2) recover from assigned vendor → CAT (VEND-005 = CAT_4, etc.)
     if (wf.assigned_vendor_id) {
-      const VENDOR_CAT_MAP = { 'VEND-003':'tele_mer', 'VEND-001':'CAT_1', 'VEND-002':'CAT_2', 'VEND-004':'CAT_3', 'VEND-005':'CAT_4' };
       let vendorCat = VENDOR_CAT_MAP[wf.assigned_vendor_id];
       if (!vendorCat) {
         try { const v = vendorApi.getVendor(wf.assigned_vendor_id); if (v?.cat_level) vendorCat = v.cat_level; } catch(_) {}
@@ -2382,6 +3332,17 @@ async function runAIAnalysis(wf) {
 
   // Inject lifestyle and medical history into extracted data for risk engine scoring
   if (extractedData && Object.keys(extractedData).length > 0) {
+
+    // ── TeleMER PDF Assembly ──────────────────────────────────────────────────
+    // When a TeleMER PDF is uploaded (not live interview), the per-page extractor
+    // stores answers in wf.page_extractions[].yes_no[] but never maps them to
+    // telemer_data.answers / detail_text / medical_history.  Do it now, before
+    // any lifestyle or medical-history merge so the whole pipeline has clean data.
+    if (catForAI.cat === 'tele_mer' && wf.page_extractions?.length > 0 &&
+        !wf.telemer_data?.status) {   // live interview sets telemer_data.status; PDF upload doesn't
+      console.log('[TeleMER Assemble] Triggered — PDF upload path, assembling from page_extractions');
+      await assembleTeleMERDataFromPDF(wf, extractedData);
+    }
     // Inject declared BMI if no measured BMI was extracted from documents
     if (wf.declared_bmi && wf.declared_bmi > 0) {
       if (!extractedData.physical_exam) extractedData.physical_exam = {};
@@ -2397,35 +3358,247 @@ async function runAIAnalysis(wf) {
       }
     }
 
-    // Merge lifestyle data — prefer Claude-extracted from document, fall back to declared occupation_hazard only
+    // ── MER Form Parser — reads page_extractions for CAT 1-4 PPHC forms ────────
+    // Handles BOTH extraction formats:
+    //   Text-based (PPHC MER): answer:"yes"|"no"
+    //   Image-based (TeleMER): tick_column:"yes_col"|"no_col"
+    //
+    // Question mapping (SBI General Health MER Part 2):
+    //   Q2  — Habits: Cigarettes/Bidis/Paan/Gutkha
+    //          No → smoking='never' + tobacco='never' (full pts)
+    //          Yes + note → parse cigarette/bidi→smoking, paan/gutkha→tobacco_chewing
+    //   Q3  — Alcohol: No→never, Yes+note→parse quantity/frequency
+    //   Q5  — Hospitalised (accident/treatment/surgery)
+    //          Yes → add to hospitalizations (Q5 answer drives hosp score)
+    //   Q12 — HTN treatment, Q13 — DM treatment, Q27 — On medication
+
+    const _merFromPages = (() => {
+      const result = {
+        smoking: null, alcohol: null, tobacco_chewing: null,
+        surgical_history: [], hospitalizations: [],
+        on_medication: false, htn_declared: false, dm_declared: false,
+        htn_note: '', dm_note: '', source: 'mer_page_extraction'
+      };
+
+      const pages = wf.page_extractions || [];
+      if (!pages.length) return result;
+
+      // ── Normalise a row into { isYes, isNo, note } regardless of format ───────
+      const parseRow = (row) => {
+        if (!row) return { isYes: false, isNo: false, note: '' };
+        const note = (row.handwritten_note || row.note || '').trim();
+        // Text-based format: answer = "yes"|"no"|"Yes"|"No"
+        if (row.answer !== undefined && row.answer !== null) {
+          const a = String(row.answer).toLowerCase().trim();
+          return { isYes: a === 'yes', isNo: a === 'no', note };
+        }
+        // Image-based format: tick_column = "yes_col"|"no_col"|"none"|"unclear"
+        if (row.tick_column !== undefined) {
+          return { isYes: row.tick_column === 'yes_col', isNo: row.tick_column === 'no_col', note };
+        }
+        // Middle-box format (older TeleMER image extraction)
+        if (row.middle_box_marked !== undefined) {
+          return { isYes: row.middle_box_marked === true, isNo: row.middle_box_marked === false, note };
+        }
+        return { isYes: false, isNo: false, note };
+      };
+
+      // Flatten all yes_no rows across all pages into one map: normalised_q_number → parsed row
+      const qMap = {};
+      for (const pg of pages) {
+        const rows = pg.yes_no || [];
+        for (const row of rows) {
+          const qn = String(row.q_number || '').trim().toLowerCase()
+            .replace(/^q\.?/, '').replace(/\.$/, '').trim();
+          if (!qn) continue;
+          const parsed = parseRow(row);
+          // Keep the row with the longer handwritten note if duplicate
+          if (!qMap[qn] || parsed.note.length > (qMap[qn].note || '').length) {
+            qMap[qn] = parsed;
+          }
+        }
+      }
+
+      // ── Q2: Habits/Addictions (Cigarettes, Bidis, Paan, Gutkha) ─────────────
+      // Your clarification: cigarettes/bidis = smoking, paan/gutkha = tobacco_chewing
+      const q2 = qMap['2'];
+      if (q2) {
+        if (q2.isNo) {
+          // No = person does not smoke or chew tobacco → full points for both
+          result.smoking         = { status: 'never', note: '' };
+          result.tobacco_chewing = { status: 'never', note: '' };
+          console.log('[MERForm] Q2=No → smoking=never, tobacco_chewing=never');
+        } else if (q2.isYes) {
+          const note = q2.note;
+          const hasSmoking = /cigarette|bidi|beedi|smoke/i.test(note);
+          const hasTobacco = /paan|pan|gutkha|khaini|chew|tobacco/i.test(note);
+          const isStopped  = /stop|quit|cessation|former|gave up|years? ago/i.test(note);
+          const status     = isStopped ? 'former' : 'current';
+          // If note is empty or doesn't specify, conservatively mark both current
+          result.smoking         = { status: (hasSmoking || (!hasSmoking && !hasTobacco)) ? status : 'never', note };
+          result.tobacco_chewing = { status: (hasTobacco || (!hasSmoking && !hasTobacco)) ? status : 'never', note };
+          console.log('[MERForm] Q2=Yes →', 'smoking:', result.smoking.status, 'tobacco:', result.tobacco_chewing.status, '| note:', note);
+        }
+      }
+
+      // ── Q3: Alcohol consumption ───────────────────────────────────────────────
+      const q3 = qMap['3'];
+      if (q3) {
+        if (q3.isNo) {
+          result.alcohol = { status: 'never', note: '' };
+          console.log('[MERForm] Q3=No → alcohol=never');
+        } else if (q3.isYes) {
+          const note = q3.note.toLowerCase();
+          const isHeavy = /daily|every\s*day|>?\s*[5-9]\s*unit|binge|heavy/i.test(note);
+          const isOcc   = /occasion|social|weekend|rare|1.?2\s*(?:time|per)/i.test(note);
+          const status  = isHeavy ? 'heavy' : isOcc ? 'occasional' : 'regular';
+          result.alcohol = { status, note: q3.note };
+          console.log('[MERForm] Q3=Yes → alcohol:', status, '| note:', q3.note);
+        }
+      }
+
+      // ── Q5: Hospitalised for accident / medical treatment / surgery ───────────
+      // Q5=Yes → deduct from hospitalizations score regardless of reason
+      // The handwritten note tells us the type (surgery vs medical vs accident)
+      const q5 = qMap['5'];
+      if (q5) {
+        if (q5.isYes) {
+          const note   = q5.note;
+          const noteLc = note.toLowerCase();
+          const yrsAgo = note.match(/(\d+)\s*(?:yr|year)s?\s*ago/i);
+          const absYr  = note.match(/(19|20)\d{2}/);
+          let year = null;
+          if (yrsAgo)       year = new Date().getFullYear() - parseInt(yrsAgo[1]);
+          else if (absYr)   year = parseInt(absYr[0]);
+
+          const isSurg = /surg|operat|cholecyst|gallbladder|gall\s*bladder|appendic|hernia|bypass|cabg|stent|hysterect|laminect|nephrect/i.test(note);
+
+          // All Q5=Yes events go into hospitalizations (drives the score)
+          result.hospitalizations.push({
+            reason: note || 'Hospitalisation declared (Q5)',
+            year,
+            is_surgery: isSurg,
+            _source: 'mer_form_q5'
+          });
+          // If surgery, also populate surgical_history for the Surgical/GI component
+          if (isSurg) {
+            result.surgical_history.push({
+              procedure: note,
+              year,
+              outcome: 'successful',
+              records_available: !/no\s*record|unavail/i.test(noteLc),
+              _source: 'mer_form_q5_handwritten'
+            });
+          }
+          console.log('[MERForm] Q5=Yes → hospitalization added' + (isSurg ? ' (surgery)' : '') + ' | note:', note);
+        } else if (q5.isNo) {
+          // Explicit No on Q5 — ensure hospitalizations stays empty (no deduction)
+          console.log('[MERForm] Q5=No → no hospitalizations');
+        }
+      }
+
+      // ── Q12, Q13, Q27 ────────────────────────────────────────────────────────
+      const q12 = qMap['12'];
+      if (q12?.isYes) { result.htn_declared = true; result.htn_note = q12.note; }
+      const q13 = qMap['13'];
+      if (q13?.isYes) { result.dm_declared = true; result.dm_note = q13.note; }
+      const q27 = qMap['27'];
+      if (q27?.isYes) result.on_medication = true;
+
+      return result;
+    })();
+
+    // Log summary
+    if (wf.page_extractions?.length) {
+      console.log(`[MERForm] Summary — Smoking: ${_merFromPages.smoking?.status||'not found'}, Alcohol: ${_merFromPages.alcohol?.status||'not found'}, Tobacco: ${_merFromPages.tobacco_chewing?.status||'not found'}`);
+      if (_merFromPages.surgical_history.length)  console.log('[MERForm] Surgical from Q5:', _merFromPages.surgical_history.map(s=>s.procedure).join('; '));
+      if (_merFromPages.hospitalizations.length)   console.log('[MERForm] Hospitalizations from Q5:', _merFromPages.hospitalizations.map(h=>h.reason).join('; '));
+    }
+
+    // ── Lifestyle merge ───────────────────────────────────────────────────────
+    // Priority order:
+    //   1. assembleTeleMERDataFromPDF result (Q7-driven, already in telemer_data.lifestyle)
+    //      → highest priority for TeleMER cases — DO NOT overwrite with MER form parser
+    //   2. MER form page ticks (Q2/Q3 for CAT 1-4 PPHC forms)
+    //   3. Claude document extraction
+    //   4. Unknown fallback
     if (!extractedData.telemer_data) extractedData.telemer_data = {};
+
+    // Check if assembly already produced a valid lifestyle (TeleMER Q7 path)
+    const _assembledLifestyle = extractedData.telemer_data.lifestyle;
+    const _hasAssembledLifestyle = _assembledLifestyle?.smoking?.status &&
+                                   _assembledLifestyle.smoking.status !== 'unknown' &&
+                                   _assembledLifestyle.smoking.status !== '' &&
+                                   _assembledLifestyle._source === 'telemer_pdf_q7';
+
     const _claudeLifestyle = extractedData.lifestyle;
-    const _hasClaudeLifestyle = _claudeLifestyle?.smoking?.status && _claudeLifestyle.smoking.status !== 'unknown';
-    if (_hasClaudeLifestyle) {
-      // Claude found lifestyle data in the document — use it directly
+    const _hasClaudeLifestyle = _claudeLifestyle?.smoking?.status &&
+                                _claudeLifestyle.smoking.status !== 'unknown' &&
+                                _claudeLifestyle.smoking.status !== '';
+    const _hasMERLifestyle = _merFromPages.smoking !== null;
+
+    if (_hasAssembledLifestyle) {
+      // TeleMER Q7 already correctly assembled — keep it, just sync top-level
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+      console.log(`[Lifestyle] TeleMER Q7-assembled — Smoking: ${_assembledLifestyle.smoking.status}, Alcohol: ${_assembledLifestyle.alcohol?.status||'?'}, Tobacco: ${_assembledLifestyle.tobacco_chewing?.status||'?'}`);
+    } else if (_hasMERLifestyle) {
+      // CAT 1-4 MER form Q2/Q3 ticks
+      extractedData.telemer_data.lifestyle = {
+        smoking:           { status: _merFromPages.smoking.status,         note: _merFromPages.smoking.note },
+        alcohol:           _merFromPages.alcohol
+                             ? { status: _merFromPages.alcohol.status,         note: _merFromPages.alcohol.note }
+                             : (_claudeLifestyle?.alcohol || { status: 'unknown' }),
+        tobacco_chewing:   _merFromPages.tobacco_chewing
+                             ? { status: _merFromPages.tobacco_chewing.status, note: _merFromPages.tobacco_chewing.note }
+                             : (_claudeLifestyle?.tobacco_chewing || { status: 'unknown' }),
+        occupation_hazard: _claudeLifestyle?.occupation_hazard || wf.lifestyle?.occupation_hazard || 'unknown',
+        exercise:          _claudeLifestyle?.exercise || { frequency: 'unknown' },
+        _source:           'mer_form_page_extraction'
+      };
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+      console.log(`[Lifestyle] MER-form Q2/Q3 — Smoking: ${_merFromPages.smoking.status}, Alcohol: ${_merFromPages.alcohol?.status||'unknown'}`);
+    } else if (_hasClaudeLifestyle) {
+      // Claude document extraction
       extractedData.telemer_data.lifestyle = {
         smoking:          _claudeLifestyle.smoking,
-        alcohol:          _claudeLifestyle.alcohol          || { status: 'unknown' },
-        tobacco_chewing:  _claudeLifestyle.tobacco_chewing  || { status: 'unknown' },
+        alcohol:          _claudeLifestyle.alcohol         || { status: 'unknown' },
+        tobacco_chewing:  _claudeLifestyle.tobacco_chewing || { status: 'unknown' },
         occupation_hazard: _claudeLifestyle.occupation_hazard || wf.lifestyle?.occupation_hazard || 'unknown',
-        exercise:         _claudeLifestyle.exercise          || { frequency: 'unknown' },
+        exercise:         _claudeLifestyle.exercise         || { frequency: 'unknown' },
         _source: 'document_extracted'
       };
-      console.log(`[Lifestyle] Document-extracted — Smoking: ${_claudeLifestyle.smoking?.status}, Alcohol: ${_claudeLifestyle.alcohol?.status}, Tobacco: ${_claudeLifestyle.tobacco_chewing?.status}`);
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+      console.log(`[Lifestyle] Claude-extracted — Smoking: ${_claudeLifestyle.smoking?.status}, Alcohol: ${_claudeLifestyle.alcohol?.status}`);
     } else {
-      // Claude found nothing (doc has no habits section) — use occupation_hazard for STP gating, rest unknown
+      // Nothing found
       extractedData.telemer_data.lifestyle = {
-        smoking:          { status: 'unknown' },
-        alcohol:          { status: 'unknown' },
-        tobacco_chewing:  { status: 'unknown' },
+        smoking: { status: 'unknown' }, alcohol: { status: 'unknown' },
+        tobacco_chewing: { status: 'unknown' },
         occupation_hazard: wf.lifestyle?.occupation_hazard || 'unknown',
-        exercise:         { frequency: 'unknown' },
-        _source: 'declared_fallback'
+        exercise: { frequency: 'unknown' }, _source: 'no_data_found'
       };
-      console.log(`[Lifestyle] No lifestyle data in document — using declared fallback (occupation_hazard: ${wf.lifestyle?.occupation_hazard||'unknown'})`);
+      extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+      console.log('[Lifestyle] No lifestyle data found — unknown fallback');
     }
-    // Always sync top-level for risk engine compatibility
-    extractedData.lifestyle = extractedData.telemer_data.lifestyle;
+
+    // ── Merge Q5 hospitalizations + surgical_history into medical_history ───────
+    if (_merFromPages.hospitalizations.length || _merFromPages.surgical_history.length) {
+      if (!extractedData.telemer_data.medical_history) extractedData.telemer_data.medical_history = {};
+      // Hospitalizations
+      const _existH = extractedData.telemer_data.medical_history.hospitalizations || [];
+      const _newH   = _merFromPages.hospitalizations.filter(nh =>
+        !_existH.some(eh => (eh.reason||'').toLowerCase().substring(0,15) === (nh.reason||'').toLowerCase().substring(0,15))
+      );
+      extractedData.telemer_data.medical_history.hospitalizations = [..._existH, ..._newH];
+      // Surgical history (for Surgical/GI component)
+      const _existS = extractedData.telemer_data.medical_history.surgical_history || [];
+      const _newS   = _merFromPages.surgical_history.filter(ns =>
+        !_existS.some(es => (es.procedure||'').toLowerCase().substring(0,15) === (ns.procedure||'').toLowerCase().substring(0,15))
+      );
+      extractedData.telemer_data.medical_history.surgical_history = [..._existS, ..._newS];
+      extractedData.medical_history = extractedData.telemer_data.medical_history;
+      console.log(`[MERForm] Merged ${_newH.length} hosp + ${_newS.length} surgical into medical_history`);
+    }
 
     // ── Medical parameters normalisation — path aliases ───────────────────────
     // Fixes mismatched key names between Bedrock output and FACTOR_VALUE_EXTRACTORS
@@ -2504,8 +3677,18 @@ async function runAIAnalysis(wf) {
     const _meds = extractedData.correlation_data?.medications_found || [];
     const _validMeds = _meds.filter(m => m && m.name); if (_validMeds.length) console.log('[MedExtract] Medications: ' + _validMeds.map(m => m.name + (m.disclosed ? '' : ' (UNDISCLOSED)')).join(', ')); else if (_meds.length) console.log('[MedExtract] Medications array has', _meds.length, 'entries but no valid names');
     console.log('[MedExtract] ---------- End ----------');
-    // Merge declared medical history
-    if (wf.medical_history && Object.keys(wf.medical_history).length > 0) {
+    // Merge declared medical history — but ONLY as a fallback. If
+    // assembleTeleMERDataFromPDF() already populated telemer_data.medical_history
+    // with real PEC data from the uploaded TeleMER form (Q2/Q3/Q48), that data is
+    // far richer (medication, readings, since_year, reading_verified) than the
+    // generic wf.medical_history.pre_existing_conditions from the original
+    // proposal-level intake JSON, which is frequently empty/absent because PEC
+    // details live in the TeleMER form, not the proposal itself. Without this
+    // guard, this block ran unconditionally and silently overwrote a correctly
+    // assembled 3-condition list with an empty array on every single case —
+    // confirmed live via diagnostic logging (assembly: PEC:3, scoring: PEC:[]).
+    const __alreadyHasPDFAssembledPEC = (extractedData.telemer_data?.medical_history?.pre_existing_conditions?.length || 0) > 0;
+    if (wf.medical_history && Object.keys(wf.medical_history).length > 0 && !__alreadyHasPDFAssembledPEC) {
       if (!extractedData.telemer_data) extractedData.telemer_data = {};
       extractedData.telemer_data.medical_history = {
         pre_existing_conditions: (wf.medical_history.pre_existing_conditions || []).map(c => ({
@@ -2520,6 +3703,8 @@ async function runAIAnalysis(wf) {
         surgical_history: (wf.medical_history.surgery_types || []).map(type => ({ type, year: new Date().getFullYear(), status: 'declared' }))
       };
       extractedData.medical_history = extractedData.telemer_data.medical_history;
+    } else if (__alreadyHasPDFAssembledPEC) {
+      console.log(`[MedExtract] Skipping declared medical_history fallback — telemer_data.medical_history already has ${extractedData.telemer_data.medical_history.pre_existing_conditions.length} condition(s) from PDF assembly`);
     }
   }
 
@@ -2531,6 +3716,16 @@ async function runAIAnalysis(wf) {
     extractedData._proposer_age = wf.age;
     extractedData._proposer_gender = wf.gender;
 
+    // ── DIAGNOSTIC — pinpoint where PEC data is lost between assembly and scoring ──
+    // Temporary: confirms whether pre_existing_conditions is still intact on the
+    // exact object/path the FACTOR_VALUE_EXTRACTORS will read a few lines below.
+    // Remove once root cause of "PEC:3 confirmed in assembly, but scoring sees zero"
+    // is found and fixed.
+    console.log('[PEC-Diag] extractedData.telemer_data exists:', !!extractedData.telemer_data);
+    console.log('[PEC-Diag] extractedData.telemer_data.medical_history exists:', !!extractedData.telemer_data?.medical_history);
+    console.log('[PEC-Diag] pre_existing_conditions right before scoring:', JSON.stringify(extractedData.telemer_data?.medical_history?.pre_existing_conditions || 'MISSING'));
+    console.log('[PEC-Diag] extractedData object identity check — wf.extracted_data === extractedData:', wf.extracted_data === extractedData);
+
     // ── Route to correct scoring function based on CAT level ──────────────────
     // tele_mer has medical weight=0 and uses the 6-component hybrid engine.
     // All PPHC CATs (CAT_1–4) use calculateAll with the lab-results engine.
@@ -2539,15 +3734,70 @@ async function runAIAnalysis(wf) {
 
     let riskResult;
     if (isTeleMER) {
-      // TeleMER: medical=0, lifestyle=35, history=30, clinical=25, docs=10
-      // Pass extracted lifestyle + medical_history + correlation into TeleMER engine
-      const teleMERInput = {
-        ...extractedData,
-        telemer_data: extractedData.telemer_data || {},
-        interview_answers: {},   // no interview answers at doc-upload time
-        non_disclosures: []
+      // NEW 5-parameter remarks-driven model (telemer-score.js).
+      // extractedData.telemer_data already carries answers{}, detail_text{}, and
+      // examiner_remarks assembled by assembleTeleMERDataFromPDF().
+      console.log('[ScoringDebug] TeleMER → new 5-parameter remarks-driven model');
+      const td = extractedData.telemer_data || {};
+
+      // Reconstruct combined remarks from Q2/Q3/Q48 detail text + examiner remarks
+      const detail = td.detail_text || {};
+      const combinedRemarks = [detail.q2, detail.q3, td.examiner_remarks || detail.q48]
+        .filter(Boolean).join('. ') || td.examiner_remarks_verbatim || td.remarks || '';
+
+      const modelInput = telemerModel.fromExtractorData(td, {
+        bmi: td.proposer_info?.bmi || wf.declared_bmi || 0,
+        age: wf.age || 0,
+        dob: td.proposer_info?.date_of_birth || td.proposer_info?.dob || null,
+        answers: td.answers || td.question_answers || {},
+        raw_remarks: combinedRemarks,
+        examiner: td.examiner || {},
+        reports_available: true,
+        // Pass assembled lifestyle (Q7-driven) so scoreLifestyle reads it directly
+        lifestyle: td.lifestyle || extractedData.lifestyle || {}
+      });
+      const catCfg = catScoringConfig?.['tele_mer'] || null;
+      const modelOut = telemerModel.scoreTeleMER(modelInput, catCfg);
+      const fe = telemerModel.toFrontendShape(modelOut);
+
+      // Shape into the riskResult contract the rest of runAIAnalysis expects:
+      // risk_score.components is read at line ~3294 to build componentAnalysis.
+      riskResult = {
+        risk_score: {
+          normalized: fe.risk_score.normalized,
+          grade: fe.risk_score.grade,
+          total: fe.risk_score.total,
+          max: 100,
+          components: fe.component_analysis   // {param:{score,max,percentage,breakdown}}
+        },
+        decision: {
+          recommendation: modelOut.total_score >= 80 ? 'accept_standard'
+                        : modelOut.total_score >= 65 ? 'accept_with_loading'
+                        : modelOut.total_score >= 50 ? 'refer' : 'decline',
+          rationale: modelOut.decision_basis,
+          band: modelOut.decision_band
+        },
+        review_notes: modelOut.review_notes
       };
-      riskResult = riskEngine.calculateTeleMERRisk(teleMERInput, null, correlationData);
+
+      // Contradictions: the new model already counts them inside Documentation Quality.
+      // Surface the count for display, but do NOT double-penalize the score.
+      const contraCount = (modelOut.review_notes || []).length;
+      riskResult.contradiction_count = contraCount;
+      riskResult.contradiction_list  = modelOut.review_notes || [];
+      riskResult.contradiction_penalty = 0;  // already reflected in Documentation Quality sub-score
+      riskResult.senior_review_required = contraCount >= 3;
+      riskResult.override_action = contraCount >= 3 ? 'MANDATORY_RE_MER' : null;
+      riskResult.override_flags = contraCount >= 3
+        ? [{ type: 'MANDATORY_RE_MER', reason: `${contraCount} remark-vs-form contradictions — fresh TeleMER recommended.` }]
+        : [];
+      riskResult.mandatory_docs = [];
+
+      if (contraCount >= 3 && riskResult.decision) {
+        riskResult.decision.recommendation = 'mandatory_re_mer';
+        riskResult.auto_decision_eligible = false;
+      }
+      console.log(`[TeleMER] New model score: ${riskResult.risk_score.normalized}/100 (${riskResult.risk_score.grade}) | Contradictions: ${contraCount}`);
     } else {
       // ── Scoring debug log ──────────────────────────────────────────────────
       console.log('[ScoringDebug] CAT:', catForAI?.cat, '| scoring_components:', riskParams._scoring_components ? 'DB config loaded' : 'hardcoded fallback');
@@ -3180,10 +4430,47 @@ app.post('/api/communications/send', requireAuth, (req, res) => {
 // ─── Masters Configuration APIs ───
 
 // UW Guidelines — full rules list + CRUD
-app.get('/api/masters/uw-rules', requireAuth, (req, res) => {
-  const fs = require('fs');
-  const rules = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/uw-guidelines.json'), 'utf8'));
-  res.json({ built_in: rules.rules, custom: customRules, total: rules.rules.length + customRules.length });
+app.get('/api/masters/uw-rules', requireAuth, async (req, res) => {
+  try {
+    const fs = require('fs');
+    const rules = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/uw-guidelines.json'), 'utf8'));
+    await applyUWRuleOverrides(rules.rules);
+    res.json({ built_in: rules.rules, custom: customRules, total: rules.rules.length + customRules.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Bulk save — one request covers every edited rule (built-in + custom)
+// rather than firing 50+ individual PUT calls. Built-in rule IDs are written
+// to the Postgres override map (applyUWRuleOverrides); custom rule IDs update
+// the in-memory customRules array directly, same as the existing single-rule
+// PUT below. Both paths converge so a single Save Changes button on the
+// frontend can edit any rule, built-in or custom, with identical behavior.
+app.put('/api/masters/uw-rules/bulk', requireRole('Super Admin'), async (req, res) => {
+  try {
+    const edits = req.body.rules || [];
+    const overrides = (await s3Client.getConfig('uw-rule-overrides')) || {};
+    let customChanged = false;
+    for (const e of edits) {
+      if (!e.id) continue;
+      if (e.id.startsWith('CUSTOM-')) {
+        const rule = customRules.find(r => r.id === e.id);
+        if (rule) {
+          if (e.threshold !== undefined) rule.threshold = e.threshold;
+          if (e.action) rule.action = e.action;
+          if (e.severity) rule.severity = e.severity;
+          customChanged = true;
+        }
+      } else {
+        overrides[e.id] = {
+          threshold: e.threshold !== undefined ? e.threshold : overrides[e.id]?.threshold,
+          action: e.action || overrides[e.id]?.action,
+          severity: e.severity || overrides[e.id]?.severity
+        };
+      }
+    }
+    await s3Client.saveConfig('uw-rule-overrides', overrides);
+    if (customChanged) await s3Client.saveCustomRules(customRules);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 app.post('/api/masters/uw-rules', requireRole('Super Admin'), async (req, res) => {
   try {
@@ -3197,16 +4484,29 @@ app.post('/api/masters/uw-rules', requireRole('Super Admin'), async (req, res) =
 });
 app.put('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, res) => {
   try {
-    const rule = customRules.find(r => r.id === req.params.id);
-    if (!rule) return res.status(404).json({ error: 'Custom rule not found (built-in rules cannot be edited via API)' });
     const { name, threshold, action, severity, disabled } = req.body;
-    if (name) rule.name = name;
-    if (threshold !== undefined) rule.threshold = threshold;
-    if (action) rule.action = action;
-    if (severity) rule.severity = severity;
-    if (disabled !== undefined) rule.disabled = disabled;
-    await s3Client.saveCustomRules(customRules);
-    res.json({ success: true, rule });
+    const customRule = customRules.find(r => r.id === req.params.id);
+    if (customRule) {
+      if (name) customRule.name = name;
+      if (threshold !== undefined) customRule.threshold = threshold;
+      if (action) customRule.action = action;
+      if (severity) customRule.severity = severity;
+      if (disabled !== undefined) customRule.disabled = disabled;
+      await s3Client.saveCustomRules(customRules);
+      return res.json({ success: true, rule: customRule });
+    }
+    // Not a custom rule — treat as a built-in rule ID and write to the
+    // Postgres override map instead (built-in rules can now be edited,
+    // just through a different storage path than custom ones).
+    const overrides = (await s3Client.getConfig('uw-rule-overrides')) || {};
+    overrides[req.params.id] = {
+      threshold: threshold !== undefined ? threshold : overrides[req.params.id]?.threshold,
+      action: action || overrides[req.params.id]?.action,
+      severity: severity || overrides[req.params.id]?.severity,
+      _disabled: disabled !== undefined ? disabled : overrides[req.params.id]?._disabled
+    };
+    await s3Client.saveConfig('uw-rule-overrides', overrides);
+    res.json({ success: true, rule: { id: req.params.id, ...overrides[req.params.id] } });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 app.delete('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, res) => {
@@ -3220,22 +4520,43 @@ app.delete('/api/masters/uw-rules/:id', requireRole('Super Admin'), async (req, 
 });
 
 // Loading Table — read & update
-app.get('/api/masters/loading-table', requireAuth, (req, res) => {
-  const fs = require('fs');
-  const riskParams = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/risk-params.json'), 'utf8'));
-  res.json({ loading_table: riskParams.loading_table, age_loading: riskParams.age_loading, loading_cap: riskParams.loading_cap, waiting_periods: riskParams.waiting_periods, gender_thresholds: riskParams.gender_thresholds });
+app.get('/api/masters/loading-table', requireAuth, async (req, res) => {
+  try {
+    const fs = require('fs');
+    const riskParams = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'config/risk-params.json'), 'utf8'));
+    await applyDynamicLoadingOverride(riskParams);
+    res.json({ loading_table: riskParams.loading_table, age_loading: riskParams.age_loading, loading_cap: riskParams.loading_cap, waiting_periods: riskParams.waiting_periods, gender_thresholds: riskParams.gender_thresholds });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.put('/api/masters/loading-table', requireRole('Super Admin'), async (req, res) => {
   try {
     const fs = require('fs');
     const configPath = require('path').join(__dirname, 'config/risk-params.json');
     const riskParams = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    // IMPORTANT: apply the current Postgres override BEFORE merging in the new
+    // partial update. Without this, riskParams starts from the stale file
+    // defaults -- so saving just one section (e.g. loading_table only, from
+    // the new per-card UI) would silently revert the other three sections
+    // back to their original file values, undoing any previous edits to
+    // age_loading/loading_cap/waiting_periods that were never touched in
+    // this particular save.
+    await applyDynamicLoadingOverride(riskParams);
     const { loading_table, age_loading, loading_cap, waiting_periods } = req.body;
     if (loading_table) riskParams.loading_table = loading_table;
     if (age_loading) riskParams.age_loading = age_loading;
     if (loading_cap) riskParams.loading_cap = loading_cap;
     if (waiting_periods) riskParams.waiting_periods = waiting_periods;
     fs.writeFileSync(configPath, JSON.stringify(riskParams, null, 2));
+    // Primary persistence — Postgres survives container rebuilds, unlike the
+    // file above, which gets reset to whatever's in Git on every docker build.
+    // Scope is identical to the file write (same 4 fields), so this cannot
+    // affect any other risk-params.json field or any other feature.
+    await s3Client.saveConfig('loading-config', {
+      loading_table: riskParams.loading_table,
+      age_loading: riskParams.age_loading,
+      loading_cap: riskParams.loading_cap,
+      waiting_periods: riskParams.waiting_periods
+    });
     res.json({ success: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -3466,7 +4787,7 @@ const CAT_VENDOR_MAP = {
 // Each CAT has: thresholds + 5 components. Each component has a weight + factors[].
 // Each factor: { id, label, max, bands:[{label,value,points}] }
 // The engine scores every factor, sums per component, scales to weight, sums to 100.
-const SCORING_VERSION = 'dynamic-v5';
+const SCORING_VERSION = 'dynamic-v8-hosp4pts';
 
 function mkFactor(id, label, max, bands) { return { id, label, max, bands }; }
 
@@ -3489,7 +4810,7 @@ const CAT_THRESHOLDS = {
   'CAT_2':    { approve:78, refer:62, decline_below:46 },
   'CAT_3':    { approve:75, refer:58, decline_below:42 },
   'CAT_4':    { approve:72, refer:55, decline_below:40 },
-  'tele_mer': { approve:85, refer:65, decline_below:50 }
+  'tele_mer': { approve:80, refer:65, decline_below:35 }
 };
 
 // ─── RAW MAX POINTS PER TEST, PER CAT ────────────────────────────────────────
@@ -3668,10 +4989,9 @@ function sharedComponents(catWeights) {
 
   // ── HISTORY — always 15 across all CATs (7+4+2+2=15) ────────────────────────
   const hw = catWeights.history;
-  const hi_ped  = Math.round(hw * 0.467); // ~7/15
-  const hi_fam  = Math.round(hw * 0.267); // ~4/15
-  const hi_hos  = Math.round(hw * 0.133); // ~2/15
-  const hi_sur  = hw - hi_ped - hi_fam - hi_hos; // remainder
+  const hi_ped  = Math.round(hw * 0.467); // ~7/15  PEC
+  const hi_fam  = Math.round(hw * 0.267); // ~4/15  family history
+  const hi_hos  = 4;                       // fixed 4 pts — hospitalizations (Q5 driven)
 
   // ── CLINICAL — scale to weight (15/15/16/16 across CAT1-4, 25 for TeleMER) ─
   const cw = catWeights.clinical;
@@ -3701,8 +5021,12 @@ function sharedComponents(catWeights) {
       factors: [
         mkFactor('pre_existing',    'Pre-Existing Conditions', hi_ped, [{label:'None declared',value:'none',points:hi_ped},{label:'Controlled (1 condition)',value:'controlled',points:Math.max(1,Math.round(hi_ped*0.71))},{label:'1-2 active conditions',value:'1-2 active',points:Math.max(1,Math.round(hi_ped*0.43))},{label:'3+ active conditions',value:'3+ active',points:Math.max(1,Math.round(hi_ped*0.14))}]),
         mkFactor('family_history',  'Family Medical History',  hi_fam, [{label:'None known',value:'none',points:hi_fam},{label:'1 risk (cardiac/DM/Ca)',value:'one_risk',points:Math.max(1,Math.round(hi_fam*0.75))},{label:'2 risk conditions',value:'two_risks',points:Math.max(1,Math.round(hi_fam*0.5))},{label:'3+ risk conditions',value:'three_plus',points:Math.max(1,Math.round(hi_fam*0.25))}]),
-        mkFactor('hospitalizations','Prior Hospitalizations',  hi_hos, [{label:'None',value:'none',points:hi_hos},{label:'1-2 events',value:'1-2',points:Math.max(1,Math.round(hi_hos*0.5))},{label:'3+ events',value:'3+',points:Math.max(1,Math.round(hi_hos*0.25))}]),
-        mkFactor('surgical_history','Surgical History',        hi_sur, [{label:'None',value:'none',points:hi_sur},{label:'1 surgery (minor)',value:'one_minor',points:Math.max(1,Math.round(hi_sur*0.75))},{label:'2+ or major surgery',value:'two_plus',points:Math.max(1,Math.round(hi_sur*0.5))}])
+        mkFactor('hospitalizations','Prior Hospitalizations (Q5)', hi_hos, [
+          {label:'None (Q5=No)',         value:'none',  points:4},
+          {label:'1 event (Q5=Yes)',     value:'1-2',   points:2},
+          {label:'2-3 events',           value:'2-3',   points:1},
+          {label:'4+ events',            value:'3+',    points:0}
+        ])
       ]
     },
     clinical: {
@@ -3732,6 +5056,225 @@ function buildDefaultCatScoring() {
   for (const cat of ['CAT_1','CAT_2','CAT_3','CAT_4','tele_mer']) {
     const weights = CAT_WEIGHTS[cat];
     const shared  = sharedComponents(weights);
+
+    if (cat === 'tele_mer') {
+      // ── TeleMER: 5-parameter remarks-driven model (telemer-score.js v2) ────
+      // All bands and weights are editable in Masters Config → Per-CAT Scoring → Tele MER.
+      // The scoring engine reads these at runtime — no code change needed to adjust thresholds.
+      //
+      // Parameter weights (sum = 100):
+      //   medical_parameters    40  (BMI, BP, FBS, HbA1c, Age — derived from remarks)
+      //   medical_history       20  (PEC burden, condition control, family history)
+      //   lifestyle_risk        15  (tobacco, alcohol, weight stability, BMI proxy)
+      //   clinical_correlation  15  (drug-match, multi-system, CV proxy)
+      //   documentation_quality 10  (completeness, examiner detail, form consistency)
+      cfg[cat] = {
+        _version: SCORING_VERSION,
+        thresholds: {
+          // Decision bands (min_score → label + loading)
+          decision_bands: [
+            { min_score: 80, label: 'Standard Accept',  loading: '0%'     },
+            { min_score: 65, label: 'Mild Load',        loading: '5-15%'  },
+            { min_score: 50, label: 'Moderate Load',    loading: '15-30%' },
+            { min_score: 35, label: 'Heavy Load',       loading: '30-50%' },
+            { min_score: 0,  label: 'Refer / Decline',  loading: 'N/A'    }
+          ],
+          // Medical History thresholds
+          pec_max:  12,
+          deductions: { controlled: 2, uncontrolled: 5, untreated: 1, active: 2 },
+          control_max: 4, control_deduction_per_uncontrolled: 2,
+          family_history: {
+            none: 4, minor: 2, serious: 1,
+            serious_conditions: ['cancer','stroke','cardiac','heart']
+          },
+          // Lifestyle thresholds
+          tobacco_alcohol_max: 7, tobacco_deduction: 4, alcohol_deduction: 3,
+          weight_stable_pts: 4, weight_change_pts: 1, weight_max: 4,
+          bmi_proxy: {
+            max: 4,
+            bands: [
+              { max_val: 0,    pts: 2 }, { max_val: 24.9, pts: 4 },
+              { max_val: 29.9, pts: 3 }, { max_val: 34.9, pts: 2 }, { max_val: 999, pts: 1 }
+            ]
+          },
+          // Clinical Correlation thresholds
+          drug_match:   { all_match: 5, partial: 3, none: 1, no_conditions: 5, max: 5 },
+          multi_system: {
+            max: 5,
+            bands: [
+              { systems: 0, pts: 5 }, { systems: 1, pts: 4 }, { systems: 2, pts: 3 },
+              { systems: 3, pts: 2 }, { systems: 999, pts: 1 }
+            ]
+          },
+          cv_proxy: { max: 5, min: 1 },
+          // Documentation Quality thresholds
+          completeness_max: 4,
+          examiner_max: 3, examiner_name_pts: 1.5, examiner_reg_pts: 0.5, reports_pts: 1,
+          consistency_bands: [
+            { contradictions: 0, pts: 3 }, { contradictions: 1, pts: 2 },
+            { contradictions: 2, pts: 1 }, { contradictions: 999, pts: 0 }
+          ]
+        },
+        components: {
+          // 1) Medical Parameters (40 pts) — objective vitals from remarks
+          medical: {
+            label: 'Medical Parameters (40 pts) — from examiner remarks',
+            weight: 40,
+            _note: 'Values extracted from free-text remarks. BP and glucose parsed directly if not in structured fields.',
+            factors: [
+              mkFactor('bmi', 'BMI', 8, [
+                { label: 'Unknown',          value: 'unknown',     points: 4 },
+                { label: 'Underweight <18.5',value: 'underweight', points: 5 },
+                { label: 'Normal 18.5-24.9', value: 'normal',      points: 8 },
+                { label: 'Overweight 25-29.9',value:'overweight',  points: 5 },
+                { label: 'Obese I 30-34.9',  value: 'obese_1',    points: 3 },
+                { label: 'Obese II+ ≥35',    value: 'obese_2',    points: 1 }
+              ]),
+              mkFactor('blood_pressure', 'Blood Pressure (systolic mmHg)', 10, [
+                { label: 'No reading',              value: 'no_reading', points: 5 },
+                { label: 'Optimal <120',            value: 'optimal',    points: 10 },
+                { label: 'Normal 120-129',          value: 'normal',     points: 9 },
+                { label: 'High-normal 130-139',     value: 'high_normal',points: 7 },
+                { label: 'Stage 1 HTN 140-159',     value: 'stage_1',    points: 4 },
+                { label: 'Stage 2 HTN ≥160',        value: 'stage_2',    points: 1 }
+              ]),
+              mkFactor('fasting_glucose', 'Fasting Glucose (mg/dl)', 10, [
+                { label: 'No reading',              value: 'no_reading', points: 5 },
+                { label: 'Normal <100',             value: 'normal',     points: 10 },
+                { label: 'Well-controlled 100-110', value: 'controlled', points: 8 },
+                { label: 'Impaired 111-125',        value: 'impaired',   points: 6 },
+                { label: 'Elevated 126-180',        value: 'elevated',   points: 3 },
+                { label: 'Poor >180',               value: 'poor',       points: 1 }
+              ]),
+              mkFactor('hba1c', 'HbA1c (%)', 6, [
+                { label: 'Not available',           value: 'na',         points: 4 },
+                { label: 'Normal <5.7%',            value: 'normal',     points: 6 },
+                { label: 'Pre-diabetic 5.7-6.4%',  value: 'pre_dm',     points: 4 },
+                { label: 'Controlled DM 6.5-7.4%', value: 'ctrl_dm',    points: 3 },
+                { label: 'Uncontrolled ≥7.5%',     value: 'unctrl_dm',  points: 1 }
+              ]),
+              mkFactor('age_band', 'Age Band (years)', 6, [
+                { label: 'Unknown',   value: 'unknown', points: 3 },
+                { label: 'Under 35', value: 'lt_35',   points: 6 },
+                { label: '35-44',    value: '35_44',   points: 5 },
+                { label: '45-54',    value: '45_54',   points: 4 },
+                { label: '55-64',    value: '55_64',   points: 3 },
+                { label: '65+',      value: 'gte_65',  points: 2 }
+              ])
+            ]
+          },
+
+          // 2) Medical History (20 pts)
+          history: {
+            label: 'Medical History (20 pts)',
+            weight: 20,
+            _note: 'PEC burden (12) + Condition control (4) + Family history (4). Thresholds editable above.',
+            factors: [
+              mkFactor('pec_burden', 'Pre-existing Condition Burden', 12, [
+                { label: 'No PEC',                      value: 'none',         points: 12 },
+                { label: '1 controlled PEC',            value: '1_ctrl',       points: 10 },
+                { label: '2 controlled PECs',           value: '2_ctrl',       points: 8  },
+                { label: '3+ controlled PECs',          value: '3plus_ctrl',   points: 6  },
+                { label: '1 uncontrolled PEC',          value: '1_unctrl',     points: 7  },
+                { label: '2+ uncontrolled PECs',        value: '2plus_unctrl', points: 2  }
+              ]),
+              mkFactor('condition_control', 'Condition Control Quality', 4, [
+                { label: 'All conditions controlled',   value: 'all_ctrl',     points: 4 },
+                { label: '1 uncontrolled condition',    value: '1_unctrl',     points: 2 },
+                { label: '2+ uncontrolled conditions',  value: '2plus_unctrl', points: 0 }
+              ]),
+              mkFactor('family_history_factor', 'Family History (Q9)', 4, [
+                { label: 'No family history',           value: 'none',         points: 4 },
+                { label: 'Minor (DM/HTN)',              value: 'minor',        points: 2 },
+                { label: 'Serious (cardiac/cancer/stroke)',value:'serious',    points: 1 }
+              ])
+            ]
+          },
+
+          // 3) Lifestyle Risk (15 pts)
+          lifestyle: {
+            label: 'Lifestyle Risk (15 pts)',
+            weight: 15,
+            _note: 'Tobacco/alcohol (7) + weight stability (4) + BMI proxy (4). Source: Q6, Q7, BMI.',
+            factors: [
+              mkFactor('tobacco_alcohol', 'Tobacco & Alcohol Use (Q7)', 7, [
+                { label: 'None',              value: 'none',    points: 7 },
+                { label: 'Alcohol only',      value: 'alc',     points: 4 },
+                { label: 'Tobacco only',      value: 'tob',     points: 3 },
+                { label: 'Both',              value: 'both',    points: 0 }
+              ]),
+              mkFactor('weight_stability', 'Weight Stability (Q6)', 4, [
+                { label: 'Stable weight',         value: 'stable',  points: 4 },
+                { label: 'Recent weight change',  value: 'changed', points: 1 }
+              ]),
+              mkFactor('bmi_lifestyle', 'BMI (lifestyle proxy)', 4, [
+                { label: 'Unknown',             value: 'unknown',    points: 2 },
+                { label: 'Normal ≤24.9',        value: 'normal',     points: 4 },
+                { label: 'Overweight 25-29.9',  value: 'overweight', points: 3 },
+                { label: 'Obese I 30-34.9',     value: 'obese_1',   points: 2 },
+                { label: 'Obese II+ ≥35',       value: 'obese_2',   points: 1 }
+              ])
+            ]
+          },
+
+          // 4) Clinical Correlation (15 pts)
+          clinical: {
+            label: 'Clinical Correlation (15 pts)',
+            weight: 15,
+            _note: 'Drug-condition match (5) + multi-system load (5) + CV risk proxy (5).',
+            factors: [
+              mkFactor('drug_condition_match', 'Drug-Condition Match', 5, [
+                { label: 'No conditions — N/A',         value: 'na',      points: 5 },
+                { label: 'All conditions medicated',    value: 'all',     points: 5 },
+                { label: 'Partial medication coverage', value: 'partial', points: 3 },
+                { label: 'No medications declared',     value: 'none',    points: 1 }
+              ]),
+              mkFactor('multi_system_load', 'Multi-System Load', 5, [
+                { label: 'No active conditions',        value: '0',       points: 5 },
+                { label: '1 system affected',           value: '1',       points: 4 },
+                { label: '2 systems affected',          value: '2',       points: 3 },
+                { label: '3 systems affected',          value: '3',       points: 2 },
+                { label: '4+ systems affected',         value: '4plus',   points: 1 }
+              ]),
+              mkFactor('cv_risk_proxy', 'Cardiovascular Risk Proxy', 5, [
+                { label: '5/5 protective factors',      value: '5',       points: 5 },
+                { label: '4/5 protective factors',      value: '4',       points: 4 },
+                { label: '3/5 protective factors',      value: '3',       points: 3 },
+                { label: '2/5 protective factors',      value: '2',       points: 2 },
+                { label: '1 or fewer protective factors',value:'1',       points: 1 }
+              ])
+            ]
+          },
+
+          // 5) Documentation Quality (10 pts)
+          documentation: {
+            label: 'Documentation Quality (10 pts)',
+            weight: 10,
+            _note: 'Completeness (4) + examiner detail (3) + form consistency (3). Contradictions reduce consistency.',
+            factors: [
+              mkFactor('completeness', 'Record Completeness', 4, [
+                { label: 'All conditions fully described', value: 'full',    points: 4 },
+                { label: '≥50% conditions complete',      value: 'partial', points: 2 },
+                { label: 'No conditions or incomplete',   value: 'poor',    points: 0 }
+              ]),
+              mkFactor('examiner_reports', 'Examiner Detail & Reports', 3, [
+                { label: 'Name + Reg No + Reports available', value: 'full',    points: 3 },
+                { label: 'Partial (name OR reg OR reports)',  value: 'partial', points: 1.5 },
+                { label: 'No examiner details',               value: 'none',    points: 0 }
+              ]),
+              mkFactor('form_consistency', 'Form Consistency (contradictions)', 3, [
+                { label: 'No contradictions',   value: '0',    points: 3 },
+                { label: '1 contradiction',     value: '1',    points: 2 },
+                { label: '2 contradictions',    value: '2',    points: 1 },
+                { label: '3+ contradictions',   value: '3plus',points: 0 }
+              ])
+            ]
+          }
+        }
+      };
+      continue; // skip the generic builder for tele_mer
+    }
+
     cfg[cat] = {
       _version: SCORING_VERSION,
       thresholds: { ...CAT_THRESHOLDS[cat] },
@@ -3739,8 +5282,7 @@ function buildDefaultCatScoring() {
         medical: {
           label: 'Medical Parameters',
           weight: weights.medical,
-          // Per-CAT correct test list — CAT 1 has 9 tests, CAT 4 has 13 tests
-          factors: cat === 'tele_mer' ? [] : buildMedicalFactors(cat)
+          factors: buildMedicalFactors(cat)
         },
         lifestyle:     shared.lifestyle,
         history:       shared.history,
@@ -3786,6 +5328,21 @@ async function loadProductPolicyConfig() {
       let merged = false;
       for (const cat of Object.keys(defaults)) {
         if (!catScoringConfig[cat]) { catScoringConfig[cat] = defaults[cat]; merged = true; }
+      }
+      // ── Force re-seed tele_mer when version is outdated (framework factors changed) ──
+      const telemerStored = catScoringConfig['tele_mer'];
+      const telemerNeedsUpgrade = !telemerStored || telemerStored._version !== SCORING_VERSION;
+      if (telemerNeedsUpgrade) {
+        // Check if old thresholds are compatible with the new 5-parameter model.
+        // The new model uses decision_bands[], deductions{}, consistency_bands[] etc.
+        // Old C1-C7 model thresholds are incompatible — don't preserve them.
+        const isNewModel = telemerStored?.thresholds?.decision_bands != null;
+        const savedTelemerThresholds = isNewModel ? telemerStored.thresholds : null;
+        catScoringConfig['tele_mer'] = defaults['tele_mer'];
+        if (savedTelemerThresholds) catScoringConfig['tele_mer'].thresholds = savedTelemerThresholds;
+        merged = true;
+        console.log('[Startup] ✅ TeleMER Per-CAT upgraded to', SCORING_VERSION,
+          isNewModel ? '(compatible thresholds preserved)' : '(full re-seed — old C1-C7 thresholds discarded)');
       }
       if (merged) await s3Client.saveConfig('cat-scoring', catScoringConfig).catch(()=>{});
       console.log('[Startup] ✅ CAT scoring loaded from database (' + Object.keys(catScoringConfig).length + ' CATs, user edits preserved)');
@@ -4857,6 +6414,142 @@ app.get('/api/workflow/:id/telemer-questionnaire', requireAuth, (req, res) => {
   });
 });
 
+// ── NEW FEATURE — translates Q&A interview answers into the same structured
+// shape the scoring engine actually reads (medical_history.pre_existing_
+// conditions, lifestyle, family_history, bmi). Mirrors assembleTeleMERDataFromPDF()
+// but keyed by question ID (BIO_03, CARD_03, CARD_04, GEN_07, GEN_09, etc. --
+// see config/telemer-questions.json) instead of free text parsed from a PDF.
+// Without this, interview answers were saved correctly on the workflow but
+// never reached the scoring engine at all -- the engine looks for
+// medical_history.pre_existing_conditions, which nothing in the interview
+// path ever built, regardless of how completely the form was filled in.
+// Purely additive: does not touch wf.telemer_data.answers or anything else
+// already being read/written by the existing interview submission flow.
+function assembleTeleMERDataFromInterview(wf, answers) {
+  const getAns = (qId) => answers[qId] || {};
+  const isYes = (qId) => (getAns(qId).value || '').toLowerCase() === 'yes';
+  const followupText = (qId) => getAns(qId).followup || '';
+
+  const pre_existing_conditions = [];
+
+  // ── Biometrics — BIO_01 height, BIO_02 weight, BIO_03 BMI ──────────────
+  const heightCm = parseFloat(getAns('BIO_01').value) || wf.height_cm || null;
+  const weightKg = parseFloat(getAns('BIO_02').value) || wf.weight_kg || null;
+  let bmi = parseFloat(getAns('BIO_03').value) || null;
+  if (!bmi && heightCm && weightKg) bmi = Math.round((weightKg / Math.pow(heightCm / 100, 2)) * 10) / 10;
+  if (!bmi) bmi = wf.declared_bmi || null;
+
+  // ── Hypertension — CARD_03 ──────────────────────────────────────────────
+  if (isYes('CARD_03')) {
+    const text = followupText('CARD_03');
+    const bpMatch  = text.match(/(\d{2,3})\s*[\/\-]\s*(\d{2,3})/);
+    const durMatch = text.match(/since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const medMatch = text.match(/(telmisartan|telma|amlodipine|enalapril|ramipril|losartan|metoprolol|coversyl|diovan|atenolol|nebivolol|olmesartan|valsartan|bisoprolol)[^,\s]*/i);
+    const durationMonths = durMatch ? (durMatch[2].toLowerCase().startsWith('year') ? parseInt(durMatch[1]) * 12 : parseInt(durMatch[1])) : null;
+    pre_existing_conditions.push({
+      condition: 'Hypertension', icd10_code: 'I10', current_status: 'active',
+      medication: medMatch ? medMatch[0] : 'unknown',
+      since_year: durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
+      last_reading_systolic:  bpMatch ? parseInt(bpMatch[1]) : null,
+      last_reading_diastolic: bpMatch ? parseInt(bpMatch[2]) : null,
+      reading_verified: !!bpMatch,
+      duration_months: durationMonths,
+      _source: 'telemer_interview'
+    });
+  }
+
+  // ── Diabetes — CARD_04 ──────────────────────────────────────────────────
+  if (isYes('CARD_04')) {
+    const text = followupText('CARD_04');
+    const hba1cMatch = text.match(/hba1c\s*[:\s]*(\d+\.?\d*)/i);
+    const fbsMatch   = text.match(/fbs\s*[:\s]*(\d+)/i) || text.match(/fasting\s*(?:blood\s*sugar)?\s*[:\s]*(\d+)/i);
+    const durMatch   = text.match(/since\s*(\d+)(?:\s*[-–]\s*\d+)?\s*(month|year)/i);
+    const medMatch   = text.match(/(metformin|janumet|januvia|glimepiride|glipizide|insulin|dapagliflozin|sitagliptin|reclimet|vildagliptin|empagliflozin)[^,\s]*/i);
+    const durationMonths = durMatch ? (durMatch[2].toLowerCase().startsWith('year') ? parseInt(durMatch[1]) * 12 : parseInt(durMatch[1])) : null;
+    pre_existing_conditions.push({
+      condition: 'Type 2 Diabetes', icd10_code: 'E11', current_status: 'active',
+      medication: medMatch ? medMatch[0] : 'unknown',
+      since_year: durationMonths ? new Date().getFullYear() - Math.floor(durationMonths / 12) : null,
+      hba1c: hba1cMatch ? parseFloat(hba1cMatch[1]) : null,
+      fbs:   fbsMatch   ? parseFloat(fbsMatch[1])   : null,
+      reading_verified: !!(hba1cMatch || fbsMatch),
+      duration_months: durationMonths,
+      _source: 'telemer_interview'
+    });
+  }
+
+  // ── Varicose veins / eczema / psoriasis — GEN_08 ────────────────────────
+  if (isYes('GEN_08')) {
+    const text = followupText('GEN_08').toLowerCase();
+    let cond = 'Skin/Vascular disorder';
+    if (text.includes('varicose')) cond = 'Varicose Veins';
+    else if (text.includes('eczema')) cond = 'Eczema';
+    else if (text.includes('psoriasis')) cond = 'Psoriasis';
+    pre_existing_conditions.push({ condition: cond, current_status: 'active', medication: 'none', _source: 'telemer_interview' });
+  }
+
+  // ── Thyroid / endocrine — ENDO_01, ENDO_02 ──────────────────────────────
+  if (isYes('ENDO_01') || isYes('ENDO_02')) {
+    const text = (followupText('ENDO_01') + ' ' + followupText('ENDO_02')).toLowerCase();
+    const medMatch = text.match(/(levothyroxine|eltroxin|thyroxine|thyronorm)[^,\s]*/i);
+    pre_existing_conditions.push({ condition: 'Thyroid disorder', current_status: 'active', medication: medMatch ? medMatch[0] : 'unknown', _source: 'telemer_interview' });
+  }
+
+  // ── Generic catch-all for remaining condition sections ──────────────────
+  // Anything answered 'yes' across the other systems still counts toward
+  // Multi-System Active Condition Count even without detailed med/reading
+  // parsing -- better to count it generically than silently drop it.
+  const genericConditionQIds = [
+    'CARD_01','CARD_02','CARD_05','RESP_01','GI_01','GI_02','RENAL_01','RENAL_02',
+    'HAEM_01','ENT_01','ENT_02','MSK_01','MSK_02','ONC_01','NEURO_01','NEURO_02','NEURO_03','MISC_01'
+  ];
+  for (const qId of genericConditionQIds) {
+    if (isYes(qId)) {
+      const text = followupText(qId);
+      pre_existing_conditions.push({
+        condition: text ? text.substring(0, 60) : `Declared condition (${qId})`,
+        current_status: 'active', medication: 'unknown', _source: 'telemer_interview', _question_id: qId
+      });
+    }
+  }
+
+  // ── Lifestyle — GEN_07 ───────────────────────────────────────────────────
+  // GEN_07 covers cigarette/beedi/pan/gutkha/alcohol together as one Yes/No
+  // question. Previously, a "Yes" only counted as adverse if the examiner's
+  // free-text followup happened to contain a specific matching keyword
+  // ("cigarette", "alcohol", etc.) -- if the note just said something like
+  // "Occasionally" or "Socially" with none of those exact words, all three
+  // categories silently fell back to 'never' (full marks) despite the
+  // person having just answered Yes to the question. Fixed: tie the score
+  // directly to the Yes/No answer itself -- Yes deducts (since at least one
+  // of the five substances applies, regardless of which), No gives full
+  // marks. No keyword-matching fragility left in this path.
+  const gen07 = getAns('GEN_07');
+  const lifestyle = { smoking: { status: 'unknown' }, alcohol: { status: 'unknown' }, tobacco_chewing: { status: 'unknown' } };
+  if (gen07.value) {
+    const gen07Answer = gen07.value.toLowerCase();
+    if (gen07Answer === 'no') {
+      lifestyle.smoking.status = 'never'; lifestyle.alcohol.status = 'never'; lifestyle.tobacco_chewing.status = 'never';
+    } else if (gen07Answer === 'yes') {
+      lifestyle.smoking.status = 'current'; lifestyle.alcohol.status = 'current'; lifestyle.tobacco_chewing.status = 'current';
+    }
+  }
+
+  // ── Family history — GEN_09 ──────────────────────────────────────────────
+  const gen09 = getAns('GEN_09');
+  const family_history = { cardiac: false, diabetes: false, cancer: false, hypertension: false, stroke: false, details: gen09.followup || 'None' };
+  if ((gen09.value || '').toLowerCase() === 'yes') {
+    const text = (gen09.followup || '').toLowerCase();
+    family_history.cardiac      = /heart|cardiac/.test(text);
+    family_history.diabetes     = /diabetes/.test(text);
+    family_history.cancer       = /cancer/.test(text);
+    family_history.hypertension = /blood pressure|hypertension/.test(text);
+    family_history.stroke       = /stroke/.test(text);
+  }
+
+  return { pre_existing_conditions, lifestyle, family_history, bmi, height_cm: heightCm, weight_kg: weightKg };
+}
+
 // POST /api/workflow/:id/telemer-submit — submit tele-MER interview data
 app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
   try {
@@ -4970,23 +6663,91 @@ app.post('/api/workflow/:id/telemer-submit', requireAuth, async (req, res) => {
     wf.state_history.push({ state: 'telemer_completed', timestamp: new Date().toISOString(), actor: req.user?.email || 'examiner', note: `Tele-MER interview completed. Duration: ${Math.round((call_duration_seconds||0)/60)}min. Recommendation: ${telemer_recommendation}. ${medications.length} medication(s) detected.` });
     workflowEngine.updateWorkflow(wf.id, wf);
 
-    // Run TeleMER scoring if proceeding (new — does not affect existing flow if it fails)
+    // Run TeleMER scoring if proceeding — uses Per-CAT tele_mer config (same as document upload path)
     let telemerScore = null;
     if (telemer_recommendation === 'proceed_to_scoring') {
       try {
-        const voiceAnalysis = req.body.voice_analysis || null;
-        telemerScore = riskEngine.calculateTeleMERRisk(
-          { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures },
-          voiceAnalysis,
-          catScoringConfig
-        );
-        wf.telemer_data.score = telemerScore;
+        // NEW: translate Q&A answers into the structured shape the scoring
+        // engine actually reads (medical_history.pre_existing_conditions,
+        // lifestyle, family_history, bmi) -- without this, answers were
+        // saved correctly but invisible to scoring regardless of how
+        // completely the form was filled in. Purely additive: only adds
+        // new fields, does not modify wf.telemer_data.answers or anything
+        // else already set above.
+        const interviewAssembled = assembleTeleMERDataFromInterview(wf, answers);
+        wf.telemer_data.medical_history = {
+          pre_existing_conditions: interviewAssembled.pre_existing_conditions,
+          family_history: interviewAssembled.family_history
+        };
+        wf.telemer_data.lifestyle = interviewAssembled.lifestyle;
+        wf.telemer_data.bmi = interviewAssembled.bmi;
+        if (interviewAssembled.height_cm && !wf.height_cm) wf.height_cm = interviewAssembled.height_cm;
+        if (interviewAssembled.weight_kg && !wf.weight_kg) wf.weight_kg = interviewAssembled.weight_kg;
+        if (interviewAssembled.bmi && !wf.declared_bmi) wf.declared_bmi = interviewAssembled.bmi;
+        console.log(`[TeleMER Interview Assemble] PEC: ${interviewAssembled.pre_existing_conditions.map(c=>c.condition).join(', ') || 'none'} | BMI: ${interviewAssembled.bmi || 'n/a'}`);
+
+        const telemerCatCfg = catScoringConfig?.['tele_mer'] || {};
+        const telemerInput  = { ...wf.telemer_data, interview_answers: answers, non_disclosures: nonDisclosures, _proposer_age: wf.age, _proposer_gender: wf.gender };
+        const telemerDynCfg = {
+          component_weights:  telemerCatCfg.components ? Object.fromEntries(Object.entries(telemerCatCfg.components).map(([k,c])=>[k,c.weight])) : null,
+          scoring_components: telemerCatCfg.components || null,
+          score_thresholds:   telemerCatCfg.thresholds || null
+        };
+        telemerScore = riskEngine.calculateAll(telemerInput, {}, telemerDynCfg);
+        wf.telemer_data.score = telemerScore?.risk_score?.normalized;
         wf.telemer_data.scored_at = new Date().toISOString();
         if (!wf.risk_result) wf.risk_result = {};
-        wf.risk_result.telemer_score    = telemerScore.score;
-        wf.risk_result.telemer_grade    = telemerScore.grade;
-        wf.risk_result.telemer_decision = telemerScore.decision;
-        console.log(`[TeleMER] ${wf.id} scored: ${telemerScore.score}/100 Grade=${telemerScore.grade} Decision=${telemerScore.decision}`);
+        wf.risk_result.telemer_score    = telemerScore?.risk_score?.normalized;
+        wf.risk_result.telemer_grade    = telemerScore?.risk_score?.grade;
+        wf.risk_result.telemer_decision = telemerScore?.decision?.recommendation;
+        console.log(`[TeleMER] ${wf.id} scored via Per-CAT config: ${telemerScore?.risk_score?.normalized}/100 Grade=${telemerScore?.risk_score?.grade} Decision=${telemerScore?.decision?.recommendation}`);
+
+        // ── Populate wf.ai_analysis / wf.decision so the Decision and
+        // Calculations tabs actually have something to show ───────────────
+        // This path (Q&A interview submission) never calls runAIAnalysis()
+        // -- it only computes telemerScore directly above. Without this,
+        // wf.ai_analysis stays unset, the Decision tab's hasAnalysis check
+        // fails, and the page shows nothing beyond the Workflow Timeline's
+        // single 'telemer_completed' entry, even though a real score and
+        // decision were genuinely computed. Mirrors the shape runAIAnalysis()
+        // builds (see analysisResult further up in this file) closely enough
+        // for the Decision/Calculations tabs to render correctly, with safe
+        // empty defaults for the parts that don't apply here (no ICMR
+        // analysis or UW Guidelines violation check run in this path --
+        // those remain specific to the document-upload pipeline for now).
+        if (telemerScore) {
+          wf.ai_analysis = {
+            recommendation: telemerScore.decision?.recommendation || 'refer',
+            risk_score: telemerScore.risk_score || { normalized: 0, grade: 'N/A' },
+            guidelines_compliance: { violations: [], warnings: [], total_rules_checked: 0, custom_rules_count: 0 },
+            component_analysis: telemerScore.risk_score?.components || {},
+            findings: [],
+            loading_percentage: telemerScore.decision?.loading_percentage || 0,
+            loading_factors: [],
+            loading_capped: false,
+            max_loading: null,
+            effective_score: telemerScore.risk_score?.normalized || 0,
+            referral: null,
+            exclusions: telemerScore.decision?.exclusions || [],
+            waiting_periods: [],
+            applied_policy: null,
+            sa_tier: null,
+            age_loading: null,
+            historical_reference: null,
+            calibration_applied: null,
+            em_scoring: null,
+            rationale: telemerScore.decision?.rationale || `TeleMER interview scored ${telemerScore.risk_score?.normalized||0}/100 (Grade ${telemerScore.risk_score?.grade||'N/A'}).`,
+            customer_profile: null,
+            documents_analyzed: 0,
+            generated_via: 'telemer_interview'
+          };
+          wf.decision = {
+            recommendation: wf.ai_analysis.recommendation,
+            loading_percentage: wf.ai_analysis.loading_percentage,
+            exclusions: wf.ai_analysis.exclusions,
+            rationale: wf.ai_analysis.rationale
+          };
+        }
       } catch(scoreErr) { console.error('[TeleMER] Scoring error (non-fatal):', scoreErr.message); }
       wf.docs_submitted = true;
       wf.docs_submitted_at = new Date().toISOString();

@@ -87,7 +87,7 @@ textarea.form-control{resize:vertical;min-height:60px}
 .toast{position:fixed;bottom:20px;right:20px;padding:12px 20px;border-radius:8px;color:#fff;font-size:13px;font-weight:500;z-index:2000;animation:slideUp 0.3s ease}.toast-success{background:var(--success)}.toast-error{background:var(--danger)}.toast-info{background:var(--info)}
 @keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
 .empty-state{text-align:center;padding:40px 20px;color:var(--text-muted)}.empty-state .empty-icon{font-size:40px;margin-bottom:12px}
-.loading{display:flex;align-items:center;justify-content:center;padding:40px}.spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.loading{display:flex;align-items:center;justify-content:center;padding:40px}.spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.spin{animation:spin 0.8s linear infinite;display:inline-block}
 .file-upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;cursor:pointer;transition:all 0.2s;background:var(--surface-alt)}.file-upload-zone:hover{border-color:var(--primary);background:var(--info-bg)}.file-upload-zone.dragover{border-color:var(--accent);background:var(--warning-bg)}
 .doc-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:6px}.doc-item .doc-icon{font-size:20px;flex-shrink:0}.doc-item .doc-info{flex:1;min-width:0}.doc-item .doc-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doc-item .doc-meta{font-size:11px;color:var(--text-muted)}
 .vendor-card{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);padding:16px 18px;cursor:pointer;transition:all 0.15s}.vendor-card:hover{border-color:var(--primary);box-shadow:var(--shadow)}
@@ -205,7 +205,7 @@ textarea.form-control{resize:vertical;min-height:60px}
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0;">
           <i data-lucide="upload"></i> Choose file
-          <input type="file" id="sbiJsonInput" accept=".json,application/json" style="display:none;position:absolute;width:0;height:0;" onchange="handleSBIJsonUpload(this)">
+          <input type="file" id="sbiJsonInput" style="display:none;position:absolute;width:0;height:0;" onchange="handleSBIJsonUpload(this)">
         </label>
         <span id="sbiJsonFileName" style="font-size:12px;color:var(--text-muted);">No file chosen</span>
       </div>
@@ -214,6 +214,10 @@ textarea.form-control{resize:vertical;min-height:60px}
 
     <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;padding:6px 10px;background:var(--surface-alt);border-radius:6px;border-left:3px solid var(--primary)">
       <i data-lucide="lock"></i> Fields marked with <span style="color:var(--primary)">🔒</span> are auto-filled from JSON and cannot be edited.
+    </div>
+    <div class="form-group" id="wfQuotationNoWrap" style="display:none;margin-bottom:14px">
+      <label>Quotation Number 🔒</label>
+      <input class="form-control" id="wf_quotation_no" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-weight:600">
     </div>
     <div class="grid-2">
       <div class="form-group"><label>Proposer Name * 🔒</label><input class="form-control" id="wf_name" placeholder="Auto-filled from JSON" readonly style="background:var(--surface-alt);cursor:not-allowed;color:var(--text-primary)"></div>
@@ -472,7 +476,45 @@ loadUserSession();
 // Render any data-lucide placeholders in the initial static HTML (topbar badges, etc.)
 renderIcons();
 
-let socket; try { socket = io({ transports: ['websocket','polling'] }); socket.on('connect', () => { document.getElementById('connStatus').innerHTML = '<span class="dot"></span>Connected'; }); socket.on('workflow_update', d => { showToast(`Workflow updated: ${d.state}`, 'info'); if (currentPage === 'dashboard' || currentPage === 'vendors') showPage(currentPage); }); socket.on('vendor_case_assigned', d => { showToast(`New case assigned to ${d.vendor_name}: ${d.proposer_name} (${d.proposal_id})`, 'info'); if (currentPage === 'vendors') showPage('vendors'); }); socket.on('stp_auto_issued', d => { showToast(`STP Auto-Issued: ${d.proposer_name} — Policy ${d.policy_number} (${d.evaluation_ms}ms)`, 'success'); if (currentPage === 'stp' || currentPage === 'dashboard') showPage(currentPage); }); socket.on('uw_assigned', d => { showToast(`Case assigned to ${d.assigned_uw_email} (${d.tier}, ${d.specialty})`, 'info'); if (currentPage === 'myqueue') showPage('myqueue'); }); socket.on('uw_escalated', d => { showToast(`Case escalated from ${d.from_tier} to ${d.to_tier}`, 'info'); }); socket.on('info_request_created', d => { showToast(`Info request created: ${d.item_count} item(s)`, 'info'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('info_item_received', d => { showToast(`Info item received: ${d.item_name} (${d.request_status})`, 'success'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('routing_failed', d => { showToast(`Routing failed: ${d.reason}`, 'error'); }); } catch(e) {}
+let socket; try { socket = io({ transports: ['websocket','polling'] }); socket.on('connect', () => { document.getElementById('connStatus').innerHTML = '<span class="dot"></span>Connected'; }); socket.on('workflow_update', d => {
+  // Don't navigate away while watching extraction progress for a specific workflow
+  if (window._watchingExtractionFor) return;
+  showToast(`Workflow updated: ${d.state}`, 'info');
+  if (currentPage === 'dashboard' || currentPage === 'vendors') showPage(currentPage);
+}); socket.on('vendor_case_assigned', d => { showToast(`New case assigned to ${d.vendor_name}: ${d.proposer_name} (${d.proposal_id})`, 'info'); if (!window._watchingExtractionFor && currentPage === 'vendors') showPage('vendors'); }); socket.on('stp_auto_issued', d => { showToast(`STP Auto-Issued: ${d.proposer_name} — Policy ${d.policy_number} (${d.evaluation_ms}ms)`, 'success'); if (currentPage === 'stp' || currentPage === 'dashboard') showPage(currentPage); }); socket.on('uw_assigned', d => { showToast(`Case assigned to ${d.assigned_uw_email} (${d.tier}, ${d.specialty})`, 'info'); if (currentPage === 'myqueue') showPage('myqueue'); }); socket.on('uw_escalated', d => { showToast(`Case escalated from ${d.from_tier} to ${d.to_tier}`, 'info'); }); socket.on('info_request_created', d => { showToast(`Info request created: ${d.item_count} item(s)`, 'info'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('info_item_received', d => { showToast(`Info item received: ${d.item_name} (${d.request_status})`, 'success'); if (currentPage === 'inforequests') showPage('inforequests'); }); socket.on('routing_failed', d => { showToast(`Routing failed: ${d.reason}`, 'error'); });
+  // ── Always-on extraction progress cache — survives page navigation ────────
+  // Per-submission listeners (attached in attachExtractionWatcher) get torn
+  // down whenever the page that created them gets replaced by a re-render,
+  // because their closures point at DOM nodes that no longer exist. This
+  // listener is registered ONCE, here, for the life of the session, and just
+  // keeps a plain object up to date with the latest known progress for every
+  // in-flight workflow — independent of which page happens to be showing.
+  // viewVendorCase reads from this cache on every render to resume the
+  // progress bar correctly if the person navigates away and back mid-extraction.
+  window._extractionProgressCache = window._extractionProgressCache || {};
+  socket.on('extraction_progress', d => {
+    window._extractionProgressCache[d.workflow_id] = d;
+    if (d.stage === 'complete' || d.stage === 'error') {
+      setTimeout(() => { delete window._extractionProgressCache[d.workflow_id]; }, 5000);
+    }
+  });
+  socket.on('workflow_update', d => {
+    const stateMap = {
+      extracting:           { percent: 15,  stage: 'reading_pages', message: 'AI reading documents...' },
+      extraction_complete:  { percent: 65,  stage: 'extracted',     message: 'Parameters extracted' },
+      icmr_analysis:        { percent: 75,  stage: 'icmr_analysis', message: 'Running clinical analysis...' },
+      analyzing:            { percent: 90,  stage: 'scoring',       message: 'Scoring against UW rules...' },
+      ai_analysis_complete: { percent: 100, stage: 'complete',      message: 'Analysis complete!' },
+      extraction_failed:    { percent: 0,   stage: 'error',         message: 'Extraction failed' }
+    };
+    const mapped = stateMap[d.state];
+    if (!mapped) return;
+    window._extractionProgressCache[d.workflow_id] = { workflow_id: d.workflow_id, ...mapped };
+    if (mapped.stage === 'complete' || mapped.stage === 'error') {
+      setTimeout(() => { delete window._extractionProgressCache[d.workflow_id]; }, 5000);
+    }
+  });
+  } catch(e) {}
 let currentPage = 'dashboard';
 
 async function api(url, opts = {}) { const headers = { 'Content-Type': 'application/json', ...opts.headers }; const res = await fetch(`${API}${url}`, { ...opts, credentials: 'include', headers }); return res.json(); }
@@ -767,10 +809,10 @@ function renderBulkUpload() {
       ondragover="event.preventDefault();this.style.borderColor='var(--accent)';this.style.background='var(--info-bg)'"
       ondragleave="this.style.borderColor='var(--border)';this.style.background='var(--surface-alt)'"
       ondrop="handleBulkDrop(event)">
-      <input type="file" id="bulkFileInput" accept=".json,application/json,.zip" multiple style="display:none"
+      <input type="file" id="bulkFileInput" multiple style="display:none"
         onchange="handleBulkFiles(this.files)">
       <div style="font-size:40px;margin-bottom:12px;color:var(--text-muted)"><i data-lucide="files" class="i-2xl i-muted"></i></div>
-      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop JSON or ZIP files here or click to browse</div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop proposal files (any extension) or a ZIP here, or click to browse</div>
       <div style="font-size:12px;color:var(--text-muted)">SBI PAS API JSON format — up to 100 JSON files or one ZIP containing multiple JSONs</div>
       <div style="margin-top:14px;display:flex;justify-content:center;gap:20px;font-size:11px;color:var(--text-muted)">
         <span><strong>STP cases</strong> are skipped automatically (no PPHC needed)</span>
@@ -803,30 +845,55 @@ async function handleBulkFiles(files) {
   // ── Collect all JSON texts (from .json files directly or extracted from ZIP) ─
   const jsonEntries = []; // { name, text }
 
+  // A small set of extensions that are unambiguously never going to be JSON
+  // text (binary/media formats) -- skipped outright so we don't waste time
+  // reading large binary blobs as text. Everything else gets attempted,
+  // regardless of extension, since client systems have already shown up
+  // with .json, .txt, and .log for what's structurally the same content --
+  // rather than keep adding extensions one at a time, anything not
+  // obviously binary is treated as a JSON candidate and validated by
+  // actually trying to parse it.
+  const NEVER_JSON_EXT = ['.exe','.dll','.png','.jpg','.jpeg','.gif','.bmp','.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.mp3','.mp4','.avi'];
+  const looksBinary = (name) => NEVER_JSON_EXT.some(ext => name.toLowerCase().endsWith(ext));
+
   for (const file of Array.from(files)) {
+    // Skip Office-style lock/temp files (e.g. "~$FullQuote_....log") -- these
+    // get auto-created whenever the real file is open in another application
+    // and are pure binary, never valid JSON. Silently skipping avoids a
+    // confusing parse error for a file the person never meant to upload.
+    if (file.name.startsWith('~$')) continue;
+
     if (file.name.toLowerCase().endsWith('.zip')) {
-      // Extract all .json files from ZIP using JSZip
+      // Extract every non-binary, non-lock file from the ZIP -- same
+      // content-based approach as the top level, not an extension allowlist.
       try {
         if (typeof JSZip === 'undefined') {
           showToast('JSZip library not loaded — refresh the page and try again', 'error'); return;
         }
         const zip = await JSZip.loadAsync(file);
-        const zipJsonFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.json'));
+        const zipJsonFiles = Object.values(zip.files).filter(f => {
+          const base = f.name.split('/').pop();
+          return !f.dir && !base.startsWith('~$') && !looksBinary(base);
+        });
         for (const zipFile of zipJsonFiles) {
           const text = await zipFile.async('string');
           jsonEntries.push({ name: zipFile.name.split('/').pop(), text });
         }
-        showToast(`ZIP extracted: ${zipJsonFiles.length} JSON file(s) found`, 'info');
+        showToast(`ZIP extracted: ${zipJsonFiles.length} file(s) found`, 'info');
       } catch(e) {
         showToast('ZIP extraction failed: ' + e.message, 'error'); return;
       }
-    } else if (file.name.toLowerCase().endsWith('.json')) {
+    } else if (!looksBinary(file.name)) {
+      // Any non-binary, non-ZIP file is attempted as JSON regardless of
+      // extension. JSON.parse (further down) validates the actual content;
+      // a file that isn't valid JSON gets a clear per-file error there,
+      // same as a malformed .json file always would have.
       const text = await file.text();
       jsonEntries.push({ name: file.name, text });
     }
   }
 
-  if (!jsonEntries.length) { showToast('No .json files found in selection or ZIP', 'error'); return; }
+  if (!jsonEntries.length) { showToast('No usable files found in selection or ZIP', 'error'); return; }
   if (jsonEntries.length > 100) {
     showToast('Maximum 100 files. Only first 100 will be processed.', 'warning');
     jsonEntries.splice(100);
@@ -1140,59 +1207,122 @@ async function renderDashboard() {
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px">
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('all')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--primary);line-height:1.1">${workflows.length}</div>
+        <i data-lucide="layers" style="width:16px;height:16px;color:var(--primary)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--primary);line-height:1.1;margin-top:4px">${workflows.length}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Total</div>
       </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('approved')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--success);line-height:1.1">${approved}</div>
+        <i data-lucide="check-circle-2" style="width:16px;height:16px;color:var(--success)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--success);line-height:1.1;margin-top:4px">${approved}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Approved</div>
       </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('pending')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--warning);line-height:1.1">${pending}</div>
+        <i data-lucide="clock" style="width:16px;height:16px;color:var(--warning)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--warning);line-height:1.1;margin-top:4px">${pending}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Pending</div>
       </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('rejected')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--danger);line-height:1.1">${rejected}</div>
+        <i data-lucide="x-circle" style="width:16px;height:16px;color:var(--danger)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--danger);line-height:1.1;margin-top:4px">${rejected}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Rejected</div>
       </div>
+      <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onmouseover="this.style.borderColor='#D6DBE5';this.style.boxShadow='var(--shadow)'" onmouseout="this.style.borderColor='var(--border)';this.style.boxShadow='none'" onclick="filterDashboard('counter_offer')">
+        <i data-lucide="handshake" style="width:16px;height:16px;color:var(--accent)"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:var(--accent);line-height:1.1;margin-top:4px">${counterOffer}</div>
+        <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Counter Offer</div>
+      </div>
       <div style="padding:14px 16px;background:var(--surface);border-radius:8px;border:1px solid ${breach>0?'var(--danger)':'var(--border)'};text-align:center;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s" onclick="filterDashboard('breach')">
-        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:${breach>0?'var(--danger)':'var(--text-muted)'};line-height:1.1">${breach}</div>
+        <i data-lucide="alert-triangle" style="width:16px;height:16px;color:${breach>0?'var(--danger)':'var(--text-muted)'}"></i>
+        <div style="font-size:26px;font-weight:700;font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;color:${breach>0?'var(--danger)':'var(--text-muted)'};line-height:1.1;margin-top:4px">${breach}</div>
         <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-weight:600;margin-top:4px;letter-spacing:0.6px">Breach</div>
       </div>
     </div>
 
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
-      <input type="text" id="dashSearch" placeholder="Search Case ID..." style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;width:160px" oninput="filterDashboard()">
-      <select id="dashStatus" class="form-control" style="width:130px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Status</option><option value="vendor_assigned">Vendor Assigned</option><option value="auto_approved">Approved</option><option value="auto_rejected">Rejected</option><option value="counter_offered">Counter Offer</option><option value="referred">Referred</option></select>
-      <select id="dashProduct" class="form-control" style="width:150px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Product</option><option value="Prime">Prime</option><option value="Elite">Elite</option><option value="Platinum">Platinum</option><option value="Premier">Premier</option><option value="Platinum Infinite">Platinum Infinite</option><option value="Group Health">Group Health</option></select>
-      <select id="dashVendor" class="form-control" style="width:130px;padding:6px 8px;font-size:12px" onchange="filterDashboard()"><option value="">Vendor</option><option value="VEND-001">MedCheck India</option><option value="VEND-002">HealthAssure</option><option value="VEND-003">DigiMedic</option></select>
-      <span style="color:var(--primary);font-size:12px;cursor:pointer;margin-left:4px" onclick="document.getElementById('dashSearch').value='';document.getElementById('dashStatus').value='';document.getElementById('dashProduct').value='';document.getElementById('dashVendor').value='';filterDashboard()">Clear</span>
-      <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="renderDashboard()">↻ Refresh</button>
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;justify-content:flex-end">
+      <span style="color:var(--primary);font-size:12px;cursor:pointer" onclick="document.getElementById('dashSearch').value='';window._dashFilterState={status:'',product:'',vendor:''};document.getElementById('dashStatusSelect').value='';document.getElementById('dashProductSelect').value='';document.getElementById('dashVendorSelect').value='';filterDashboard()">Clear filters</span>
+      <button class="btn btn-outline btn-sm" onclick="renderDashboard()">↻ Refresh</button>
     </div>
 
     <div id="dashCaseTable"></div>`;
+    renderIcons();
+    renderDashTableShell();
 
     filterDashboard('all');
   } catch(e) { el.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="alert-triangle"></i></div><p>Dashboard error: ${e.message||'Unknown error'}</p><button class="btn btn-primary" style="margin-top:12px" onclick="renderDashboard()">Retry</button></div>`; console.error('Dashboard error:', e); }
 }
 
+function updateDashFilter(key, value) {
+  window._dashFilterState = window._dashFilterState || { status: '', product: '', vendor: '' };
+  window._dashFilterState[key] = value;
+  filterDashboard();
+}
+
+// Builds the table header ONCE — search input and Vendor/Product/Status
+// selects live here and are never destroyed/recreated afterward. Only
+// filterDashboard() runs on every keystroke/change, and it only touches
+// <tbody>. This matters specifically for the Case ID search box: rebuilding
+// the header on every keystroke (the old approach used for the dropdowns,
+// fine for selects since onchange only fires once per pick) would tear out
+// and recreate the input on every character typed, kicking focus out of it.
+function renderDashTableShell() {
+  const fStatus = window._dashFilterState?.status || '';
+  const fProduct = window._dashFilterState?.product || '';
+  const fVendor = window._dashFilterState?.vendor || '';
+  const sel = (val, opts) => opts.map(([v,label]) => `<option value="${v}" ${val===v?'selected':''}>${label}</option>`).join('');
+  const el = document.getElementById('dashCaseTable');
+  el.innerHTML = `<div id="caseCountLabel" style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:8px">Case Queue</div>
+  <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
+    <th>Case ID
+      <input type="text" id="dashSearch" placeholder="Search Case ID or Proposer..." oninput="filterDashboard()" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:3px 6px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface);box-sizing:border-box">
+    </th>
+    <th>Quotation No</th><th>Proposer</th><th>Sum Assured</th><th>Started</th>
+    <th>Vendor
+      <select id="dashVendorSelect" onchange="updateDashFilter('vendor', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fVendor, [['','All'],['VEND-001','MedCheck India'],['VEND-002','HealthAssure'],['VEND-003','DigiMedic']])}
+      </select>
+    </th>
+    <th>Product
+      <select id="dashProductSelect" onchange="updateDashFilter('product', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fProduct, [['','All'],['Prime','Prime'],['Elite','Elite'],['Platinum','Platinum'],['Premier','Premier'],['Platinum Infinite','Platinum Infinite'],['Group Health','Group Health']])}
+      </select>
+    </th>
+    <th>Status
+      <select id="dashStatusSelect" onchange="updateDashFilter('status', this.value)" style="display:block;margin-top:4px;font-size:11px;font-weight:400;padding:2px 4px;width:100%;border:1px solid var(--border);border-radius:4px;background:var(--surface)">
+        ${sel(fStatus, [['','All'],['vendor_assigned','Vendor Assigned'],['auto_approved','Approved'],['auto_rejected','Rejected'],['counter_offered','Counter Offer'],['referred','Referred']])}
+      </select>
+    </th>
+    <th>TAT</th>
+  </tr></thead><tbody id="dashTableBody"></tbody></table></div></div>`;
+}
+
 function filterDashboard(preset) {
   let workflows = window._dashboardWorkflows || [];
-  const search = document.getElementById('dashSearch')?.value?.toLowerCase() || '';
-  const status = document.getElementById('dashStatus')?.value || '';
-  const product = document.getElementById('dashProduct')?.value || '';
-  const vendor = document.getElementById('dashVendor')?.value || '';
+  window._dashFilterState = window._dashFilterState || { status: '', product: '', vendor: '' };
 
-  if (preset === 'approved') { document.getElementById('dashStatus').value = 'auto_approved'; }
-  else if (preset === 'rejected') { document.getElementById('dashStatus').value = 'auto_rejected'; }
-  else if (preset === 'pending') { document.getElementById('dashStatus').value = ''; }
-  else if (preset === 'all') { document.getElementById('dashStatus').value = ''; document.getElementById('dashProduct').value = ''; document.getElementById('dashVendor').value = ''; document.getElementById('dashSearch').value = ''; }
+  if (preset === 'approved') { window._dashFilterState.status = 'auto_approved'; }
+  else if (preset === 'rejected') { window._dashFilterState.status = 'auto_rejected'; }
+  else if (preset === 'counter_offer') { window._dashFilterState.status = 'counter_offered'; }
+  else if (preset === 'pending') { window._dashFilterState.status = ''; }
+  else if (preset === 'all') { window._dashFilterState = { status: '', product: '', vendor: '' }; const s=document.getElementById('dashSearch'); if (s) s.value=''; }
 
-  const fStatus = document.getElementById('dashStatus')?.value || '';
-  const fProduct = document.getElementById('dashProduct')?.value || '';
-  const fVendor = document.getElementById('dashVendor')?.value || '';
+  // Presets change filter state programmatically (e.g. clicking the
+  // Approved KPI card) — keep the Status select visually in sync without
+  // rebuilding the header (which would kick focus out of the search box
+  // if the person happened to be mid-search when they clicked a KPI).
+  const statusSelect = document.getElementById('dashStatusSelect');
+  if (statusSelect) statusSelect.value = window._dashFilterState.status || '';
+  if (preset === 'all') {
+    const productSelect = document.getElementById('dashProductSelect');
+    const vendorSelect = document.getElementById('dashVendorSelect');
+    if (productSelect) productSelect.value = '';
+    if (vendorSelect) vendorSelect.value = '';
+  }
+
+  const fStatus = window._dashFilterState.status || '';
+  const fProduct = window._dashFilterState.product || '';
+  const fVendor = window._dashFilterState.vendor || '';
   const fSearch = document.getElementById('dashSearch')?.value?.toLowerCase() || '';
 
   let filtered = workflows;
@@ -1204,18 +1334,27 @@ function filterDashboard(preset) {
   if (preset === 'breach') filtered = filtered.filter(w => w.sla_deadline && !w.tat_completed_at && new Date(w.sla_deadline) < new Date());
 
   const vendorNames = {'VEND-001':'MedCheck India','VEND-002':'HealthAssure','VEND-003':'DigiMedic'};
-  const el = document.getElementById('dashCaseTable');
-  el.innerHTML = `<div style="font-size:13px;font-weight:600;color:var(--primary);margin-bottom:8px">Case Queue (${filtered.length} cases)</div>
-  ${filtered.length === 0 ? '<div class="empty-state" style="padding:30px"><p>No cases match the current filters.</p></div>' : `
-  <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
-    <th>Case ID</th><th>Proposer</th><th>Sum Assured</th><th>Started</th><th>Vendor</th><th>Product</th><th>Status</th><th>TAT</th>
-  </tr></thead><tbody>
-  ${filtered.map(w => {
+
+  const countLabel = document.getElementById('caseCountLabel');
+  if (countLabel) countLabel.textContent = `Case Queue (${filtered.length} cases)`;
+
+  // If the shell hasn't been built yet for any reason, build it now and retry.
+  let tbody = document.getElementById('dashTableBody');
+  if (!tbody) { renderDashTableShell(); tbody = document.getElementById('dashTableBody'); }
+  if (!tbody) return;
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-muted)">No cases match the current filters.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(w => {
     const created = new Date(w.created_at);
     const tat = Math.ceil((Date.now() - created.getTime()) / 86400000);
     const tatColor = tat > 3 ? 'var(--danger)' : tat > 1 ? 'var(--warning)' : 'var(--text-muted)';
     return `<tr style="cursor:pointer" onclick="viewWorkflow('${w.id}')">
       <td style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600">${w.proposal_id}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">${w.quotation_no||'—'}</td>
       <td style="font-weight:500">${w.proposer_name}</td>
       <td>₹${(w.sum_assured||0).toLocaleString('en-IN')}</td>
       <td style="font-size:12px;color:var(--text-muted)">${created.toLocaleDateString('en-IN')}, ${created.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</td>
@@ -1224,8 +1363,7 @@ function filterDashboard(preset) {
       <td>${stateLabel(w.state)}</td>
       <td style="font-size:12px;font-weight:600;color:${tatColor}">${tat<1?'<1d':tat+'d'}</td>
     </tr>`;
-  }).join('')}
-  </tbody></table></div></div>`}`;
+  }).join('');
 }
 
 // ─── Workflows ───
@@ -1594,34 +1732,26 @@ function showWfTab(tab, wfId) {
         </div>
       </div>
 
-      <!-- Component 1: Medical Parameters — hidden for TeleMER (no lab tests) -->
-      ${wf.cat_level === 'tele_mer' ? `
-      <div class="card" style="margin-bottom:12px;border-left:3px solid var(--info)">
-        <div class="card-body" style="padding:12px 16px;font-size:13px;color:var(--text-muted)">
-          <i data-lucide="info"></i> <strong>TeleMER case</strong> — No lab tests required. Medical Parameters scoring does not apply.
-        </div>
-      </div>` : `
+      <!-- Component 1: Medical Parameters — always shown (remark-derived for TeleMER) -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="stethoscope"></i> Medical Parameters <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_parameters?.percentage>=80?'var(--success)':compA.medical_parameters?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_parameters?.score||0}/${compA.medical_parameters?.max||35} (${compA.medical_parameters?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="stethoscope"></i> Medical Parameters <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_parameters?.percentage>=80?'var(--success)':compA.medical_parameters?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_parameters?.score||0}/${compA.medical_parameters?.max||40} (${compA.medical_parameters?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.medical_parameters?.percentage||0}%;background:${compA.medical_parameters?.percentage>=80?'var(--success)':compA.medical_parameters?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Normal Range</th><th>Score</th><th>Rating</th><th style="text-align:right">EM</th></tr></thead><tbody>
-          ${Object.entries(compA.medical_parameters?.breakdown||{}).map(([pk,pv])=>{
-            const emParam = emS?.param_details?.find(p => p.param === pk || p.param === pk.replace(/\s/g,'_'));
-            const ranges = {bmi:'18.5-24.9',blood_pressure:'<120 mmHg',fasting_glucose:'<100 mg/dL',hba1c:'<5.7%',tc_hdl_ratio:'<3.5',sgpt:'<40 U/L',creatinine:'<1.3 mg/dL',ecg:'Normal',hemoglobin:'>13 g/dL (M), >12 (F)',urine_protein:'Nil'};
-            return `<tr>
+          ${wf.cat_level === 'tele_mer' ? `<div style="padding:8px 16px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--border-light)"><i data-lucide="info"></i> TeleMER — values derived from examiner remarks, not lab reports.</div>` : ''}
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Value</th><th>Score</th><th>Rating</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
+          ${Object.entries(compA.medical_parameters?.breakdown||{}).map(([pk,pv])=>`<tr>
               <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
-              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600">${actualValues[pk] !== null && actualValues[pk] !== undefined ? actualValues[pk] + (paramUnits[pk] ? ' <span style="font-weight:400;color:var(--text-muted)">'+paramUnits[pk]+'</span>' : '') : '<span style="color:var(--text-muted)">—</span>'}</td>
-              <td style="font-size:11px;color:var(--text-muted)">${ranges[pk]||''}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-primary)">${pv.value||'—'}</td>
               <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
-              <td><span class="badge ${pv.status==='excellent'||pv.status==='normal'?'badge-success':pv.status==='good'?'badge-info':pv.status==='fair'||pv.status==='borderline'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
-              <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;color:${emParam?.em>0?'var(--danger)':'var(--text-muted)'}">${emParam?'+'+emParam.em:'—'}</td>
-            </tr>`}).join('')}
+              <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
+              <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+              <td>${pv.proof?`<details style="font-size:11px;color:var(--text-muted)"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
+            </tr>`).join('')}
           </tbody></table>
         </div>
-      </div>`}
+      </div>
 
       <!-- EM: Additional Parameters Not in Core 10 -->
       ${emS?.param_details?.filter(p => !['bmi','systolic_bp','diastolic_bp','fasting_glucose','hba1c','tc_hdl_ratio','sgpt_alt','serum_creatinine','hemoglobin'].includes(p.param)).length ? `
@@ -1657,16 +1787,17 @@ function showWfTab(tab, wfId) {
       <!-- Component 2: Lifestyle -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="activity"></i> Lifestyle Risk <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.lifestyle_risk?.score||0}/${compA.lifestyle_risk?.max||25} (${compA.lifestyle_risk?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="activity"></i> Lifestyle Risk <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.lifestyle_risk?.score||0}/${compA.lifestyle_risk?.max||15} (${compA.lifestyle_risk?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.lifestyle_risk?.percentage||0}%;background:${compA.lifestyle_risk?.percentage>=80?'var(--success)':compA.lifestyle_risk?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
           ${Object.entries(compA.lifestyle_risk?.breakdown||{}).map(([pk,pv])=>`<tr>
             <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='never'||pv.status==='none'?'badge-success':pv.status==='former'||pv.status==='occasional'||pv.status==='low'?'badge-info':pv.status==='current'||pv.status==='heavy'||pv.status==='high'?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+            <td>${pv.proof?`<details style="font-size:11px"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
           </tr>`).join('')}
           </tbody></table>
         </div>
@@ -1675,16 +1806,17 @@ function showWfTab(tab, wfId) {
       <!-- Component 3: Medical History -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="clipboard-list"></i> Medical History <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_history?.percentage>=80?'var(--success)':compA.medical_history?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_history?.score||0}/${compA.medical_history?.max||15} (${compA.medical_history?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="clipboard-list"></i> Medical History <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.medical_history?.percentage>=80?'var(--success)':compA.medical_history?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.medical_history?.score||0}/${compA.medical_history?.max||20} (${compA.medical_history?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.medical_history?.percentage||0}%;background:${compA.medical_history?.percentage>=80?'var(--success)':compA.medical_history?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
         <div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th></tr></thead><tbody>
+          <table class="data-table"><thead><tr><th>Factor</th><th>Status</th><th>Score</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
           ${Object.entries(compA.medical_history?.breakdown||{}).map(([pk,pv])=>`<tr>
             <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
             <td><span class="badge ${pv.status==='none'||pv.status==='clean'||pv.status==='0 events'?'badge-success':pv.status?.includes('found')||pv.status?.includes('active')?'badge-danger':'badge-warning'}">${pv.status||'—'}</span></td>
             <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${pv.score}/${pv.max}</td>
             <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+            <td>${pv.proof?`<details style="font-size:11px"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
           </tr>`).join('')}
           </tbody></table>
         </div>
@@ -1696,53 +1828,35 @@ function showWfTab(tab, wfId) {
           <h3><i data-lucide="dna"></i> Clinical Correlation <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.clinical_correlation?.percentage>=80?'var(--success)':compA.clinical_correlation?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.clinical_correlation?.score||0}/${compA.clinical_correlation?.max||15} (${compA.clinical_correlation?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.clinical_correlation?.percentage||0}%;background:${compA.clinical_correlation?.percentage>=80?'var(--success)':compA.clinical_correlation?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
-        <div class="card-body">
-          ${Object.entries(compA.clinical_correlation?.breakdown||{}).map(([pk,pv])=>{
-            const icon = pk === 'drug_condition' ? '<i data-lucide="pill"></i>' : pk === 'multi_system' ? '<i data-lucide="external-link"></i>' : '<i data-lucide="heart"></i>';
-            const title = pk === 'drug_condition' ? 'Drug-Condition Matching' : pk === 'multi_system' ? 'Multi-System Correlation' : 'Cardiovascular Risk';
-            const scoreColor = pv.score >= pv.max * 0.8 ? 'var(--success)' : pv.score >= pv.max * 0.5 ? 'var(--warning)' : 'var(--danger)';
-            return `<div style="padding:10px 14px;background:var(--surface-alt);border-radius:8px;margin-bottom:8px;border-left:3px solid ${scoreColor}">
-              <div style="display:flex;justify-content:space-between;align-items:center">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:16px">${icon}</span>
-                  <div>
-                    <div style="font-size:13px;font-weight:700">${title}</div>
-                    <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${pv.logic||''}</div>
-                  </div>
-                </div>
-                <div style="text-align:right">
-                  <div style="font-size:16px;font-weight:800;font-family:'JetBrains Mono',monospace;color:${scoreColor}">${pv.score}/${pv.max}</div>
-                  <span class="badge ${pv.status==='consistent'||pv.status==='clean'||pv.status==='low'?'badge-success':pv.status==='no data'||pv.status==='not assessed'?'badge-neutral':pv.status==='moderate'||pv.status==='low_moderate'?'badge-warning':'badge-danger'}" style="font-size:10px">${pv.status||'—'}</span>
-                </div>
-              </div>
-            </div>`;
-          }).join('')}
+        <div class="card-body" style="padding:0">
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
+          ${Object.entries(compA.clinical_correlation?.breakdown||{}).map(([pk,pv])=>`<tr>
+              <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
+              <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
+              <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+              <td>${pv.proof?`<details style="font-size:11px;color:var(--text-muted)"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
+            </tr>`).join('')}
+          </tbody></table>
         </div>
       </div>
 
       <!-- Component 5: Documentation Quality — Enhanced -->
       <div class="card" style="margin-bottom:12px">
         <div class="card-header">
-          <h3><i data-lucide="file-text"></i> Documentation Quality <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.documentation_quality?.score||0}/${compA.documentation_quality?.max||15} (${compA.documentation_quality?.percentage||0}%)</span></h3>
+          <h3><i data-lucide="file-text"></i> Documentation Quality <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'}">${compA.documentation_quality?.score||0}/${compA.documentation_quality?.max||10} (${compA.documentation_quality?.percentage||0}%)</span></h3>
           <div style="width:120px;height:6px;background:var(--border);border-radius:3px"><div style="height:100%;width:${compA.documentation_quality?.percentage||0}%;background:${compA.documentation_quality?.percentage>=80?'var(--success)':compA.documentation_quality?.percentage>=50?'var(--warning)':'var(--danger)'};border-radius:3px"></div></div>
         </div>
-        <div class="card-body">
-          ${Object.entries(compA.documentation_quality?.breakdown||{}).map(([pk,pv])=>{
-            const icon = pk === 'completeness' ? '<i data-lucide="bar-chart-3"></i>' : pk === 'module_coverage' ? '<i data-lucide="package"></i>' : '<i data-lucide="refresh-cw"></i>';
-            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border-light)">
-              <div style="display:flex;align-items:center;gap:8px">
-                <span style="font-size:14px">${icon}</span>
-                <div>
-                  <div style="font-size:13px;font-weight:600">${pk.replace(/_/g,' ')}</div>
-                  <div style="font-size:11px;color:var(--text-muted)">${pv.logic||''}</div>
-                </div>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span class="badge ${pv.status==='consistent'||parseInt(pv.status)>=80?'badge-success':parseInt(pv.status)>=60||pv.status?.includes('5')||pv.status?.includes('6')?'badge-warning':'badge-danger'}">${pv.status||'—'}</span>
-                <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px">${pv.score}/${pv.max}</span>
-              </div>
-            </div>`;
-          }).join('')}
+        <div class="card-body" style="padding:0">
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Score</th><th>Rating</th><th>Explanation</th><th>Evidence</th></tr></thead><tbody>
+          ${Object.entries(compA.documentation_quality?.breakdown||{}).map(([pk,pv])=>`<tr>
+              <td style="font-weight:500">${pk.replace(/_/g,' ')}</td>
+              <td style="font-family:'JetBrains Mono',monospace;font-weight:600">${typeof pv.score==='number'?pv.score:'—'}/${pv.max||'—'}</td>
+              <td><span class="badge ${pv.status==='good'?'badge-success':pv.status==='moderate'?'badge-warning':'badge-danger'}">${pv.status||'—'}</span></td>
+              <td style="font-size:12px;color:var(--text-muted)">${pv.logic||''}</td>
+              <td>${pv.proof?`<details style="font-size:11px;color:var(--text-muted)"><summary style="cursor:pointer;color:var(--accent);font-weight:600">Why?</summary><pre style="margin-top:6px;white-space:pre-wrap;font-family:inherit;font-size:11px;background:var(--surface-alt);padding:8px;border-radius:6px;border-left:2px solid var(--accent)">${esc(pv.proof)}</pre></details>`:'—'}</td>
+            </tr>`).join('')}
+          </tbody></table>
         </div>
       </div>
 
@@ -1802,7 +1916,7 @@ function showWfTab(tab, wfId) {
       </div>` : ''}
 
       <!-- ── HYBRID: Phase 1 scaling note ── -->
-      ${analysis.risk_score?.phase === 1 ? `<div style="padding:8px 14px;background:var(--surface-alt);border-radius:6px;font-size:11px;color:var(--text-muted);margin-bottom:12px"><i data-lucide="info"></i> Phase 1 scoring — 6 components totalling 90 pts scaled to 100. Documentation Quality (10 pts) will be added in Phase 2.</div>` : ''}
+      ${analysis.risk_score?.phase === 1 ? `<div style="padding:8px 14px;background:var(--surface-alt);border-radius:6px;font-size:11px;color:var(--text-muted);margin-bottom:12px"><i data-lucide="info"></i> TeleMER scoring — 5 parameters (Medical Parameters, Medical History, Lifestyle Risk, Clinical Correlation, Documentation Quality) totalling 100 pts. Higher score = lower risk.</div>` : ''}
 
       <!-- Loading Factors -->
       ${analysis.loading_factors?.length?`<div class="card"><div class="card-header"><h3><i data-lucide="indian-rupee"></i> Premium Loading Factors</h3></div><div class="card-body">
@@ -1838,7 +1952,7 @@ function showWfTab(tab, wfId) {
           {id:'2.3',title:'Occupation',text:'High-risk occupations (mining, offshore, aviation, military combat) require additional loading of 25-100% or exclusion clauses.'}
         ]},
         { id:'medical', title:'Medical Parameters', clauses:[
-          {id:'3.1',title:'Scoring Components',text:'Risk assessment uses: Medical Parameters (35 pts), Lifestyle Risk (20 pts), Medical History (15 pts), Clinical Correlation (15 pts), Documentation Quality (15 pts). EM scoring covers all extracted parameters.'},
+          {id:'3.1',title:'Scoring Components',text:'Risk assessment uses 5 parameters: Medical Parameters (40 pts), Medical History (20 pts), Lifestyle Risk (15 pts), Clinical Correlation (15 pts), Documentation Quality (10 pts). Total 100; higher score = lower risk. Clinical scoring is driven by the examiner free-text remarks.'},
           {id:'3.2',title:'Critical Thresholds',text:'Auto-decline: BMI >40, Systolic BP >180, Fasting Glucose >300, HbA1c >10, Creatinine >3.0, LVEF <30%, HIV positive.'},
           {id:'3.3',title:'Decision Thresholds',text:'Product-specific. Example — Prime: Accept ≥75, Refer ≥55, Decline <40. Platinum Infinite: Accept ≥82, Refer ≥62, Decline <46.'}
         ]},
@@ -2162,7 +2276,7 @@ async function renderPageByPage(wfId) {
         <td>${v.flag && v.flag!=='normal' && v.flag!=='unclear' ? `<span class="badge badge-danger">${esc(v.flag)}</span>` : v.flag==='normal' ? '<span class="badge badge-success">normal</span>' : `<span class="badge badge-neutral">${esc(v.flag||'—')}</span>`}</td></tr>`).join('');
     const meds = (p.medications||[]).map(m => `<div style="font-size:12px;margin-top:4px">💊 ${esc(m.name||'')}${m.condition?' — '+esc(m.condition):''}${m.disclosed===false?' <span class="badge badge-danger">undisclosed</span>':''}</div>`).join('');
     const freeText = (p.free_text||[]).filter(Boolean).map(t => `<div style="font-size:12px;color:var(--text-muted);font-style:italic;margin-top:3px">“${esc(t)}”</div>`).join('');
-    return `<div class="card" style="margin-bottom:14px"><div class="card-header"><h3>Page ${p.page} <span class="badge badge-info" style="margin-left:6px">${esc(p.page_type||'?')}</span>${p.was_split?' <span class="badge badge-warning" style="margin-left:4px" title="This page exceeded the model 4096-token output limit, so it was extracted in 2 separate passes (measurements + questions) and merged.">split ×2 — output exceeded 4096 tokens</span>':''}</h3><span style="font-size:11px;color:var(--text-muted)">${(p.tokens?.input||0)+(p.tokens?.output||0)} tok</span></div>
+    return `<div class="card" style="margin-bottom:14px"><div class="card-header"><h3>Page ${p.page} <span class="badge badge-info" style="margin-left:6px">${esc(p.page_type||'?')}</span>${p.was_split?' <span class="badge badge-warning" style="margin-left:4px" title="This page exceeded the model 4096-token output limit, so it was extracted in 2 separate passes (measurements + questions) and merged.">split ×2 — output exceeded 4096 tokens</span>':''}${p.ecg_ai_analysis?' <span class="badge badge-success" style="margin-left:4px">🫀 ECG AI</span>':''}</h3><span style="font-size:11px;color:var(--text-muted)">${(p.tokens?.input||0)+(p.tokens?.output||0)} tok</span></div>
       <div class="card-body" style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
         <div style="flex:1 1 320px;min-width:280px">
           <img loading="lazy" id="pgimg-${wfId}-${p.page}" data-page="${p.page}" style="width:100%;border:1px solid var(--border);border-radius:8px;cursor:zoom-in;background:var(--surface-alt)" alt="Page ${p.page}" onclick="window.open(this.src,'_blank')">
@@ -2172,6 +2286,38 @@ async function renderPageByPage(wfId) {
           ${ynRows ? `<div style="margin-top:12px;font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Yes/No Questions</div><table class="data-table" style="margin-top:6px"><thead><tr><th>Q</th><th>Question</th><th>Tick</th><th>Answer</th><th>Handwritten note</th></tr></thead><tbody>${ynRows}</tbody></table>` : ''}
           ${meds ? `<div style="margin-top:10px">${meds}</div>` : ''}
           ${freeText ? `<div style="margin-top:10px">${freeText}</div>` : ''}
+          ${p.ecg_ai_analysis ? (() => {
+            const ecg = p.ecg_ai_analysis;
+            const verdict = ecg.overall_interpretation || 'unknown';
+            const color = verdict === 'normal' ? 'var(--success)' : verdict === 'borderline' ? 'var(--warning)' : verdict === 'abnormal' ? 'var(--danger)' : 'var(--text-muted)';
+            const findings = Array.isArray(ecg.specific_findings) && ecg.specific_findings.length ? ecg.specific_findings.join(' • ') : 'No specific findings';
+            return `<div style="margin-top:14px;padding:14px;background:var(--surface-alt);border-radius:10px;border-left:4px solid ${color}">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                <i data-lucide="activity" style="color:${color}"></i>
+                <span style="font-weight:700;font-size:14px;color:var(--text)">🫀 AI ECG Waveform Analysis</span>
+                <span style="margin-left:auto;font-size:11px;padding:2px 8px;border-radius:12px;background:${color};color:#fff;font-weight:700;text-transform:uppercase">${verdict}</span>
+                <span style="font-size:11px;color:var(--text-muted)">Confidence: ${ecg.ai_confidence||'?'}</span>
+              </div>
+              ${ecg._orientation_corrected ? `<div style="font-size:11px;color:var(--warning);margin-bottom:8px">⚠️ Image was rotated (${ecg._orientation_detected}) — auto-corrected before analysis</div>` : ''}
+              <div style="font-size:13px;color:var(--text);margin-bottom:8px;font-style:italic">"${esc(ecg.interpretation_reason||'')}"</div>
+              <table style="width:100%;font-size:12px;border-collapse:collapse">
+                ${[
+                  ['Rhythm',       ecg.rhythm||'—'],
+                  ['Heart Rate',   ecg.heart_rate_bpm ? ecg.heart_rate_bpm+' bpm' : '—'],
+                  ['PR Interval',  ecg.pr_interval_ms ? ecg.pr_interval_ms+'ms ('+ecg.pr_assessment+')' : ecg.pr_assessment||'—'],
+                  ['QRS',          ecg.qrs_duration_ms ? ecg.qrs_duration_ms+'ms ('+ecg.qrs_assessment+')' : ecg.qrs_assessment||'—'],
+                  ['ST Segment',   ecg.st_segment||'—'],
+                  ['T Wave',       ecg.t_wave||'—'],
+                  ['QTc',          ecg.qtc_assessment||'—'],
+                  ['Axis',         ecg.axis||'—'],
+                  ['LVH Criteria', ecg.lvh_voltage_criteria ? '⚠️ Yes' : 'No'],
+                  ['Path. Q waves',ecg.pathological_q_waves ? '⚠️ Yes' : 'No'],
+                ].map(([label,val])=>`<tr style="border-bottom:1px solid var(--border)"><td style="padding:4px 8px;color:var(--text-muted);width:40%">${label}</td><td style="padding:4px 8px;color:var(--text);font-weight:500">${esc(String(val))}</td></tr>`).join('')}
+              </table>
+              ${ecg.specific_findings?.length ? `<div style="margin-top:10px;font-size:12px;color:var(--text-muted)"><strong>Specific findings:</strong> ${esc(findings)}</div>` : ''}
+              <div style="margin-top:8px;font-size:10px;color:var(--text-muted);font-style:italic">${esc(ecg.disclaimer||'AI preliminary screen only — clinical correlation required')}</div>
+            </div>`;
+          })() : ''}
         </div>
       </div></div>`;
   }).join('');
@@ -2630,6 +2776,10 @@ async function handleSBIJsonUpload(input) {
 
     // ── Fill form fields (all read-only — from JSON) ────────────────
     if (name)       document.getElementById('wf_name').value  = name;
+    if (quotationNo) {
+      document.getElementById('wf_quotation_no').value = quotationNo;
+      document.getElementById('wfQuotationNoWrap').style.display = 'block';
+    }
     if (age)        document.getElementById('wf_age').value   = age;
     if (sumAssured) document.getElementById('wf_sum').value   = sumAssured;
     if (height)     document.getElementById('wf_height').value = height;
@@ -2732,7 +2882,7 @@ async function createWorkflow() {
   const weight = parseFloat(document.getElementById('wf_weight').value) || null;
   const bmi = (height && weight && height > 50) ? Math.round(weight / ((height/100) * (height/100)) * 10) / 10 : null;
   const data = {
-    proposer_name: document.getElementById('wf_name').value, age: parseInt(document.getElementById('wf_age').value)||35,
+    proposer_name: document.getElementById('wf_name').value, quotation_no: document.getElementById('wf_quotation_no')?.value || null, age: parseInt(document.getElementById('wf_age').value)||35,
     gender: document.getElementById('wf_gender').value, sum_assured: parseInt(document.getElementById('wf_sum').value)||5000000,
     product_name: document.getElementById('wf_product').value, nstp_reason: document.getElementById('wf_reason').value,
     observations: document.getElementById('wf_observations').value, required_tests: reqTests, vendor_id: vendorId,
@@ -3269,11 +3419,17 @@ async function viewVendorCase(wfId, vendorId) {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">
           <div><span style="color:var(--text-muted)">Case Reference:</span> <strong>${wf.proposal_id}</strong></div>
           <div><span style="color:var(--text-muted)">Proposer Name:</span> <strong>${esc(wf.proposer_name)}</strong></div>
+        </div>
+        ${wf.quotation_no ? `<div style="margin-top:10px;padding:8px 10px;background:#EFF6FF;border:1px solid #93C5FD;border-radius:6px">
+          <span style="font-size:11px;color:#1D4ED8;font-weight:600;text-transform:uppercase;letter-spacing:0.3px">Quotation Number</span>
+          <div style="font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text-primary);margin-top:2px">${esc(wf.quotation_no)}</div>
+        </div>` : ''}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;margin-top:10px">
           <div><span style="color:var(--text-muted)">Age:</span> ${wf.age} years</div>
           <div><span style="color:var(--text-muted)">Gender:</span> ${wf.gender}</div>
         </div>
-        ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:4px">Observations / Instructions</div><div style="font-size:13px">${esc(wf.observations)}</div></div>` : ''}
-        ${wf.required_tests?.length ? `<div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div><div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${(t||'unknown').toString().replace(/_/g,' ')}</span>`).join('')}</div></div>` : ''}
+        ${wf.observations ? `<div style="margin-top:12px;padding:10px;background:var(--warning-bg);border-radius:8px;border-left:3px solid var(--warning)"><div style="font-size:11px;font-weight:600;color:var(--warning);text-transform:uppercase;margin-bottom:6px">Observations / Instructions</div><ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.6">${wf.observations.split(';').map(s=>s.trim()).filter(Boolean).map(s=>`<li>${esc(s)}</li>`).join('')}</ul></div>` : ''}
+        <div style="margin-top:10px;padding:10px;background:var(--info-bg);border-radius:8px;border-left:3px solid var(--info)"><div style="font-size:11px;font-weight:600;color:var(--info);text-transform:uppercase;margin-bottom:6px">Required Tests</div>${wf.required_tests?.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${wf.required_tests.map(t=>`<span class="badge badge-info" style="font-size:12px;padding:4px 10px">${(t||'unknown').toString().replace(/_/g,' ')}</span>`).join('')}</div>` : `<div style="font-size:12px;color:var(--text-muted)">No mandatory tests for this case</div>`}</div>
         <div style="margin-top:10px;padding:10px;background:${wf.pphc_biometrics?'var(--success-bg)':'var(--surface-alt)'};border-radius:8px;border-left:3px solid ${wf.pphc_biometrics?'var(--success)':'var(--warning)'}">
           <div style="font-size:11px;font-weight:600;color:${wf.pphc_biometrics?'var(--success)':'var(--warning)'};text-transform:uppercase;margin-bottom:6px">Identity Verification — Face Capture</div>
           ${wf.pphc_biometrics
@@ -3281,9 +3437,20 @@ async function viewVendorCase(wfId, vendorId) {
             : `<div style="display:flex;align-items:center;gap:10px"><div style="font-size:12px;color:var(--text-muted)">Capture proposer face before conducting medical tests</div><button class="btn btn-sm btn-accent" onclick="openLiveCaptureModal('vendor','${wfId}','${vendorId}')"><i data-lucide="camera"></i> Live Capture</button></div>`}
         </div>
       </div></div>
-      <div class="card"><div class="card-header"><h3>Workflow Timeline</h3></div><div class="card-body" style="max-height:250px;overflow-y:auto">
-        ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
-      </div></div>
+      <div class="card" id="wfTimelineCard_${wfId}"><div class="card-header"><h3>Workflow Timeline</h3></div>
+        <div class="card-body" id="wfTimeline_${wfId}" style="max-height:250px;overflow-y:auto">
+          ${(wf.state_history||[]).map((s,i)=>`<div class="workflow-step"><div class="step-dot ${i===wf.state_history.length-1?'active':'done'}"></div><div class="step-label">${s.state.replace(/_/g,' ')}</div><div class="step-time">${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>`).join('')}
+        </div>
+        <div id="wfProgressBar_${wfId}" style="display:none;padding:10px 14px;border-top:1px solid var(--border-light)">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span id="wfProgressMsg_${wfId}" style="font-size:11px;color:var(--text-muted)">Processing...</span>
+            <span id="wfProgressPct_${wfId}" style="font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">0%</span>
+          </div>
+          <div style="height:6px;background:var(--border);border-radius:6px;overflow:hidden">
+            <div id="wfProgressFill_${wfId}" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#34d399);border-radius:6px;transition:width 0.5s ease"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     ${wf.pphc_recommendation === 'telemer' || vendorId === 'VEND-003' ? `
@@ -3383,10 +3550,131 @@ async function viewVendorCase(wfId, vendorId) {
       if (existingIcmr && existingIcmr.icmr_findings?.length > 0) {
         renderVendorIcmrResults(existingIcmr);
       }
+
+      // ── Resume live progress if extraction is still running for this case ──
+      // Handles the exact scenario where the person submitted, navigated away
+      // to another page mid-extraction, then came back here. The DOM elements
+      // just got recreated fresh by this render (progress bar starts hidden,
+      // timeline only shows whatever's in wf.state_history so far) -- without
+      // this, the live percentage/in-between stages would be lost even though
+      // extraction is still genuinely running on the backend. The global cache
+      // (populated by an always-on listener attached once at page load,
+      // independent of this specific render) still has the last known state.
+      const cachedProgress = window._extractionProgressCache?.[wfId];
+      if (cachedProgress && cachedProgress.stage !== 'complete' && cachedProgress.stage !== 'error') {
+        attachExtractionWatcher(wfId);
+      }
+
       renderIcons();
     }, 0);
 
   } catch(e) { el.innerHTML = '<div class="empty-state"><p>Error loading case: ' + e.message + '</p></div>'; }
+}
+
+// ── Shared extraction-progress watcher ──────────────────────────────────────
+// Attaches (or re-attaches) live progress listeners scoped to whichever DOM
+// elements currently exist for this workflow's Workflow Timeline card. Safe
+// to call multiple times for the same wfId -- always tears down any previous
+// listener first, so re-rendering the page and calling this again correctly
+// points at the NEW elements instead of the old detached ones.
+//
+// If extractionProgressCache already has data for this wfId (i.e. extraction
+// is still running, tracked by the always-on global listener even while this
+// page wasn't showing), immediately paints that cached state instead of
+// starting from a blank 0% bar -- this is what makes the progress bar
+// correctly resume after navigating away and back mid-extraction.
+function attachExtractionWatcher(wfId) {
+  const timelineEl  = document.getElementById(`wfTimeline_${wfId}`);
+  const progressBar = document.getElementById(`wfProgressBar_${wfId}`);
+  const progressMsg = document.getElementById(`wfProgressMsg_${wfId}`);
+  const progressPct = document.getElementById(`wfProgressPct_${wfId}`);
+  const progressFill= document.getElementById(`wfProgressFill_${wfId}`);
+  const timelineCard= document.getElementById(`wfTimelineCard_${wfId}`);
+
+  const _addTimelineStep = (label) => {
+    if (!timelineEl) return;
+    const prev = timelineEl.querySelector('.step-dot.active');
+    if (prev) { prev.classList.remove('active'); prev.classList.add('done'); }
+    const step = document.createElement('div');
+    step.className = 'workflow-step';
+    step.innerHTML = `<div class="step-dot active"></div>
+      <div class="step-label" style="font-weight:600;color:var(--accent)">${label}</div>
+      <div class="step-time">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>`;
+    timelineEl.appendChild(step);
+    timelineEl.scrollTop = timelineEl.scrollHeight;
+  };
+
+  const _updateProgress = (pct, msg) => {
+    if (progressBar)  progressBar.style.display = 'block';
+    if (progressFill) progressFill.style.width = pct + '%';
+    if (progressFill) progressFill.style.background = pct >= 100 ? 'var(--success)' : 'linear-gradient(90deg,var(--accent),#34d399)';
+    if (progressMsg)  progressMsg.textContent = msg || 'Processing...';
+    if (progressPct)  progressPct.textContent = pct + '%';
+    if (progressPct)  progressPct.style.color = pct >= 100 ? 'var(--success)' : 'var(--accent)';
+  };
+
+  // Tear down any previous listeners (e.g. from a prior render of this same
+  // workflow) before attaching fresh ones bound to the current DOM nodes.
+  if (window._extractionProgressHandler) socket.off('extraction_progress', window._extractionProgressHandler);
+  if (window._extractionWfUpdateHandler)  socket.off('workflow_update',     window._extractionWfUpdateHandler);
+
+  window._watchingExtractionFor = wfId;
+
+  window._extractionProgressHandler = (data) => {
+    if (data.workflow_id !== wfId) return;
+    _updateProgress(data.percent || 0, data.message || '');
+    const stageLabels = {
+      reading_pages:  `reading page ${data.pages_done||''}/${data.pages_total||''} — AI vision`,
+      extracted:      `parameters extracted (${data.percent||0}%)`,
+      icmr_analysis:  'clinical correlation running',
+      scoring:        'underwriting rules scoring',
+      complete:       'analysis complete ✓'
+    };
+    if (stageLabels[data.stage]) _addTimelineStep(stageLabels[data.stage]);
+    if (data.stage === 'complete') {
+      socket.off('extraction_progress', window._extractionProgressHandler);
+      socket.off('workflow_update',     window._extractionWfUpdateHandler);
+      window._extractionProgressHandler = null;
+      window._extractionWfUpdateHandler = null;
+      window._watchingExtractionFor = null;
+      setTimeout(() => viewWorkflow(wfId), 1500);
+    }
+  };
+  socket.on('extraction_progress', window._extractionProgressHandler);
+
+  window._extractionWfUpdateHandler = (data) => {
+    if (data.workflow_id !== wfId) return;
+    const map = {
+      extracting:            { pct: 15, msg: 'AI reading documents...',          label: 'AI extraction running'         },
+      extraction_complete:   { pct: 65, msg: 'Parameters extracted',             label: 'extraction complete'           },
+      icmr_analysis:         { pct: 75, msg: 'Running clinical analysis...',     label: 'clinical correlation running'  },
+      analyzing:             { pct: 90, msg: 'Scoring against UW rules...',      label: 'underwriting scoring'          },
+      ai_analysis_complete:  { pct:100, msg: 'Analysis complete — loading...',   label: 'analysis complete ✓'          },
+      extraction_failed:     { pct: 0,  msg: 'Extraction failed',                label: 'extraction failed ✗'          }
+    };
+    const m = map[data.state];
+    if (!m) return;
+    _updateProgress(m.pct, m.msg);
+    _addTimelineStep(m.label);
+    if (data.state === 'ai_analysis_complete') {
+      socket.off('extraction_progress', window._extractionProgressHandler);
+      socket.off('workflow_update',     window._extractionWfUpdateHandler);
+      window._extractionProgressHandler = null;
+      window._extractionWfUpdateHandler = null;
+      window._watchingExtractionFor = null;
+      setTimeout(() => viewWorkflow(wfId), 1500);
+    }
+  };
+  socket.on('workflow_update', window._extractionWfUpdateHandler);
+
+  // Resume from cache if extraction is already known to be in progress
+  // (e.g. the person navigated away and just came back to this page).
+  const cached = window._extractionProgressCache?.[wfId];
+  if (cached) {
+    _updateProgress(cached.percent || 0, cached.message || 'Processing...');
+  }
+
+  return { addStep: _addTimelineStep, updateProgress: _updateProgress, timelineCard, progressBar, cached };
 }
 
 async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
@@ -3413,12 +3701,57 @@ async function finalSubmitWithFeedback(wfId, vendorId, docCount) {
       } catch(e) { console.warn('Feedback save failed:', e.message); }
     }
 
-    // Step 2 — Final submit documents (triggers AI extraction + ICMR analysis)
+    // ── Set up live progress tracking BEFORE calling submit-documents ─────────
+    // /submit-documents is a long-running synchronous request (extraction +
+    // ICMR + scoring all happen inside this one HTTP call, typically 60-120s)
+    // but it emits extraction_progress/workflow_update socket events THE WHOLE
+    // TIME it's running. The flag + listeners used to be set up AFTER awaiting
+    // this call -- meaning for the entire duration of the request, nothing was
+    // protecting this page from the global workflow_update handler, which
+    // navigates to showPage(currentPage) the moment any event arrives. Since
+    // currentPage is 'vendors' while viewing this screen, that handler was
+    // firing showPage('vendors') almost immediately, bouncing the user back to
+    // the vendor list long before the real listeners below ever got attached --
+    // confirmed live: code was deployed correctly, but listeners were simply
+    // wired up too late to matter. Moving this block before the await fixes it.
+    // Attach live progress listeners (tears down + replaces any previous
+    // ones for this wfId, so this is safe even if attachExtractionWatcher
+    // was already called once on page load with no in-flight extraction yet).
+    const watcher = attachExtractionWatcher(wfId);
+    watcher.addStep('extraction started');
+    watcher.updateProgress(5, 'Starting AI extraction...');
+
+    // Two sequential messages instead of one combined toast, fired right as
+    // we're committing to the submission (not after the 60-120s extraction
+    // already finished — by the time the await below resolves, the whole
+    // process is already done, so "extraction started" would be the wrong
+    // message to show at that point).
+    if (btn) { btn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Processing...'; setTimeout(renderIcons, 0); }
+    showToast('Documents' + (feedbackText ? ' and feedback' : '') + ' submitted successfully!', 'success');
+    setTimeout(() => showToast('Extraction started — tracking progress below...', 'info'), 700);
+
+    // Scroll up to the Workflow Timeline card so the live updates are
+    // immediately visible without the person having to scroll and find them.
+    if (watcher.timelineCard) {
+      setTimeout(() => watcher.timelineCard.scrollIntoView({ behavior: 'smooth', block: 'start' }), 750);
+    }
+
+    // ── NOW make the actual request — listeners above are already live and
+    // will catch every progress event for the entire duration of this call ──
     const res = await api(`/api/workflow/${wfId}/submit-documents`, { method: 'POST', body: '{}' });
     if (res.success) {
-      showToast('Documents' + (feedbackText ? ' and feedback' : '') + ' submitted successfully!', 'success');
-      viewVendorCase(wfId, vendorId);
+      // Nothing else to do here — the listeners registered above already
+      // rendered every stage live as it happened, and will navigate to
+      // viewWorkflow(wfId) themselves once the 'complete' event arrives.
     } else {
+      // Request failed outright (e.g. validation error) — clean up the
+      // listeners we registered above since there's no extraction to watch.
+      socket.off('extraction_progress', window._extractionProgressHandler);
+      socket.off('workflow_update',     window._extractionWfUpdateHandler);
+      window._extractionProgressHandler = null;
+      window._extractionWfUpdateHandler = null;
+      window._watchingExtractionFor = null;
+      if (progressBar) progressBar.style.display = 'none';
       showToast(res.error || res.message || 'Submission failed', 'error');
       if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="check"></i> Final Submit (' + docCount + ' docs + feedback)'; setTimeout(renderIcons, 0); }
     }
@@ -3507,9 +3840,109 @@ async function finalSubmitAndRefresh(wfId, vendorId) {
   if (!confirm('Are you sure you want to final-submit all documents? No further uploads or removals will be allowed.')) return;
   try {
     const res = await api(`/api/workflow/${wfId}/submit-documents`, { method: 'POST' });
-    if (res.success) { showToast('Documents final-submitted!', 'success'); viewVendorCase(wfId, vendorId); }
-    else showToast(res.error || 'Submit failed', 'error');
-  } catch(e) { showToast('Error submitting', 'error'); }
+    if (!res.success) { showToast(res.error || 'Submit failed', 'error'); return; }
+
+    showToast('Documents submitted — AI extraction starting...', 'success');
+
+    // ── Stay on this page and show extraction progress panel ──────────────────
+    const el = document.getElementById('mainContent');
+    const _renderProgress = (data) => {
+      const pct  = data.percent || 0;
+      const done = data.stage === 'complete';
+      const stages = [
+        { key: 'starting',     label: 'Preparing documents',        icon: 'upload',         threshold: 5  },
+        { key: 'reading_pages',label: 'Reading pages (AI vision)',   icon: 'eye',            threshold: 20 },
+        { key: 'extracted',    label: 'Parameters extracted',        icon: 'database',       threshold: 65 },
+        { key: 'icmr_analysis',label: 'Clinical correlation',        icon: 'activity',       threshold: 75 },
+        { key: 'scoring',      label: 'Underwriting rules scored',   icon: 'bar-chart-2',    threshold: 90 },
+        { key: 'complete',     label: 'Decision ready',              icon: 'check-circle',   threshold: 100}
+      ];
+
+      el.innerHTML = `
+        <div style="max-width:620px;margin:48px auto;padding:0 16px">
+          <div style="text-align:center;margin-bottom:32px">
+            <div style="font-size:28px;font-weight:700;color:var(--text)">${done ? '✅ Analysis Complete' : '🔍 AI Extraction Running'}</div>
+            <div style="font-size:14px;color:var(--text-muted);margin-top:6px">${esc(data.message || 'Processing...')}</div>
+          </div>
+
+          <!-- Overall progress bar -->
+          <div style="margin-bottom:28px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span style="font-size:12px;font-weight:600;color:var(--text-muted)">Overall Progress</span>
+              <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">${pct}%</span>
+            </div>
+            <div style="height:10px;background:var(--border);border-radius:10px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:${done ? 'var(--success)' : 'linear-gradient(90deg,var(--accent),#34d399)'};border-radius:10px;transition:width 0.6s ease"></div>
+            </div>
+            ${data.pages_total ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;text-align:right">Page ${data.pages_done||0} / ${data.pages_total}</div>` : ''}
+          </div>
+
+          <!-- Stage steps -->
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:32px">
+            ${stages.map(s => {
+              const isDone    = pct >= s.threshold;
+              const isActive  = data.stage === s.key || (pct >= s.threshold - 15 && pct < s.threshold + 5 && !isDone);
+              const color     = isDone ? 'var(--success)' : isActive ? 'var(--accent)' : 'var(--border)';
+              const textColor = isDone || isActive ? 'var(--text)' : 'var(--text-muted)';
+              return `<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface-alt);border-radius:8px;border-left:3px solid ${color}">
+                <i data-lucide="${s.icon}" style="color:${color};flex-shrink:0"></i>
+                <span style="font-size:13px;font-weight:${isDone||isActive?'600':'400'};color:${textColor}">${s.label}</span>
+                ${isDone ? '<span style="margin-left:auto;font-size:11px;color:var(--success);font-weight:700">Done</span>' : isActive ? '<span style="margin-left:auto;font-size:11px;color:var(--accent)">Running...</span>' : ''}
+              </div>`;
+            }).join('')}
+          </div>
+
+          ${done ? `<div style="text-align:center"><button class="btn btn-accent btn-lg" onclick="viewWorkflow('${wfId}')"><i data-lucide="bar-chart-2"></i> View Decision & Score</button></div>` :
+            `<div style="text-align:center;color:var(--text-muted);font-size:13px"><i data-lucide="clock"></i> This usually takes 60–120 seconds. Please wait...</div>`}
+        </div>`;
+      if (window.lucide) lucide.createIcons();
+    };
+
+    // Show initial state immediately
+    _renderProgress({ stage: 'starting', percent: 0, message: 'Preparing extraction...', docs_total: 1, docs_done: 0 });
+
+    // ── Listen for extraction_progress events for this specific workflow ───────
+    if (window._extractionProgressHandler) {
+      socket.off('extraction_progress', window._extractionProgressHandler);
+    }
+    window._extractionProgressHandler = (data) => {
+      if (data.workflow_id !== wfId) return;
+      _renderProgress(data);
+      if (data.stage === 'complete') {
+        // Auto-navigate to Decision tab after 1.5 second delay
+        socket.off('extraction_progress', window._extractionProgressHandler);
+        window._extractionProgressHandler = null;
+        setTimeout(() => viewWorkflow(wfId), 1500);
+      }
+    };
+    socket.on('extraction_progress', window._extractionProgressHandler);
+
+    // Also listen for workflow_update as fallback (in case extraction_progress isn't emitted)
+    if (window._extractionWfUpdateHandler) {
+      socket.off('workflow_update', window._extractionWfUpdateHandler);
+    }
+    window._extractionWfUpdateHandler = (data) => {
+      if (data.workflow_id !== wfId) return;
+      const stateMap = {
+        extracting:           { percent: 15, message: 'AI reading documents...',          stage: 'reading_pages' },
+        icmr_analysis:        { percent: 75, message: 'Running clinical analysis...',      stage: 'icmr_analysis' },
+        analyzing:            { percent: 90, message: 'Scoring against UW rules...',       stage: 'scoring'       },
+        ai_analysis_complete: { percent: 100, message: 'Analysis complete!',              stage: 'complete'      },
+        extraction_failed:    { percent: 0,   message: 'Extraction failed — see Human in Loop tab.', stage: 'error' }
+      };
+      const mapped = stateMap[data.state];
+      if (mapped) {
+        _renderProgress({ ...mapped, workflow_id: wfId, docs_total: 1, docs_done: 0 });
+        if (data.state === 'ai_analysis_complete') {
+          socket.off('workflow_update', window._extractionWfUpdateHandler);
+          window._extractionWfUpdateHandler = null;
+          setTimeout(() => viewWorkflow(wfId), 1500);
+        }
+      }
+    };
+    socket.on('workflow_update', window._extractionWfUpdateHandler);
+
+  } catch(e) { showToast('Error submitting: ' + e.message, 'error'); }
 }
 
 // ─── Tele-MER Interview ───
@@ -3750,13 +4183,20 @@ async function submitTeleMER() {
     if (res.success) {
       let msg = 'Tele-MER interview submitted. ';
       if (res.recommendation === 'proceed_to_scoring') {
-        if (res.score) msg += `Score: ${res.score.score}/100 (Grade ${res.score.grade}) → ${(res.score.decision||'').replace(/_/g,' ')}`;
+        if (res.score) msg += `Score: ${res.score.risk_score?.normalized ?? 'N/A'}/100 (Grade ${res.score.risk_score?.grade ?? 'N/A'}) → ${(res.score.decision?.recommendation || '').replace(/_/g,' ')}`;
         else msg += 'Proceeding to AI scoring.';
       } else {
         msg += 'Escalation to full PPHC recommended: ' + (res.escalation_reasons || []).join(', ');
       }
       showToast(msg, res.recommendation === 'proceed_to_scoring' ? 'success' : 'warning');
-      viewVendorCase(wfId, vendorId);
+      // Scored cases go to the Decision page where the score/rationale
+      // actually render (viewVendorCase has no score display of its own).
+      // Escalated cases stay on the vendor page since there's no score yet.
+      if (res.recommendation === 'proceed_to_scoring' && res.score) {
+        viewWorkflow(wfId);
+      } else {
+        viewVendorCase(wfId, vendorId);
+      }
     } else showToast(res.error || 'Submission failed', 'error');
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }
@@ -4086,11 +4526,12 @@ function showVendorCaseTab(tab) {
   }
 
   el.innerHTML = `<div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr>
-    <th>Proposal</th><th>Proposer</th><th>Age</th><th>Sum Assured</th><th>Docs</th><th>Observations</th>
+    <th>Proposal</th><th>Quotation No</th><th>Proposer</th><th>Age</th><th>Sum Assured</th><th>Docs</th><th>Observations</th>
     <th>${tab==='pending'?'Required Tests':'Submitted On'}</th><th>Actions</th>
   </tr></thead><tbody>
   ${cases.map(c => `<tr>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${c.proposal_id}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">${c.quotation_no||'—'}</td>
     <td style="font-weight:500">${c.proposer_name}</td>
     <td>${c.age}/${c.gender?.charAt(0).toUpperCase()}</td>
     <td>₹${(c.sum_assured||0).toLocaleString('en-IN')}</td>
@@ -4114,6 +4555,90 @@ async function renderComms() { const el=document.getElementById('mainContent'); 
 // ─── Rules ───
 // ─── Masters Configuration ───
 let _mastersView = 'home';
+function toggleDeclineRow(prefix, key) {
+  const checkbox = document.getElementById(`${prefix}_decline_${key}`);
+  const input = document.getElementById(`${prefix}_${key}`);
+  if (!checkbox || !input) return;
+  input.disabled = checkbox.checked;
+  input.style.opacity = checkbox.checked ? '0.4' : '1';
+}
+
+function reconstructLoadingTable(orig) {
+  const loading_table = {};
+  for (const [k, v] of Object.entries(orig.loading_table)) {
+    const declineChecked = document.getElementById(`lt_decline_${k}`)?.checked ?? (v.action === 'decline');
+    const input = document.getElementById(`lt_${k}`);
+    const pct = input ? parseFloat(input.value) : v.loading_pct;
+    const safePct = isNaN(pct) ? (v.loading_pct === -1 ? 0 : v.loading_pct) : pct;
+    if (declineChecked) {
+      loading_table[k] = { ...v, loading_pct: -1, action: 'decline', _last_loading_pct: safePct };
+    } else {
+      const { action, _last_loading_pct, ...rest } = v;
+      loading_table[k] = { ...rest, loading_pct: safePct };
+    }
+  }
+  return loading_table;
+}
+
+function reconstructAgeLoading(orig) {
+  const age_loading = {};
+  for (const [k, v] of Object.entries(orig.age_loading)) {
+    const declineChecked = document.getElementById(`al_decline_${k}`)?.checked ?? (v.action === 'decline');
+    const input = document.getElementById(`al_${k}`);
+    const pct = input ? parseFloat(input.value) : v.loading_pct;
+    const safePct = isNaN(pct) ? (v.loading_pct === -1 ? 0 : v.loading_pct) : pct;
+    if (declineChecked) {
+      age_loading[k] = { ...v, loading_pct: -1, action: 'decline', _last_loading_pct: safePct };
+    } else {
+      const { action, _last_loading_pct, ...rest } = v;
+      age_loading[k] = { ...rest, loading_pct: safePct };
+    }
+  }
+  return age_loading;
+}
+
+function reconstructLoadingCap(orig) {
+  const capInput = document.getElementById('lc_max_loading_pct');
+  const capVal = capInput ? parseFloat(capInput.value) : orig.loading_cap.max_loading_pct;
+  return { ...orig.loading_cap, max_loading_pct: isNaN(capVal) ? orig.loading_cap.max_loading_pct : capVal };
+}
+
+function reconstructWaitingPeriods(orig) {
+  const waiting_periods = {};
+  for (const [k, v] of Object.entries(orig.waiting_periods)) {
+    const input = document.getElementById(`wp_${k}`);
+    const years = input ? parseFloat(input.value) : v.years;
+    waiting_periods[k] = { ...v, years: isNaN(years) ? v.years : years };
+  }
+  return waiting_periods;
+}
+
+// section: 'loading_table' | 'age_loading' | 'loading_cap' | 'waiting_periods'
+// Each sub-view only renders DOM elements for its own section, so this only
+// reads and sends that one piece — the backend PUT already supports partial
+// updates (only overwrites whichever fields are present in the request body),
+// so sending just one section leaves the other three completely untouched.
+async function saveLoadingTable(section) {
+  const orig = window._loadingTableData;
+  if (!orig) { showToast('No loaded data to save from — reopen this page and try again', 'error'); return; }
+
+  const payload = {};
+  if (section === 'loading_table')   payload.loading_table = reconstructLoadingTable(orig);
+  if (section === 'age_loading')     payload.age_loading = reconstructAgeLoading(orig);
+  if (section === 'loading_cap')     payload.loading_cap = reconstructLoadingCap(orig);
+  if (section === 'waiting_periods') payload.waiting_periods = reconstructWaitingPeriods(orig);
+
+  try {
+    const res = await api('/api/masters/loading-table', { method: 'PUT', body: JSON.stringify(payload) });
+    if (res.success) {
+      showToast('Saved — takes effect on the next case scored', 'success');
+      renderMasters();
+    } else {
+      showToast(res.error || 'Save failed', 'error');
+    }
+  } catch(e) { showToast('Save error: ' + e.message, 'error'); }
+}
+
 async function renderMasters() {
   const el = document.getElementById('mainContent');
   if (_mastersView === 'home') {
@@ -4125,7 +4650,6 @@ async function renderMasters() {
         {icon:'<i data-lucide="external-link"></i>',title:'Product-Policy Mapping',desc:'Assign policies to products for auto-application',onclick:"_mastersView='mapping';renderMasters()"},
         {icon:'<i data-lucide="scale"></i>',title:'UW Guidelines',desc:'50+ compliance rules and thresholds',onclick:"_mastersView='uwrules';renderMasters()"},
         {icon:'<i data-lucide="bar-chart-3"></i>',title:'Loading Table',desc:'Loading percentages, age bands, loading cap, waiting periods',onclick:"_mastersView='loading';renderMasters()"},
-        {icon:'<i data-lucide="hospital"></i>',title:'Medical Scoring',desc:'Component weights and metric thresholds (100-point engine)',onclick:"_mastersView='scoring';renderMasters()"},
         {icon:'<i data-lucide="sliders-horizontal"></i>',title:'Per-CAT Scoring',desc:'Editable approve / refer / decline thresholds for CAT 1-4 and TeleMER',onclick:"_mastersView='catscoring';renderMasters()"},
         {icon:'<i data-lucide="library"></i>',title:'Historical UW Data',desc:'Upload past UW decisions to train the system for PPHC-skip intelligence',onclick:"_mastersView='historical';renderMasters()"},
         {icon:'<i data-lucide="book-open"></i>',title:'ICMR Guidelines',desc:'Clinical text interpretation guidelines for ICMR-based analysis of non-numeric findings',onclick:"_mastersView='icmrguidelines';renderMasters()"}
@@ -4247,45 +4771,145 @@ async function renderMasters() {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
       const data = await api('/api/masters/uw-rules');
+      window._uwRulesData = data;
+      const actionOpts = ['decline','refer','loading'];
+      const severityOpts = ['critical','high','medium'];
+      const optTags = (opts, current) => opts.map(o => `<option value="${o}" ${o===current?'selected':''}>${o}</option>`).join('');
+      const editableRow = (r, isCustom) => `<tr ${isCustom?'style="background:var(--info-bg)"':''}>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.id}</td>
+        <td style="font-size:12px">${r.name}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.path||'—'}</td>
+        <td>${r.operator||'—'}</td>
+        <td><input type="number" step="any" class="form-control" id="uwr_threshold_${r.id}" value="${r.threshold}" style="width:90px;font-weight:600;font-family:'JetBrains Mono',monospace"></td>
+        <td><select id="uwr_action_${r.id}" class="form-control" style="width:105px;font-size:12px">${optTags(actionOpts, r.action)}</select></td>
+        <td><select id="uwr_severity_${r.id}" class="form-control" style="width:100px;font-size:12px">${optTags(severityOpts, r.severity)}</select></td>
+        <td style="white-space:nowrap">
+          <span style="font-size:11px;color:var(--text-muted)">${isCustom?'Custom':'Built-in'}</span>
+          ${isCustom?`<button class="btn btn-sm btn-danger" onclick="deleteCustomRule('${r.id}')">×</button>`:''}
+        </td>
+      </tr>`;
       el.innerHTML = backBtn + `
       <div style="display:flex;justify-content:space-between;margin-bottom:12px"><h3>UW Guidelines (${data.total} rules)</h3>
-        <div style="display:flex;gap:8px"><button class="btn btn-accent" onclick="addRulePrompt()"><i data-lucide="plus"></i> Add Rule</button><button class="btn btn-outline" onclick="uploadRulesDoc()"><i data-lucide="file-text"></i> Upload Rules Doc</button></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-accent" onclick="saveUWRules()"><i data-lucide="save"></i> Save Changes</button>
+          <button class="btn btn-outline" onclick="addRulePrompt()"><i data-lucide="plus"></i> Add Rule</button>
+          <button class="btn btn-outline" onclick="uploadRulesDoc()"><i data-lucide="file-text"></i> Upload Rules Doc</button>
+        </div>
       </div>
       <div class="card"><div class="card-body" style="padding:0"><table class="data-table"><thead><tr><th>ID</th><th>Name</th><th>Parameter</th><th>Op</th><th>Threshold</th><th>Action</th><th>Severity</th><th>Source</th></tr></thead><tbody>
-      ${data.built_in.map(r => `<tr><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.id}</td><td style="font-size:12px">${r.name}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.path}</td><td>${r.operator}</td><td style="font-weight:600">${r.threshold}</td><td><span class="badge ${r.action==='decline'?'badge-danger':r.action==='refer'?'badge-warning':'badge-info'}">${r.action}</span></td><td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='high'?'badge-warning':'badge-info'}">${r.severity}</span></td><td style="font-size:11px;color:var(--text-muted)">Built-in</td></tr>`).join('')}
-      ${data.custom.map(r => `<tr style="background:var(--info-bg)"><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.id}</td><td style="font-size:12px">${r.name}</td><td style="font-family:'JetBrains Mono',monospace;font-size:11px">${r.path||'—'}</td><td>${r.operator||'—'}</td><td style="font-weight:600">${r.threshold||'—'}</td><td><span class="badge ${r.action==='decline'?'badge-danger':r.action==='refer'?'badge-warning':'badge-info'}">${r.action||'—'}</span></td><td><span class="badge badge-info">${r.severity||'medium'}</span></td><td style="white-space:nowrap"><span style="font-size:11px;color:var(--text-muted)">Custom</span> <button class="btn btn-sm btn-danger" onclick="deleteCustomRule('${r.id}')">×</button></td></tr>`).join('')}
+      ${data.built_in.map(r => editableRow(r, false)).join('')}
+      ${data.custom.map(r => editableRow(r, true)).join('')}
       </tbody></table></div></div>`;
+      renderIcons();
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
   } else if (_mastersView === 'loading') {
-    el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
+    // ── Loading sub-menu: 4 cards, same pattern as the Masters Config home screen ──
+    el.innerHTML = backBtn + `
+    <div class="grid-2" style="gap:16px">
+      ${[
+        {icon:'<i data-lucide="bar-chart-3"></i>',title:'Loading Table',desc:'Condition-based loading percentages (BMI, smoking, HTN, diabetes, etc.)',onclick:"_mastersView='loading_table';renderMasters()"},
+        {icon:'<i data-lucide="users"></i>',title:'Age Loading Bands',desc:'Loading percentage by age band',onclick:"_mastersView='loading_age';renderMasters()"},
+        {icon:'<i data-lucide="shield-alert"></i>',title:'Loading Cap',desc:'Maximum permissible total loading before auto-decline',onclick:"_mastersView='loading_cap';renderMasters()"},
+        {icon:'<i data-lucide="calendar-clock"></i>',title:'Waiting Periods',desc:'PED waiting periods by condition',onclick:"_mastersView='loading_waiting';renderMasters()"}
+      ].map(c => `<div class="card" style="cursor:pointer;transition:all 0.15s;border:1.5px solid var(--border)" onclick="${c.onclick}" onmouseover="this.style.borderColor='var(--primary)'" onmouseout="this.style.borderColor='var(--border)'"><div class="card-body" style="text-align:center;padding:28px 16px"><div style="font-size:32px;margin-bottom:10px">${c.icon}</div><div style="font-size:15px;font-weight:700;color:var(--text)">${c.title}</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">${c.desc}</div></div></div>`).join('')}
+    </div>`;
+    renderIcons();
+
+  } else if (_mastersView === 'loading_table') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
     try {
       const data = await api('/api/masters/loading-table');
-      el.innerHTML = backBtn + `
-      <div class="grid-2" style="gap:16px">
-        <div class="card"><div class="card-header"><h3>Loading Table</h3></div><div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Condition</th><th>Loading %</th><th>Action</th></tr></thead><tbody>
-          ${Object.entries(data.loading_table).map(([k,v]) => `<tr><td style="font-weight:500">${k.replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${v.loading_pct===-1?'var(--danger)':'var(--warning)'}">${v.loading_pct===-1?'N/A':'+'+v.loading_pct+'%'}</td><td><span class="badge ${v.action==='decline'?'badge-danger':'badge-warning'}">${v.action||'loading'}</span></td></tr>`).join('')}
-          </tbody></table>
-        </div></div>
-        <div class="card"><div class="card-header"><h3>Age Loading Bands</h3></div><div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Age Band</th><th>Loading %</th><th>Label</th></tr></thead><tbody>
-          ${Object.entries(data.age_loading).map(([k,v]) => `<tr><td style="font-weight:500">${k}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${v.loading_pct===-1?'var(--danger)':v.loading_pct>0?'var(--warning)':'var(--success)'}">${v.loading_pct===-1?'DECLINE':v.loading_pct===0?'Standard':'+'+v.loading_pct+'%'}</td><td style="font-size:12px;color:var(--text-muted)">${v.label}</td></tr>`).join('')}
-          </tbody></table>
-        </div></div>
+      window._loadingTableData = data;
+      const declineRow = (prefix, k, v, extraCol) => {
+        const isDecline = v.action === 'decline';
+        const pctValue = isDecline ? (v._last_loading_pct ?? 0) : v.loading_pct;
+        return `<tr>
+          <td style="font-weight:500">${k.replace(/_/g,' ')}</td>
+          <td><input type="number" class="form-control" id="${prefix}_${k}" value="${pctValue}" ${isDecline?'disabled':''} style="width:90px;font-family:'JetBrains Mono',monospace;font-weight:700${isDecline?';opacity:0.4':''}"></td>
+          <td><label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="${prefix}_decline_${k}" ${isDecline?'checked':''} onchange="toggleDeclineRow('${prefix}','${k}')" style="cursor:pointer">Decline</label></td>
+          ${extraCol||''}
+        </tr>`;
+      };
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Loading Table</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('loading_table')"><i data-lucide="save"></i> Save Changes</button>
       </div>
-      <div class="grid-2" style="gap:16px;margin-top:16px">
-        <div class="card"><div class="card-header"><h3>Loading Cap</h3></div><div class="card-body">
-          <div style="font-size:28px;font-weight:700;color:var(--danger);font-family:'JetBrains Mono',monospace">${data.loading_cap.max_loading_pct}%</div>
-          <div style="font-size:12px;color:var(--text-muted)">Maximum permissible total loading. Above this → auto-decline</div>
-        </div></div>
-        <div class="card"><div class="card-header"><h3>Waiting Periods</h3></div><div class="card-body" style="padding:0">
-          <table class="data-table"><thead><tr><th>Condition</th><th>Years</th><th>Description</th></tr></thead><tbody>
-          ${Object.entries(data.waiting_periods).map(([k,v]) => `<tr><td style="font-weight:500;text-transform:capitalize">${k.replace(/_/g,' ')}</td><td style="font-family:'JetBrains Mono',monospace;font-weight:700">${v.years} yr</td><td style="font-size:12px;color:var(--text-muted)">${v.description}</td></tr>`).join('')}
-          </tbody></table>
-        </div></div>
-      </div>`;
-    } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+      <div class="card"><div class="card-body" style="padding:0">
+        <table class="data-table"><thead><tr><th>Condition</th><th>Loading %</th><th>Decline?</th></tr></thead><tbody>
+        ${Object.entries(data.loading_table).map(([k,v]) => declineRow('lt', k, v)).join('')}
+        </tbody></table>
+      </div></div>`;
+      renderIcons();
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
+  } else if (_mastersView === 'loading_age') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/masters/loading-table');
+      window._loadingTableData = data;
+      const declineRow = (prefix, k, v, extraCol) => {
+        const isDecline = v.action === 'decline';
+        const pctValue = isDecline ? (v._last_loading_pct ?? 0) : v.loading_pct;
+        return `<tr>
+          <td style="font-weight:500">${k.replace(/_/g,' ')}</td>
+          <td><input type="number" class="form-control" id="${prefix}_${k}" value="${pctValue}" ${isDecline?'disabled':''} style="width:90px;font-family:'JetBrains Mono',monospace;font-weight:700${isDecline?';opacity:0.4':''}"></td>
+          <td><label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer"><input type="checkbox" id="${prefix}_decline_${k}" ${isDecline?'checked':''} onchange="toggleDeclineRow('${prefix}','${k}')" style="cursor:pointer">Decline</label></td>
+          ${extraCol||''}
+        </tr>`;
+      };
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Age Loading Bands</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('age_loading')"><i data-lucide="save"></i> Save Changes</button>
+      </div>
+      <div class="card"><div class="card-body" style="padding:0">
+        <table class="data-table"><thead><tr><th>Age Band</th><th>Loading %</th><th>Decline?</th><th>Label</th></tr></thead><tbody>
+        ${Object.entries(data.age_loading).map(([k,v]) => declineRow('al', k, v, `<td style="font-size:12px;color:var(--text-muted)">${v.label}</td>`)).join('')}
+        </tbody></table>
+      </div></div>`;
+      renderIcons();
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
+  } else if (_mastersView === 'loading_cap') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/masters/loading-table');
+      window._loadingTableData = data;
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Loading Cap</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('loading_cap')"><i data-lucide="save"></i> Save Changes</button>
+      </div>
+      <div class="card"><div class="card-body">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Maximum permissible total loading (%). Above this → auto-decline</label>
+        <input type="number" class="form-control" id="lc_max_loading_pct" value="${data.loading_cap.max_loading_pct}" style="width:140px;font-size:22px;font-weight:700;color:var(--danger);font-family:'JetBrains Mono',monospace">
+      </div></div>`;
+      renderIcons();
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
+  } else if (_mastersView === 'loading_waiting') {
+    const backToLoadingBtn = '<button class="btn btn-outline btn-sm" onclick="_mastersView=\'loading\';renderMasters()" style="margin-bottom:16px">← Back to Loading</button>';
+    el.innerHTML = backToLoadingBtn + '<div class="loading"><div class="spinner"></div></div>';
+    try {
+      const data = await api('/api/masters/loading-table');
+      window._loadingTableData = data;
+      el.innerHTML = backToLoadingBtn + `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Waiting Periods</h3>
+        <button class="btn btn-accent" onclick="saveLoadingTable('waiting_periods')"><i data-lucide="save"></i> Save Changes</button>
+      </div>
+      <div class="card"><div class="card-body" style="padding:0">
+        <table class="data-table"><thead><tr><th>Condition</th><th>Years</th><th>Description</th></tr></thead><tbody>
+        ${Object.entries(data.waiting_periods).map(([k,v]) => `<tr><td style="font-weight:500;text-transform:capitalize">${k.replace(/_/g,' ')}</td><td><input type="number" class="form-control" id="wp_${k}" value="${v.years}" style="width:70px;font-family:'JetBrains Mono',monospace;font-weight:700"></td><td style="font-size:12px;color:var(--text-muted)">${v.description}</td></tr>`).join('')}
+        </tbody></table>
+      </div></div>`;
+      renderIcons();
+    } catch(e) { el.innerHTML = backToLoadingBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
 
   } else if (_mastersView === 'scoring') {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
@@ -4336,6 +4960,7 @@ async function renderMasters() {
       renderCatEditor();
       renderIcons();
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: '+e.message+'</p></div>'; }
+
 
   } else if (_mastersView === 'historical') {
     el.innerHTML = backBtn + '<div class="loading"><div class="spinner"></div></div>';
@@ -4450,6 +5075,7 @@ async function renderMasters() {
     } catch(e) { el.innerHTML = backBtn + '<div class="empty-state"><p>Error: ' + e.message + '</p></div>'; }
   }
 }
+
 
 async function saveICMRGuidelines() {
   const text = document.getElementById('icmrGuidelinesText')?.value?.trim();
@@ -4775,6 +5401,25 @@ const CAT_META_LIST = [
   { key:'CAT_4', label:'CAT 4', color:'#5C2E91' },
   { key:'tele_mer', label:'Tele MER', color:'#BF8F00' },
 ];
+// Component display labels — TeleMER uses different names for history/clinical/documentation
+function getCompMeta(cat, ckey) {
+  if (cat === 'tele_mer') {
+    const tm = {
+      medical:       { label:'Medical Parameters (not used)',                     icon:'🩺' },
+      lifestyle:     { label:'C1 — Lifestyle Risk (25 pts, raw 18)',              icon:'🏃' },
+      history:       { label:'C2 — Medical History / PEC (20 pts, raw 13)',       icon:'📋' },
+      clinical:      { label:'C3 — Clinical Correlation (20 pts, raw 15)',        icon:'🔬' },
+      documentation: { label:'C4 CV+HTN (15) + C6 Surgical/GI (5) + C7 FH (5)', icon:'❤️' }
+    };
+    return tm[ckey] || { label: ckey, icon: '•' };
+  }
+  const std = {
+    medical:{label:'Medical Parameters',icon:'🩺'}, lifestyle:{label:'Lifestyle Risk',icon:'🏃'},
+    history:{label:'Medical History',icon:'📋'}, clinical:{label:'Clinical Correlation',icon:'🔬'},
+    documentation:{label:'Documentation Quality',icon:'📄'}
+  };
+  return std[ckey] || { label: ckey, icon: '•' };
+}
 const COMP_META = {
   medical:{label:'Medical Parameters',icon:'🩺'}, lifestyle:{label:'Lifestyle Risk',icon:'🏃'},
   history:{label:'Medical History',icon:'📋'}, clinical:{label:'Clinical Correlation',icon:'🔬'},
@@ -4820,6 +5465,19 @@ function renderCatEditor() {
 
   let html = '';
 
+  // ── TeleMER info banner (shown only on Tele MER tab) ─────────────────────
+  if (cat === 'tele_mer') {
+    html += `<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400E">
+      <strong>📞 TeleMER Hybrid Scoring — 6 Components, 90 raw pts → scaled to 100</strong><br>
+      <span style="color:var(--text-muted)">
+        C1 Lifestyle (25 pts) + C2 Medical History (20 pts) + C3 Clinical Correlation (20 pts)
+        + C4 Cardiovascular+HTN (15 pts direct) + C6 Surgical/GI (5 pts direct) + C7 Family History (5 pts direct).<br>
+        Contradiction penalty: −5 / −10 / RE-MER. Phase 1 total scaled × 100/90.<br>
+        <strong>To edit point values:</strong> expand each component accordion below and edit the factor bands and weights directly. Click <em>Save All</em> when done.
+      </span>
+    </div>`;
+  }
+
   // ── Decision Thresholds — inline ─────────────────────────────────────────
   html += `<div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
     <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:10px">Decision Thresholds</div>
@@ -4850,7 +5508,7 @@ function renderCatEditor() {
 
   // ── Accordion: one card per component ─────────────────────────────────────
   for (const [ckey, comp] of Object.entries(comps)) {
-    const cm       = COMP_META[ckey] || { label:ckey, icon:'•' };
+    const cm       = getCompMeta(cat, ckey);
     const factors  = comp.factors || [];
     const maxSum   = factors.reduce((s,f) => s + (Number(f.max)||0), 0);
     const cw       = Number(comp.weight) || 0;
@@ -5747,6 +6405,37 @@ function updateMapping(productId, policyId) {
     .then(r => { if (r.success) { window._ppData.mapping = mappings; showToast(policyId ? 'Mapped' : 'Reverted to defaults', 'success'); } else showToast(r.error, 'error'); })
     .catch(e => showToast(e.message, 'error'));
 }
+async function saveUWRules() {
+  const data = window._uwRulesData;
+  if (!data) { showToast('No loaded data to save from — reopen this page and try again', 'error'); return; }
+
+  const allRules = [...data.built_in, ...data.custom];
+  const edits = [];
+  for (const r of allRules) {
+    const tInput = document.getElementById(`uwr_threshold_${r.id}`);
+    const aSelect = document.getElementById(`uwr_action_${r.id}`);
+    const sSelect = document.getElementById(`uwr_severity_${r.id}`);
+    if (!tInput) continue;
+    const threshold = parseFloat(tInput.value);
+    edits.push({
+      id: r.id,
+      threshold: isNaN(threshold) ? r.threshold : threshold,
+      action: aSelect ? aSelect.value : r.action,
+      severity: sSelect ? sSelect.value : r.severity
+    });
+  }
+
+  try {
+    const res = await api('/api/masters/uw-rules/bulk', { method: 'PUT', body: JSON.stringify({ rules: edits }) });
+    if (res.success) {
+      showToast('UW Guidelines saved — takes effect on the next case scored', 'success');
+      renderMasters();
+    } else {
+      showToast(res.error || 'Save failed', 'error');
+    }
+  } catch(e) { showToast('Save error: ' + e.message, 'error'); }
+}
+
 function addRulePrompt() {
   const name = prompt('Rule Name:'); if (!name) return;
   const path = prompt('Parameter Path (e.g., blood_chemistry.fasting_glucose.value):'); if (!path) return;
