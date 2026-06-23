@@ -205,7 +205,7 @@ textarea.form-control{resize:vertical;min-height:60px}
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0;">
           <i data-lucide="upload"></i> Choose file
-          <input type="file" id="sbiJsonInput" accept=".json,application/json,.txt,text/plain" style="display:none;position:absolute;width:0;height:0;" onchange="handleSBIJsonUpload(this)">
+          <input type="file" id="sbiJsonInput" accept=".json,application/json,.txt,text/plain,.log" style="display:none;position:absolute;width:0;height:0;" onchange="handleSBIJsonUpload(this)">
         </label>
         <span id="sbiJsonFileName" style="font-size:12px;color:var(--text-muted);">No file chosen</span>
       </div>
@@ -809,10 +809,10 @@ function renderBulkUpload() {
       ondragover="event.preventDefault();this.style.borderColor='var(--accent)';this.style.background='var(--info-bg)'"
       ondragleave="this.style.borderColor='var(--border)';this.style.background='var(--surface-alt)'"
       ondrop="handleBulkDrop(event)">
-      <input type="file" id="bulkFileInput" accept=".json,application/json,.txt,text/plain,.zip" multiple style="display:none"
+      <input type="file" id="bulkFileInput" accept=".json,application/json,.txt,text/plain,.log,.zip" multiple style="display:none"
         onchange="handleBulkFiles(this.files)">
       <div style="font-size:40px;margin-bottom:12px;color:var(--text-muted)"><i data-lucide="files" class="i-2xl i-muted"></i></div>
-      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop JSON, TXT, or ZIP files here or click to browse</div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">Drop JSON, TXT, LOG, or ZIP files here or click to browse</div>
       <div style="font-size:12px;color:var(--text-muted)">SBI PAS API JSON format — up to 100 JSON files or one ZIP containing multiple JSONs</div>
       <div style="margin-top:14px;display:flex;justify-content:center;gap:20px;font-size:11px;color:var(--text-muted)">
         <span><strong>STP cases</strong> are skipped automatically (no PPHC needed)</span>
@@ -846,14 +846,23 @@ async function handleBulkFiles(files) {
   const jsonEntries = []; // { name, text }
 
   for (const file of Array.from(files)) {
+    // Skip Office-style lock/temp files (e.g. "~$FullQuote_....log") -- these
+    // get auto-created whenever the real file is open in another application
+    // and are pure binary, never valid JSON. Silently skipping avoids a
+    // confusing parse error for a file the person never meant to upload.
+    if (file.name.startsWith('~$')) continue;
+
     if (file.name.toLowerCase().endsWith('.zip')) {
-      // Extract all .json/.txt files from ZIP using JSZip
+      // Extract all .json/.txt/.log files from ZIP using JSZip
       try {
         if (typeof JSZip === 'undefined') {
           showToast('JSZip library not loaded — refresh the page and try again', 'error'); return;
         }
         const zip = await JSZip.loadAsync(file);
-        const zipJsonFiles = Object.values(zip.files).filter(f => !f.dir && (f.name.toLowerCase().endsWith('.json') || f.name.toLowerCase().endsWith('.txt')));
+        const zipJsonFiles = Object.values(zip.files).filter(f =>
+          !f.dir && !f.name.split('/').pop().startsWith('~$') &&
+          (f.name.toLowerCase().endsWith('.json') || f.name.toLowerCase().endsWith('.txt') || f.name.toLowerCase().endsWith('.log'))
+        );
         for (const zipFile of zipJsonFiles) {
           const text = await zipFile.async('string');
           jsonEntries.push({ name: zipFile.name.split('/').pop(), text });
@@ -862,9 +871,12 @@ async function handleBulkFiles(files) {
       } catch(e) {
         showToast('ZIP extraction failed: ' + e.message, 'error'); return;
       }
-    } else if (file.name.toLowerCase().endsWith('.json') || file.name.toLowerCase().endsWith('.txt')) {
-      // .txt files are accepted here too -- some client systems export valid
-      // JSON content with a .txt extension. JSON.parse (further down) is
+    } else if (file.name.toLowerCase().endsWith('.json') || file.name.toLowerCase().endsWith('.txt') || file.name.toLowerCase().endsWith('.log')) {
+      // .txt/.log files are accepted here too -- some client systems export
+      // valid JSON content with a .txt or .log extension (confirmed: SBI's
+      // FullQuote_*.log files are exactly this -- a JSON log wrapper with
+      // Response.body containing the actual PolicyObject, which the parsing
+      // logic further down already knows how to unwrap). JSON.parse is
       // content-based and doesn't care about the extension either way; any
       // file that isn't actually valid JSON still gets a clear per-file error
       // at the parsing step below, same as a malformed .json file would.
@@ -873,7 +885,7 @@ async function handleBulkFiles(files) {
     }
   }
 
-  if (!jsonEntries.length) { showToast('No .json or .txt files found in selection or ZIP', 'error'); return; }
+  if (!jsonEntries.length) { showToast('No .json, .txt, or .log files found in selection or ZIP', 'error'); return; }
   if (jsonEntries.length > 100) {
     showToast('Maximum 100 files. Only first 100 will be processed.', 'warning');
     jsonEntries.splice(100);
